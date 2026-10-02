@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { getFaceFrame, type BoxSpec, type FaceName } from './model';
+import { parseFaceColor } from './face-color';
 
 export type ViewName = 'iso' | 'front' | 'right' | 'top';
 export type ProjectionMode = 'perspective' | 'orthographic';
 
 export interface Viewport {
-  setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean }): void;
+  setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string> }): void;
   select(id: string | null, face?: FaceName | null): void;
+  setVisibility(id: string, visible: boolean): void;
   setView(view: ViewName): void;
   fit(): void;
   setProjection(mode: ProjectionMode): void;
@@ -47,6 +49,7 @@ export function createViewport(
   let faceHighlight: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null;
   let lastBounds = new THREE.Box3();
   const objects = new Map<string, BoxObject>();
+  const hiddenIds = new Set<string>();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const scene = new THREE.Scene();
@@ -262,7 +265,7 @@ export function createViewport(
   };
 
   const select = (id: string | null, face: FaceName | null = null) => {
-    selectedId = objects.has(id ?? '') ? id : null;
+    selectedId = objects.has(id ?? '') && !hiddenIds.has(id!) ? id : null;
     selectedFace = selectedId ? face : null;
     for (const [objectId, object] of objects) {
       object.edges.material.color.setHex(objectId === selectedId ? SELECTED_EDGE_COLOR : EDGE_COLOR);
@@ -271,8 +274,10 @@ export function createViewport(
     updateFaceHighlight();
   };
 
-  const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean } = {}) => {
+  const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean; hiddenIds?: Iterable<string> } = {}) => {
     clearFaceHighlight();
+    hiddenIds.clear();
+    for (const id of options.hiddenIds ?? []) hiddenIds.add(id);
     for (const object of objects.values()) {
       object.mesh.geometry.dispose();
       object.mesh.material.dispose();
@@ -290,10 +295,14 @@ export function createViewport(
       const height = Math.max(Math.abs(rawHeight), 0.01);
       const [x, y, z] = spec.position;
       const geometry = new THREE.BoxGeometry(width, depth, height);
+      const faceColor = parseFaceColor(spec.color);
       const material = new THREE.MeshStandardMaterial({
-        color: spec.color,
+        color: faceColor.color,
         metalness: 0.03,
         roughness: 0.74,
+        transparent: faceColor.opacity < 1,
+        opacity: faceColor.opacity,
+        depthWrite: faceColor.opacity === 1,
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.set(x + width / 2, y + depth / 2, z + height / 2);
@@ -306,13 +315,32 @@ export function createViewport(
       });
       const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
       edges.position.copy(mesh.position);
+      const isVisible = !hiddenIds.has(spec.id);
+      mesh.visible = isVisible;
+      edges.visible = isVisible;
       boxRoot.add(mesh, edges);
       objects.set(spec.id, { id: spec.id, mesh, edges, size: new THREE.Vector3(width, depth, height) });
-      lastBounds.expandByPoint(new THREE.Vector3(x, y, z));
-      lastBounds.expandByPoint(new THREE.Vector3(x + width, y + depth, z + height));
+      if (isVisible) {
+        lastBounds.expandByPoint(new THREE.Vector3(x, y, z));
+        lastBounds.expandByPoint(new THREE.Vector3(x + width, y + depth, z + height));
+      }
     }
     select(selectedId, selectedFace);
     if (!options.preserveView) fit();
+  };
+
+  const setVisibility = (id: string, visible: boolean) => {
+    const object = objects.get(id);
+    if (!object) return;
+    if (visible) hiddenIds.delete(id);
+    else hiddenIds.add(id);
+    object.mesh.visible = visible;
+    object.edges.visible = visible;
+    lastBounds.makeEmpty();
+    for (const candidate of objects.values()) {
+      if (candidate.mesh.visible) lastBounds.union(new THREE.Box3().setFromObject(candidate.mesh));
+    }
+    if (!visible && selectedId === id) select(null);
   };
 
   const setView = (view: ViewName) => {
@@ -363,7 +391,7 @@ export function createViewport(
   const faceAtPointer = (event: PointerEvent) => {
     pointerToNdc(event);
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObjects([...objects.values()].map((object) => object.mesh), false)[0];
+    const hit = raycaster.intersectObjects([...objects.values()].filter((object) => !hiddenIds.has(object.id)).map((object) => object.mesh), false)[0];
     const boxId = hit?.object.userData.boxId as string | undefined;
     if (!hit?.face || !boxId) return null;
     const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
@@ -430,6 +458,7 @@ export function createViewport(
   return {
     setBoxes,
     select,
+    setVisibility,
     setView,
     fit,
     setProjection,

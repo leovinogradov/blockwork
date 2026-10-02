@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBoxFromFace, formatInches, generateSource, getFaceFrame, parseInches, validateBoxes, type BoxSpec, type FaceName } from "../src/model";
+import { createBoxFromFace, formatInches, generateSource, getFaceFrame, MissingVariableError, parseInches, removeVariable, resolveModel, resolveVariables, validateBoxes, type BoxSpec, type FaceName } from "../src/model";
 
 test("parses decimal, fractional, mixed, signed, and suffixed inches onto the 1/64 grid", () => {
   assert.equal(parseInches("1 1/2"), 1.5);
@@ -153,4 +153,67 @@ test("generated source preserves relative metadata and fractional inch offsets",
   const rebuilt: unknown[] = [];
   new Function("box", "inch", source)((spec: unknown) => rebuilt.push(spec), parseInches);
   assert.deepEqual(validateBoxes(rebuilt), boxes);
+});
+
+test("variables resolve forward references and expressions stay live across dimensions and relative offsets", () => {
+  const model = resolveModel([
+    { id: "base", name: "Base", size: ["var(width)", "var(depth)", 1], position: ["var(origin)", 0, 0], color: "red" },
+    { id: "child", name: "Child", size: [1, 1, 1], position: [0, 0, 0], color: "blue", relative: { boxId: "base", face: "top", offset: "var(gap)", u: { side: "left", offset: "var(u)" }, v: { side: "bottom", offset: "var(v)" } } },
+  ], [
+    { name: "depth", value: 4 }, { name: "width", value: 1, expression: "var(depth) * 2" },
+    { name: "origin", value: 2 }, { name: "gap", value: 1 / 2 }, { name: "u", value: 1 }, { name: "v", value: 2 },
+  ]);
+  assert.deepEqual(model.boxes[0].size, [8, 4, 1]);
+  assert.deepEqual(model.boxes[1].position, [3, 2, 1.5]);
+  assert.equal(model.boxes[0].expressions?.["size.0"], "var(width)");
+  assert.equal(model.boxes[1].expressions?.["relative.v.offset"], "var(v)");
+  assert.equal(parseInches("var(width) + 1", Object.fromEntries(model.variables.map((v) => [v.name, v.value]))), 9);
+});
+
+test("variable validation catches unknown names, cycles, duplicates, and invalid identifiers", () => {
+  assert.throws(() => parseInches("var(nope)"), (error: unknown) => error instanceof MissingVariableError && error.variableName === "nope");
+  assert.throws(() => resolveVariables([{ name: "a", value: "var(b)" }]), MissingVariableError);
+  assert.throws(() => resolveVariables([{ name: "a", value: "var(b)" }, { name: "b", value: "var(a)" }]), /cycle/);
+  assert.throws(() => resolveVariables([{ name: "a", value: 1 }, { name: "a", value: 2 }]), /Duplicate/);
+  assert.throws(() => resolveVariables([{ name: "not-valid", value: 1 }]), /identifier/);
+  assert.throws(() => validateBoxes([{ id: "a", name: "A", size: [1, 1, 1], position: [0, 0, 0], color: "red", relative: { boxId: "a", face: "top", offset: 0 }, expressions: { "relative.u.offset": "var(x)" } }]), /requires a relative u edge/);
+});
+
+test("generated variable source round-trips quoted variable references", () => {
+  const model = resolveModel([{ id: "a", name: "A", size: ["var(width) + 1", 2, 3], position: [0, 0, 0], color: "red" }], [{ name: "width", value: 6 }]);
+  const source = generateSource(model.boxes, model.variables);
+  assert.match(source, /variable\(\{ name: "width"/);
+  assert.match(source, /"var\(width\) \+ 1"/);
+  const rebuiltBoxes: unknown[] = [], rebuiltVariables: unknown[] = [];
+  new Function("box", "variable", "inch", source)((spec: unknown) => rebuiltBoxes.push(spec), (spec: unknown) => rebuiltVariables.push(spec), parseInches);
+  assert.deepEqual(resolveModel(rebuiltBoxes, rebuiltVariables), model);
+});
+
+test("removing a variable replaces every exact reference while preserving geometry and remaining links", () => {
+  const original = resolveModel([
+    { id: "base", name: "Base", size: [0, 0, 0], position: [0, 0, 0], color: "red", expressions: {
+      "size.0": "var(width) + var(panel)", "size.1": "var(panel) * var(panel)", "size.2": "var(width)",
+      "position.0": "var(panel) * 2", "position.1": "var(panel) + var(width)", "position.2": "var(panels)",
+    } },
+    { id: "child", name: "Child", size: [1, 1, 1], position: [0, 0, 0], color: "blue", relative: { boxId: "base", face: "top", offset: 0, u: { side: "left", offset: 0 }, v: { side: "bottom", offset: 0 } }, expressions: {
+      "relative.offset": "var(panel)", "relative.u.offset": "var(panel) + 1", "relative.v.offset": "var(panel) * -1",
+    } },
+  ], [
+    { name: "width", value: 10 }, { name: "panel", value: -2 },
+    { name: "panels", value: 0, expression: "var(panel) * 2" },
+    { name: "other", value: 0, expression: "var(panel) + var(panels)" },
+  ]);
+  const removed = removeVariable(original.boxes, original.variables, "panel");
+  assert.throws(() => removeVariable(original.boxes, original.variables, "missing"), MissingVariableError);
+  assert.equal(removed.variables.some((variable) => variable.name === "panel"), false);
+  assert.match(removed.variables.find((variable) => variable.name === "other")!.expression!, /\(-2\) \+ var\(panels\)/);
+  assert.equal(removed.variables.find((variable) => variable.name === "panels")!.expression, "(-2) * 2");
+  for (const box of removed.boxes) for (const expression of Object.values(box.expressions ?? {})) {
+    assert.equal(expression.includes("var(panel)"), false);
+  }
+  assert.deepEqual(removed.boxes.map(({ size, position, relative }) => ({ size, position, relative })), original.boxes.map(({ size, position, relative }) => ({ size, position, relative })));
+  const resized = resolveModel(removed.boxes, removed.variables.map((variable) => variable.name === "width" ? { ...variable, value: 20, expression: undefined } : variable));
+  assert.equal(resized.boxes[0].size[0], 18);
+  assert.equal(resized.boxes[0].size[2], 20);
+  assert.equal(resized.boxes[0].expressions?.["position.2"], "var(panels)");
 });

@@ -1,7 +1,7 @@
-import { validateBoxes, type BoxSpec } from "./model";
+import { resolveModel, type ModelSpec } from "./model";
 
 /** Compile editable model JavaScript in a disposable worker with a strict time limit. */
-export function compileModel(source: string): Promise<BoxSpec[]> {
+export function compileModel(source: string): Promise<ModelSpec> {
   return new Promise((resolve, reject) => {
     let worker: Worker;
     try {
@@ -21,14 +21,14 @@ export function compileModel(source: string): Promise<BoxSpec[]> {
     };
     const timer = setTimeout(() => finish(() => reject(new Error("Model compilation timed out after 1500 ms."))), 1500);
 
-    worker.onmessage = (event: MessageEvent<{ boxes?: BoxSpec[]; error?: string }>) => {
+    worker.onmessage = (event: MessageEvent<{ boxes?: unknown; variables?: unknown; error?: string }>) => {
       const result = event.data;
       if (result?.error) {
         finish(() => reject(new Error(result.error)));
-      } else if (Array.isArray(result?.boxes)) {
+      } else if (Array.isArray(result?.boxes) && Array.isArray(result?.variables)) {
         try {
-          const boxes = validateBoxes(result.boxes);
-          finish(() => resolve(boxes));
+          const model = resolveModel(result.boxes, result.variables);
+          finish(() => resolve(model));
         } catch (error) {
           finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
