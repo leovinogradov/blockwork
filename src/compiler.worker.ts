@@ -1,7 +1,8 @@
 import { parseInches, resolveModel, type ModelSpec } from "./model";
+import { validateRectangles, type RectangleSpec } from './sketch';
 
-type CompileRequest = { source: string };
-type CompileResponse = ModelSpec | { error: string };
+type CompileRequest = { source: string; kind?: 'model' | 'sketch' };
+type CompileResponse = ModelSpec | { rectangles: RectangleSpec[] } | { error: string };
 type BoxHelper = (raw: unknown) => unknown;
 type InchHelper = (value: string | number) => number | string;
 
@@ -13,6 +14,22 @@ const workerScope = self as unknown as {
 workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) => {
   try {
     if (!event.data || typeof event.data.source !== "string") throw new Error("Compiler expected JavaScript source text.");
+    if (event.data.kind === 'sketch') {
+      const rectangles: unknown[] = [];
+      let nextId = 1;
+      const rectangle = (raw: unknown) => {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('rectangle(...) expects an object.');
+        if (rectangles.length >= 2000) throw new Error('A sketch can contain at most 2000 rectangles.');
+        const spec = raw as Record<string, unknown>;
+        const result = { id: spec.id ?? `rectangle-${nextId++}`, name: spec.name ?? `Rectangle ${rectangles.length + 1}`, size: spec.size, position: spec.position ?? [0, 0], color: spec.color ?? '#8795a1' };
+        rectangles.push(result);
+        return result;
+      };
+      const evaluate = new Function('rectangle', 'inch', `"use strict";\n${event.data.source}`) as (rectangleHelper: BoxHelper, inchHelper: InchHelper) => unknown;
+      evaluate(rectangle, parseInches);
+      workerScope.postMessage({ rectangles: validateRectangles(rectangles) });
+      return;
+    }
     const boxes: unknown[] = [];
     const variables: unknown[] = [];
     let nextId = 1;

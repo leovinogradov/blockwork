@@ -1,6 +1,6 @@
 # Blockwork
 
-Blockwork is a small, code-first 3D modeler for rectangular parts. It runs locally in your browser and stores the current model on this device.
+Blockwork is a small, code-first workshop for 3D models and 2D sketches. It runs locally in your browser and stores open files on this device.
 
 ## Run it
 
@@ -9,7 +9,23 @@ pnpm install
 pnpm dev
 ```
 
-Open the local Vite URL. The editable workbench model is in [examples/workbench.js](examples/workbench.js); choose **Open .js** and select that file to load it directly in the editor and model view. To make a production build, run `pnpm build`.
+Open the local Vite URL. The editable workbench model is in [examples/workbench.js](examples/workbench.js); choose **Open .js**, select that file, and choose **3D model** to load it in the editor and model view. To make a production build, run `pnpm build`.
+
+## Make a 2D sketch
+
+Choose **＋** to create a file or **Open .js** to load one, then select **2D sketch**. A sketch lies on the X/Y plane of a model and uses the same inch grid. Select **Rectangle** (or press **R**, or use the tree's **＋**), click the first corner, then click the opposite corner. A live outline and width/height readout follow the pointer; you can enter exact dimensions and press Enter instead of choosing the second corner. Dragging from one corner to the other also works. The tool remains active for another rectangle; press Escape or choose **Select** to finish. Rectangles are outlines by default. The tree and inspector let you duplicate, rename, position, resize, color, hide, and delete rectangles. The sketch view stays top-down and orthographic; drag in Select mode to pan and scroll to zoom.
+
+Sketch source uses `rectangle(spec)` with two-value `size` and `position` arrays. Run it with **Run** or Ctrl/Cmd+Enter. A sketch tab keeps its source, rectangles, undo history, and view state independently while open; local recovery preserves its source and last good geometry across reloads.
+
+```js
+rectangle({
+  id: 'outline',
+  name: 'Panel outline',
+  size: [inch('12'), inch('8')],
+  position: [inch('0'), inch('0')],
+  color: '#d9a76e'
+});
+```
 
 ## Make a model
 
@@ -54,10 +70,10 @@ Use `color: 'transparent'` for the preset translucent face color, or use an alph
 
 Change the source and choose **Run** (or press Ctrl/Cmd+Enter) to compile it. The previous model stays visible when the source has an error. The compiler runs in a disposable Web Worker with a short timeout. This keeps an accidental infinite loop from freezing the interface; it is not a security sandbox for untrusted JavaScript. Only open source you trust.
 
-GUI edits rewrite the editor as literal `box(...)` calls. A notice in the inspector explains this, and Undo can return to earlier source. While the editor contains an unrun draft, GUI edits pause so they do not discard that work. Draft source and the last successfully compiled model are saved locally and restored on reload. Use **Open .js** and **Download .js** to move source files in and out.
+GUI edits rewrite the editor as literal `box(...)` calls. A notice in the inspector explains this, and Undo can return to earlier source. While the editor contains an unrun draft, GUI edits pause so they do not discard that work. Use **＋** in the top header (or Ctrl/Cmd+N) to create a new file tab and choose its type. Use **Open .js** to select one or more files, then choose whether to open them as 3D models or 2D sketches; each opens in its own tab. You can also open more files later without replacing existing tabs. Select a tab and choose **Run** to compile its source. Each tab keeps its own geometry, draft, undo history, selection, and view settings while open. All open files, their drafts, and their last successfully compiled geometry are saved locally and restored on reload; undo history starts fresh after reload. **Download .js** downloads the active tab. Close a file with its tab's **×** button; **Save and close** downloads its current source as a `.js` file before removing the tab and its local recovery copy.
 
 ## View controls
 
 Drag with the middle mouse button to orbit. Hold Shift while dragging with the middle button, or use the right mouse button, to pan. Scroll the wheel to zoom. The viewport also shows these controls while you work. The toolbar provides isometric, front, right, and top views, perspective or orthographic projection, grid toggle, and fit-to-model. Keyboard shortcuts: **1** front, **3** right, **7** top, **F** fit, and **Delete** remove the selected box. Undo and redo use Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z when focus is outside text fields.
 
-Blockwork models boxes only. It does not currently create boolean operations or export CAD formats.
+3D models contain boxes and 2D sketches contain rectangles. Blockwork does not currently copy sketches into models, create boolean operations, or export CAD formats.

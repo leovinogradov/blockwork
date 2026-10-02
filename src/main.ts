@@ -3,9 +3,12 @@ import Picker from 'vanilla-picker';
 import { compileModel } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, formatInches, generateSource, parseInches, removeVariable, resolveModel, validateBoxes, type BoxSpec, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
-import { createViewport } from './viewport';
+import { createViewport, type SketchTool } from './viewport';
+import { createBlankDocument, createDocument, restoreWorkspace, serializeWorkspace, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
+import { generateSketchSource, rectangleFromCorners, validateRectangles, type RectangleSpec } from './sketch';
 
-const STORAGE_KEY = 'blockwork.project.v1';
+const STORAGE_KEY = 'blockwork.workspace.v2';
+const LEGACY_STORAGE_KEY = 'blockwork.project.v1';
 const TRANSPARENT_COLOR = 'transparent';
 const PALETTE = ['#d9a76e', '#86a9a3', '#bd8c79', '#8798b5', '#b5a477', '#a68fb3'];
 const COLOR_OPTIONS = [...PALETTE, TRANSPARENT_COLOR];
@@ -14,14 +17,18 @@ root.innerHTML = `
   <main class="app-shell">
     <header class="topbar">
       <div class="brand-lockup"><div class="brand-mark"><span></span><span></span><span></span></div><div class="brand-name">blockwork <small>WORKSHOP</small></div></div>
-      <div class="project-label"><span class="live-dot"></span><span id="project-name">Untitled model</span><span class="saved-state" id="save-state">Local</span></div>
+      <div class="header-documents">
+        <nav id="document-tabs" class="document-tabs" aria-label="Open files"></nav>
+        <button class="new-tab" id="new-tab" type="button" title="New file (Ctrl/Cmd+N)" aria-label="New file">＋</button>
+      </div>
       <div class="top-actions">
+        <span class="saved-state" id="save-state">Local</span>
         <button class="icon-button" id="undo" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo">↶</button>
         <button class="icon-button" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo">↷</button>
         <span class="top-divider"></span>
         <button class="button button-quiet" id="open-file">Open .js</button>
         <button class="button button-quiet" id="download">Download .js</button>
-        <input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" hidden />
+        <input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" multiple hidden />
       </div>
     </header>
     <div class="workspace">
@@ -40,6 +47,7 @@ root.innerHTML = `
             <button data-view="right" class="view-button" title="Right view (3)">RIGHT <kbd>3</kbd></button>
             <button data-view="top" class="view-button" title="Top view (7)">TOP <kbd>7</kbd></button>
           </div>
+          <div class="sketch-tool-group" role="group" aria-label="Sketch tools"><button id="select-sketch-tool" class="view-button active" type="button" aria-pressed="true" title="Select rectangles (Escape)">SELECT</button><button id="rectangle-sketch-tool" class="view-button" type="button" aria-pressed="false" title="Draw rectangle (R)">▭ RECTANGLE <kbd>R</kbd></button></div>
           <div class="stage-actions">
             <button id="projection" class="tool-button" title="Toggle perspective / orthographic">PERSPECTIVE</button>
             <button id="grid-toggle" class="tool-button active" title="Toggle grid">▦ <span>GRID</span></button>
@@ -56,7 +64,7 @@ root.innerHTML = `
       </aside>
       <section class="code-panel panel">
         <div class="code-header">
-          <div class="code-title"><div class="eyebrow">SOURCE</div><div class="heading-title"><span class="code-dot">●</span> model.js <span class="code-mode">JAVASCRIPT</span></div></div>
+          <div class="code-title"><div class="eyebrow">SOURCE</div><div class="heading-title"><span class="code-dot">●</span> <span id="source-name">model.js</span> <span class="code-mode">JAVASCRIPT</span></div></div>
           <div class="code-header-note" id="draft-note">Edit the code, then run it to update the model.</div>
           <div class="code-actions"><button class="button button-quiet button-small" id="reset-code">Reset example</button><button class="button button-run" id="run-code"><span>▶</span> Run <kbd>⌘↵</kbd></button></div>
         </div>
@@ -65,8 +73,10 @@ root.innerHTML = `
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div id="face-color-picker-anchor" class="face-color-picker-anchor"></div>
+    <dialog id="document-kind-dialog" class="variable-dialog document-kind-dialog"><form method="dialog"><div class="eyebrow">NEW WORKSPACE</div><h2 id="document-kind-title">What are you building?</h2><p>Choose the kind of file you want to work on.</p><div class="document-kind-options"><button type="submit" value="model" class="document-kind-option"><strong>◇ 3D model</strong><span>Build with boxes in three dimensions.</span></button><button type="submit" value="sketch" class="document-kind-option"><strong>▭ 2D sketch</strong><span>Draw rectangles on a flat plane.</span></button></div><div class="dialog-actions"><button type="submit" value="cancel" class="button button-quiet">Cancel</button></div></form></dialog>
     <dialog id="variable-dialog" class="variable-dialog"><form id="variable-form"><div class="eyebrow">MODEL VARIABLE</div><h2 id="variable-dialog-title">Add variable</h2><label class="field-label" for="variable-name">NAME</label><input id="variable-name" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-value">VALUE · INCHES</label><input id="variable-value" class="text-field" autocomplete="off" required/><div id="variable-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="variable-cancel">Cancel</button><button type="submit" class="button button-run" id="variable-submit">Create variable</button></div></form></dialog>
     <dialog id="delete-variable-dialog" class="variable-dialog"><form method="dialog"><div class="eyebrow">VARIABLE IN USE</div><h2>Replace references?</h2><p id="delete-variable-message" class="delete-variable-message"></p><div class="dialog-actions"><button value="cancel" class="button button-quiet">Cancel</button><button value="delete" class="button button-run">Delete and replace</button></div></form></dialog>
+    <dialog id="close-document-dialog" class="variable-dialog close-document-dialog" aria-labelledby="close-document-title" aria-describedby="close-document-message"><form method="dialog"><div class="eyebrow">CLOSE FILE</div><h2 id="close-document-title">Close <span id="close-document-name"></span>?</h2><p id="close-document-message">Closing removes this tab and its local recovery copy. Save and close downloads the current source as a .js file.</p><p id="close-document-draft" class="close-document-draft" hidden>This tab has an unrun source draft. Close without saving will discard it.</p><div class="dialog-actions close-document-actions"><button id="close-document-cancel" value="cancel" class="button button-quiet">Cancel</button><button id="close-document-save" type="button" class="button button-run">Save and close</button><button value="close" class="button button-danger">Close without saving</button></div></form></dialog>
     <div id="face-menu" class="face-menu" role="menu" aria-label="Box actions" hidden><div class="face-menu-caption" id="face-menu-caption"></div><div class="face-menu-actions"><button id="new-from-face" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">＋</span><span>New box from face</span></button><button id="duplicate-from-menu" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">⧉</span><span>Duplicate</span></button></div><div class="face-menu-reason" id="face-menu-reason"></div></div>
   </main>`;
 
@@ -75,6 +85,9 @@ const editor = $('#source-editor') as HTMLTextAreaElement;
 const viewportHost = $('#viewport');
 const listEl = $('#component-list');
 let boxes: BoxSpec[] = [];
+let rectangles: RectangleSpec[] = [];
+let documentKind: DocumentKind = 'model';
+let sketchTool: SketchTool = 'select';
 let variables: VariableSpec[] = [];
 let selectedId: string | null = null;
 let selectedVariable: string | null = null;
@@ -83,7 +96,9 @@ let contextFace: { boxId: string; face: FaceName; clientX: number; clientY: numb
 let draftDirty = false;
 let appliedSource = '';
 let runEpoch = 0;
-type Snapshot = { boxes: BoxSpec[]; variables: VariableSpec[]; source: string; hiddenIds: string[] };
+let documents: ModelDocument[] = [];
+let activeDocumentId = '';
+let pendingCloseDocumentId: string | null = null;
 let history: Snapshot[] = [];
 let historyAt = -1;
 let saveTimer = 0;
@@ -95,7 +110,25 @@ let hiddenBoxIds = new Set<string>();
 let offsetsOpenBoxId: string | null = null;
 let offsetsOpen = false;
 let faceColorPicker: Picker | null = null;
-const viewport = createViewport(viewportHost, (id, face) => { selectedId = id; selectedVariable = null; selectedFace = face ?? null; renderAll(); }, (hit) => openFaceMenu(hit));
+const viewport = createViewport(
+  viewportHost,
+  (id, face) => { selectedId = id; selectedVariable = null; selectedFace = documentKind === 'sketch' ? null : face ?? null; renderAll(); },
+  (hit) => openFaceMenu(hit),
+  (first, opposite) => {
+    if (documentKind !== 'sketch' || draftDirty) return;
+    try {
+      const rectangle = rectangleFromCorners(first, opposite, crypto.randomUUID(), `Rectangle ${rectangles.length + 1}`, PALETTE[rectangles.length % PALETTE.length]);
+      commitRectangles([...rectangles, rectangle], 'Rectangle drawn · click to draw another', { preserveView: true });
+      selectedId = rectangle.id; renderAll();
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not draw rectangle', true); }
+  },
+  (stage) => {
+    if (documentKind !== 'sketch' || draftDirty) return;
+    if (stage === 'first') setStatus('Rectangle tool · click the first corner');
+    else if (stage === 'opposite') setStatus('Click the opposite corner, or enter width and height');
+    else setStatus('Select rectangles · drag to pan');
+  },
+);
 
 function closeFaceColorPicker() { faceColorPicker?.hide(); }
 function openFaceColorPicker(trigger: HTMLElement) {
@@ -114,6 +147,9 @@ function openFaceColorPicker(trigger: HTMLElement) {
 }
 
 function cloneBoxes(value: BoxSpec[]) { return value.map((box) => ({ ...box, expressions: box.expressions ? { ...box.expressions } : undefined, size: [...box.size] as [number, number, number], position: [...box.position] as [number, number, number], relative: box.relative ? { ...box.relative, u: box.relative.u ? { ...box.relative.u } : undefined, v: box.relative.v ? { ...box.relative.v } : undefined } : undefined })); }
+function cloneRectangles(value: RectangleSpec[]) { return value.map((rectangle) => ({ ...rectangle, size: [...rectangle.size] as [number, number], position: [...rectangle.position] as [number, number] })); }
+function shapeCount() { return documentKind === 'sketch' ? rectangles.length : boxes.length; }
+function shapeLabel(count = shapeCount()) { return documentKind === 'sketch' ? count === 1 ? 'rectangle' : 'rectangles' : count === 1 ? 'box' : 'boxes'; }
 function setStatus(message: string, isError = false) {
   $('#status-text').textContent = message;
   $('.status-indicator').classList.toggle('status-error', isError);
@@ -125,15 +161,34 @@ function notify(message: string, isError = false) {
 function updateLineNumbers() { $('#line-numbers').textContent = Array.from({ length: Math.max(1, editor.value.split('\n').length) }, (_, i) => String(i + 1)).join('\n'); }
 function setEditor(source: string, dirty = false) { editor.value = source; draftDirty = dirty; updateLineNumbers(); syncDraftUI(); }
 function syncDraftUI() {
-  $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : 'Edit the code, then run it to update the model.';
+  renderDocumentTabs();
+  $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : `Edit the code, then run it to update the ${documentKind === 'sketch' ? 'sketch' : 'model'}.`;
   $('#draft-note').classList.toggle('warning-note', draftDirty);
   $('#add-box').toggleAttribute('disabled', draftDirty);
-  $('#add-variable').toggleAttribute('disabled', draftDirty);
-  $('#delete-box').toggleAttribute('disabled', draftDirty || !selectedBox());
-  $('#duplicate-box').toggleAttribute('disabled', draftDirty || !selectedBox());
+  $('#rectangle-sketch-tool').toggleAttribute('disabled', draftDirty);
+  $('#add-variable').toggleAttribute('disabled', draftDirty || documentKind === 'sketch');
+  $('#delete-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedRectangle() || selectedVariable));
+  $('#duplicate-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedRectangle()));
   renderList(); renderInspector();
 }
 function selectedBox() { return boxes.find((box) => box.id === selectedId) ?? null; }
+function selectedRectangle() { return rectangles.find((rectangle) => rectangle.id === selectedId) ?? null; }
+function renderSketchToolUI() {
+  for (const tool of ['select', 'rectangle'] as const) {
+    const button = $(`#${tool}-sketch-tool`);
+    button.classList.toggle('active', sketchTool === tool);
+    button.setAttribute('aria-pressed', String(sketchTool === tool));
+  }
+  $('.navigation-help').innerHTML = documentKind === 'sketch'
+    ? sketchTool === 'rectangle' ? '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>DRAG</span> pan <i>·</i> wheel zoom'
+    : '<span>MIDDLE DRAG</span> orbit <i>·</i> <span>SHIFT + MIDDLE</span> / right drag pan <i>·</i> wheel zoom';
+}
+function activateSketchTool(tool: SketchTool) {
+  if (documentKind !== 'sketch' || (tool === 'rectangle' && draftDirty)) return;
+  sketchTool = tool;
+  viewport.setSketchTool(tool);
+  renderSketchToolUI();
+}
 type VariableDialogResult = { name: string; value: number; expression?: string } | null;
 async function askVariable(name = '', title = 'Create missing variable'): Promise<VariableDialogResult> {
   const dialog = $('#variable-dialog') as HTMLDialogElement; const form = $('#variable-form') as HTMLFormElement;
@@ -178,6 +233,14 @@ async function changeVariableValue(name: string, text: string, isExpression: boo
 }
 function resolveModelFromUI(input: BoxSpec[], vars: VariableSpec[]) { return validateBoxes(input, vars); }
 function renderList() {
+  if (documentKind === 'sketch') {
+    $('#box-count').textContent = String(rectangles.length);
+    $('#tree-empty').classList.toggle('hidden', rectangles.length > 0);
+    listEl.innerHTML = rectangles.map((rectangle) => { const hidden = hiddenBoxIds.has(rectangle.id); return `<div class="component-row box-row ${rectangle.id === selectedId ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}"><button type="button" class="component-select" data-id="${escapeAttr(rectangle.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(rectangle.name)}"><span class="row-square" style="--cube:${escapeAttr(rectangle.color)}"></span><span class="row-name">${escapeHTML(rectangle.name)}</span><span class="row-size">${rectangle.size.map(formatInches).join(' × ')}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(rectangle.id)}" aria-label="${hidden ? 'Show' : 'Hide'} ${escapeAttr(rectangle.name)}" title="${hidden ? 'Show' : 'Hide'} ${escapeAttr(rectangle.name)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z"></path><circle cx="12" cy="12" r="2.5"></circle>${hidden ? '<path d="m4 4 16 16"></path>' : ''}</svg></button></div>`; }).join('');
+    listEl.querySelectorAll<HTMLButtonElement>('.component-select[data-id]').forEach((row) => row.addEventListener('click', () => { selectedId = row.dataset.id ?? null; viewport.select(selectedId); renderAll(); }));
+    listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', (event) => { event.stopPropagation(); toggleBoxVisibility(button.dataset.visibilityId!); }));
+    return;
+  }
   $('#box-count').textContent = String(boxes.length);
   $('#tree-empty').classList.toggle('hidden', boxes.length + variables.length > 0);
   listEl.innerHTML = `${variables.map((variable) => `<button class="component-row variable-row ${variable.name === selectedVariable ? 'selected' : ''}" data-variable="${escapeAttr(variable.name)}"><span class="variable-symbol">ƒ</span><span class="row-name">${escapeHTML(variable.name)}</span><span class="row-size">${formatInches(variable.value)} in</span></button>`).join('')}${boxes.map((box) => { const hidden = hiddenBoxIds.has(box.id); return `<div class="component-row box-row ${box.id === selectedId && !selectedVariable ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}"><button type="button" class="component-select" data-id="${escapeAttr(box.id)}" ${hidden ? 'disabled' : ''} aria-label="${escapeAttr(hidden ? `${box.name} is hidden` : `Select ${box.name}`)}"><span class="row-cube" style="--cube:${escapeAttr(box.color)}"></span><span class="row-name">${escapeHTML(box.name)}</span><span class="row-size">${box.size.map(formatInches).join(' × ')}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(box.id)}" aria-label="${escapeAttr(hidden ? `Show ${box.name}` : `Hide ${box.name}`)}" title="${escapeAttr(hidden ? `Show ${box.name}` : `Hide ${box.name}`)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z"></path><circle cx="12" cy="12" r="2.5"></circle>${hidden ? '<path d="m4 4 16 16"></path>' : ''}</svg></button></div>`; }).join('')}`;
@@ -209,6 +272,7 @@ function renderInspector() {
   faceColorPicker?.hide();
   faceColorPicker?.destroy();
   faceColorPicker = null;
+  if (documentKind === 'sketch') { renderSketchInspector(); return; }
   const box = selectedBox();
   const host = $('#inspector-content');
   const variable = variables.find((item) => item.name === selectedVariable);
@@ -301,16 +365,170 @@ function renderInspector() {
     colorTrigger.addEventListener('click', () => openFaceColorPicker(colorTrigger));
   }
 }
+function renderSketchInspector() {
+  const host = $('#inspector-content');
+  const rectangle = selectedRectangle();
+  $('#delete-box').toggleAttribute('disabled', draftDirty || !rectangle);
+  $('#duplicate-box').toggleAttribute('disabled', draftDirty || !rectangle);
+  if (!rectangle) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">▭</div><div>Select a rectangle</div><small>Choose a rectangle from the tree or sketch to edit it.</small></div><div class="source-warning">GUI edits regenerate the sketch source. Undo can restore earlier source.</div>'; return; }
+  host.innerHTML = `<div class="source-warning">GUI edits regenerate this source as rectangles. Undo can restore earlier source.</div><div class="object-heading"><span class="object-swatch" style="--cube:${escapeAttr(rectangle.color)}"></span><div><div class="object-name">${escapeHTML(rectangle.name)}</div><div class="object-id">RECTANGLE · ${escapeHTML(rectangle.id.slice(0, 8).toUpperCase())}</div></div></div>
+    <label class="field-label" for="rectangle-name">NAME</label><input id="rectangle-name" class="text-field" value="${escapeAttr(rectangle.name)}" ${draftDirty ? 'disabled' : ''}/>
+    <div class="section-label"><span>SIZE</span><span>INCHES</span></div><div class="sketch-fields">${['Width · X', 'Height · Y'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="size" data-index="${i}" value="${formatInches(rectangle.size[i])}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
+    <div class="section-label position-label"><span>POSITION <em>MIN CORNER</em></span><span>INCHES</span></div><div class="sketch-fields">${['X', 'Y'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="position" data-index="${i}" value="${formatInches(rectangle.position[i])}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
+    <div class="section-label color-label"><span>STROKE COLOR</span></div><div class="color-row"><div class="swatch-grid">${PALETTE.map((color) => `<button class="swatch ${color === rectangle.color ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" ${draftDirty ? 'disabled' : ''}></button>`).join('')}</div><input id="rectangle-color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(rectangle.color) ? rectangle.color : '#d9a76e')}" ${draftDirty ? 'disabled' : ''}/></div>
+    <div class="inspector-tip">Enter an inch value or arithmetic; press Enter or leave the field to apply it.</div>`;
+  host.querySelector<HTMLInputElement>('#rectangle-name')?.addEventListener('change', (event) => updateRectangle(rectangle.id, { name: (event.currentTarget as HTMLInputElement).value.trim() || rectangle.name }));
+  host.querySelectorAll<HTMLInputElement>('.measure-input input[data-kind]').forEach((input) => {
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } });
+    input.addEventListener('change', () => { try { const value = parseInches(input.value); const kind = input.dataset.kind as 'size' | 'position'; const index = Number(input.dataset.index); const next = [...rectangle[kind]] as [number, number]; next[index] = value; updateRectangle(rectangle.id, { [kind]: next }); } catch (error) { input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid dimension', true); } });
+  });
+  host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => updateRectangle(rectangle.id, { color: button.dataset.color! })));
+  host.querySelector<HTMLInputElement>('#rectangle-color')?.addEventListener('input', (event) => updateRectangle(rectangle.id, { color: (event.currentTarget as HTMLInputElement).value }));
+}
 function isDescendant(candidateId: string, ancestorId: string) { let current = boxes.find((box) => box.id === candidateId); const seen = new Set<string>(); while (current?.relative && !seen.has(current.id)) { if (current.relative.boxId === ancestorId) return true; seen.add(current.id); current = boxes.find((box) => box.id === current!.relative!.boxId); } return false; }
-function renderAll() { if (selectedId && hiddenBoxIds.has(selectedId)) { selectedId = null; selectedFace = null; } renderList(); renderInspector(); viewport.select(selectedId, selectedFace ?? undefined); $('#delete-box').toggleAttribute('disabled', draftDirty || (!selectedBox() && !selectedVariable)); $('#duplicate-box').toggleAttribute('disabled', draftDirty || !selectedBox()); $('#selection-status').textContent = selectedVariable ? `VARIABLE · ${selectedVariable.toUpperCase()}` : selectedBox() ? `SELECTED · ${selectedBox()!.name.toUpperCase()}${selectedFace ? ` · ${faceTitle(selectedFace).toUpperCase()} FACE` : ''}` : 'NO SELECTION'; }
+function renderAll() { if (selectedId && hiddenBoxIds.has(selectedId)) { selectedId = null; selectedFace = null; } renderList(); renderInspector(); viewport.select(selectedId, documentKind === 'sketch' ? null : selectedFace); $('#delete-box').toggleAttribute('disabled', draftDirty || (!selectedBox() && !selectedRectangle() && !selectedVariable)); $('#duplicate-box').toggleAttribute('disabled', draftDirty || (!selectedBox() && !selectedRectangle())); $('#selection-status').textContent = selectedVariable ? `VARIABLE · ${selectedVariable.toUpperCase()}` : selectedRectangle() ? `SELECTED · ${selectedRectangle()!.name.toUpperCase()}` : selectedBox() ? `SELECTED · ${selectedBox()!.name.toUpperCase()}${selectedFace ? ` · ${faceTitle(selectedFace).toUpperCase()} FACE` : ''}` : 'NO SELECTION'; }
 function escapeHTML(s: string) { return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!); }
 function escapeAttr(s: string) { return escapeHTML(s); }
+function activeDocument() { return documents.find((document) => document.id === activeDocumentId)!; }
+function captureDocument() {
+  const document = activeDocument();
+  if (!document) return;
+  Object.assign(document, structuredClone({
+    boxes, rectangles, variables, source: editor.value, appliedSource, draftDirty, hiddenBoxIds: [...hiddenBoxIds],
+    viewMode, projectionMode, gridVisible, history, historyAt, selectedId, selectedVariable, selectedFace,
+    error: $('#editor-error').hidden ? '' : $('#editor-error').textContent ?? '',
+    scrollTop: editor.scrollTop, scrollLeft: editor.scrollLeft, selectionStart: editor.selectionStart, selectionEnd: editor.selectionEnd,
+  }));
+}
+function renderDocumentTabs() {
+  const host = $('#document-tabs');
+  const focused = host.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.documentId : undefined;
+  const closing = host.contains(document.activeElement) && (document.activeElement as HTMLElement).classList.contains('document-close');
+  host.innerHTML = documents.map((document) => {
+    const active = document.id === activeDocumentId;
+    const pending = active ? draftDirty : document.draftDirty;
+    return `<div class="document-tab ${active ? 'active' : ''}"><button class="document-select" data-document-id="${escapeAttr(document.id)}" ${active ? 'aria-current="page"' : ''} title="${escapeAttr(document.name)} · ${document.kind === 'sketch' ? '2D sketch' : '3D model'}${pending ? ' · pending draft' : ''}"><span class="document-kind-mark" aria-hidden="true">${document.kind === 'sketch' ? '▭' : '◇'}</span><span>${escapeHTML(document.name)}</span>${pending ? '<span class="document-draft" aria-label="Pending draft">●</span>' : ''}</button><button class="document-close" data-document-id="${escapeAttr(document.id)}" aria-label="Close ${escapeAttr(document.name)}" title="Close file">×</button></div>`;
+  }).join('');
+  host.querySelectorAll<HTMLButtonElement>('.document-select').forEach((button) => button.addEventListener('click', () => switchDocument(button.dataset.documentId!)));
+  host.querySelectorAll<HTMLButtonElement>('.document-close').forEach((button) => button.addEventListener('click', () => closeDocument(button.dataset.documentId!)));
+  if (focused) Array.from(host.querySelectorAll<HTMLButtonElement>(closing ? '.document-close' : '.document-select')).find((button) => button.dataset.documentId === focused)?.focus();
+}
+function loadDocument(document: ModelDocument) {
+  // A worker from the previous tab must never apply its result to this tab.
+  runEpoch++;
+  $('#run-code').toggleAttribute('disabled', false);
+  closeFaceMenu(); closeFaceColorPicker();
+  activeDocumentId = document.id;
+  documentKind = document.kind; boxes = cloneBoxes(document.boxes); rectangles = cloneRectangles(document.rectangles); variables = cloneVariables(document.variables);
+  sketchTool = 'select';
+  appliedSource = document.appliedSource; hiddenBoxIds = new Set(document.hiddenBoxIds);
+  history = structuredClone(document.history); historyAt = document.historyAt;
+  selectedId = document.selectedId; selectedVariable = document.selectedVariable; selectedFace = document.selectedFace;
+  offsetsOpenBoxId = null; offsetsOpen = false;
+  viewMode = documentKind === 'sketch' ? 'top' : document.viewMode; projectionMode = documentKind === 'sketch' ? 'orthographic' : document.projectionMode; gridVisible = document.gridVisible;
+  root.classList.toggle('sketch-mode', documentKind === 'sketch');
+  viewport.setMode(documentKind);
+  if (documentKind === 'sketch') viewport.setRectangles(rectangles, { hiddenIds: hiddenBoxIds }); else viewport.setBoxes(boxes, { hiddenIds: hiddenBoxIds });
+  viewport.setProjection(projectionMode); viewport.setView(viewMode); viewport.setGrid(gridVisible);
+  root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === viewMode));
+  $('#projection').textContent = projectionMode.toUpperCase(); $('#grid-toggle').classList.toggle('active', gridVisible);
+  $('#source-name').textContent = document.name;
+  $('.sidebar .eyebrow').textContent = documentKind === 'sketch' ? 'SKETCH TREE' : 'MODEL TREE';
+  viewportHost.setAttribute('aria-label', documentKind === 'sketch' ? '2D sketch viewport' : '3D model viewport');
+  $('#fit').setAttribute('title', documentKind === 'sketch' ? 'Fit sketch (F)' : 'Fit model (F)');
+  renderSketchToolUI();
+  $('#add-box').setAttribute('title', documentKind === 'sketch' ? 'Add rectangle' : 'Add box');
+  $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Add a rectangle or run some sketch code.' : 'Add a box or run some model code.';
+  $('.tree-footer').querySelector('span:last-child')!.textContent = documentKind === 'sketch' ? 'Everything here is a rectangle.' : 'Everything here is a box.';
+  $('#reset-code').textContent = documentKind === 'sketch' ? 'Reset sketch' : 'Reset example';
+  $('#source-editor').setAttribute('aria-label', documentKind === 'sketch' ? 'JavaScript sketch source' : 'JavaScript model source');
+  setEditor(document.source, document.draftDirty);
+  editor.setSelectionRange(document.selectionStart, document.selectionEnd);
+  editor.scrollTop = document.scrollTop; editor.scrollLeft = document.scrollLeft; $('#line-numbers').scrollTop = editor.scrollTop;
+  $('#editor-error').textContent = document.error; $('#editor-error').hidden = !document.error;
+  renderAll();
+  Array.from($('#document-tabs').querySelectorAll<HTMLButtonElement>('.document-select')).find((button) => button.dataset.documentId === document.id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  setStatus(document.error ? 'Source has errors · last good work kept' : draftDirty ? `Loaded ${document.name} · press Run` : `Ready · ${shapeCount()} ${shapeLabel()}`, !!document.error);
+}
+function switchDocument(id: string) {
+  if (id === activeDocumentId) return;
+  const document = documents.find((item) => item.id === id);
+  if (!document) return;
+  captureDocument(); loadDocument(document); scheduleSave();
+}
+function closeDocument(id: string) {
+  captureDocument();
+  const document = documents.find((item) => item.id === id);
+  if (!document) return;
+  pendingCloseDocumentId = id;
+  $('#close-document-name').textContent = document.name;
+  $('#close-document-draft').hidden = !document.draftDirty;
+  const dialog = $('#close-document-dialog') as HTMLDialogElement;
+  dialog.returnValue = 'cancel';
+  dialog.showModal();
+  $('#close-document-cancel').focus();
+}
+function removeDocument(id: string) {
+  const index = documents.findIndex((document) => document.id === id);
+  if (index < 0) return;
+  documents.splice(index, 1);
+  if (!documents.length) {
+    documents.push(createBlankDocument(documents, documentKind));
+  }
+  if (id === activeDocumentId) loadDocument(documents[Math.min(index, documents.length - 1)]);
+  else renderDocumentTabs();
+  const nextId = documents[Math.min(index, documents.length - 1)].id;
+  Array.from($('#document-tabs').querySelectorAll<HTMLButtonElement>('.document-select')).find((button) => button.dataset.documentId === nextId)?.focus();
+  scheduleSave();
+}
+function downloadDocument(modelDocument: ModelDocument) {
+  const blob = new Blob([modelDocument.source], { type: 'text/javascript' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = modelDocument.name.replace(/\.(m?js|txt)$/i, '') + '.js';
+  document.body.append(anchor); anchor.click(); anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+  notify('Download requested');
+}
+const closeDocumentDialog = $('#close-document-dialog') as HTMLDialogElement;
+closeDocumentDialog.addEventListener('cancel', () => { closeDocumentDialog.returnValue = 'cancel'; });
+$('#close-document-save').addEventListener('click', () => {
+  const modelDocument = documents.find((item) => item.id === pendingCloseDocumentId);
+  if (!modelDocument) return closeDocumentDialog.close('cancel');
+  downloadDocument(modelDocument);
+  closeDocumentDialog.close('close');
+});
+closeDocumentDialog.addEventListener('close', () => {
+  const id = pendingCloseDocumentId;
+  pendingCloseDocumentId = null;
+  if (!id || closeDocumentDialog.returnValue !== 'close') return;
+  removeDocument(id);
+});
+function saveWorkspace() {
+  captureDocument();
+  try { localStorage.setItem(STORAGE_KEY, serializeWorkspace(documents, activeDocumentId)); $('#save-state').textContent = 'Saved locally'; }
+  catch { $('#save-state').textContent = 'Local only'; }
+}
 function scheduleSave() {
   $('#save-state').textContent = 'Saving…'; window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ boxes, variables, source: editor.value, appliedSource, draftDirty, viewMode, projectionMode, gridVisible, hiddenBoxIds: [...hiddenBoxIds] })); $('#save-state').textContent = 'Saved locally'; } catch { $('#save-state').textContent = 'Local only'; } }, 350);
+  saveTimer = window.setTimeout(saveWorkspace, 350);
 }
 function cloneVariables(value: VariableSpec[]) { return value.map((item) => ({ ...item })); }
-function recordAfterChange() { history = history.slice(0, historyAt + 1); history.push({ boxes: cloneBoxes(boxes), variables: cloneVariables(variables), source: editor.value, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } }
+function recordAfterChange(source = editor.value) { history = history.slice(0, historyAt + 1); history.push({ boxes: cloneBoxes(boxes), rectangles: cloneRectangles(rectangles), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } }
+function commitRectangles(next: RectangleSpec[], message: string, options?: { preserveView?: boolean }) {
+  rectangles = cloneRectangles(validateRectangles(next));
+  hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => rectangles.some((rectangle) => rectangle.id === id)));
+  if (!rectangles.some((rectangle) => rectangle.id === selectedId) || hiddenBoxIds.has(selectedId!)) selectedId = null;
+  viewport.setRectangles(rectangles, { ...options, hiddenIds: hiddenBoxIds });
+  const source = generateSketchSource(rectangles); setEditor(source); appliedSource = source;
+  recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
+}
+function updateRectangle(id: string, patch: Partial<RectangleSpec>) {
+  if (draftDirty) return notify('Run or discard the source draft before editing rectangles.', true);
+  try { commitRectangles(rectangles.map((rectangle) => rectangle.id === id ? { ...rectangle, ...patch } : rectangle), 'Rectangle updated', { preserveView: true }); }
+  catch (error) { notify(error instanceof Error ? error.message : 'Could not update rectangle', true); renderInspector(); }
+}
 function commitBoxes(next: BoxSpec[], message: string, options?: { preserveView?: boolean }, nextVariables = variables) {
   const resolved = resolveModel(next, nextVariables);
   const source = generateSource(resolved.boxes, resolved.variables);
@@ -319,12 +537,12 @@ function commitBoxes(next: BoxSpec[], message: string, options?: { preserveView?
   viewport.setBoxes(boxes, { ...options, hiddenIds: hiddenBoxIds }); setEditor(source); appliedSource = editor.value; recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
 function toggleBoxVisibility(id: string) {
-  if (draftDirty || !boxes.some((box) => box.id === id)) return;
+  if (draftDirty || !(documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === id)) return;
   const hidden = hiddenBoxIds.has(id);
   if (hidden) hiddenBoxIds.delete(id); else hiddenBoxIds.add(id);
   if (hidden && selectedId === id) { selectedId = null; selectedFace = null; }
   viewport.setVisibility(id, hidden);
-  recordAfterChange(); renderAll(); setStatus(hidden ? 'Box shown' : 'Box hidden'); scheduleSave();
+  recordAfterChange(); renderAll(); setStatus(hidden ? `${documentKind === 'sketch' ? 'Rectangle' : 'Box'} shown` : `${documentKind === 'sketch' ? 'Rectangle' : 'Box'} hidden`); scheduleSave();
 }
 function updateBox(id: string, patch: Partial<BoxSpec>) {
   if (draftDirty) return notify('Run or discard the source draft before editing boxes.', true);
@@ -334,6 +552,15 @@ function updateBox(id: string, patch: Partial<BoxSpec>) {
 }
 function addBox(duplicate = false) {
   if (draftDirty) return;
+  if (documentKind === 'sketch') {
+    if (!duplicate) { activateSketchTool('rectangle'); return; }
+    const base = duplicate ? selectedRectangle() : null;
+    if (duplicate && !base) return;
+    const rectangle: RectangleSpec = base ? { ...base, id: crypto.randomUUID(), name: `${base.name} copy`, size: [...base.size], position: [base.position[0] + 1, base.position[1] + 1] } : { id: crypto.randomUUID(), name: `Rectangle ${rectangles.length + 1}`, size: [3, 2], position: [0, 0], color: PALETTE[rectangles.length % PALETTE.length] };
+    try { commitRectangles([...rectangles, rectangle], base ? 'Rectangle duplicated' : 'Rectangle added'); selectedId = rectangle.id; renderAll(); }
+    catch (error) { notify(error instanceof Error ? error.message : 'Could not add rectangle', true); }
+    return;
+  }
   const base = duplicate ? selectedBox() : null;
   if (duplicate && !base) return;
   const box: BoxSpec = base ? { ...base, expressions: base.expressions ? { ...base.expressions } : undefined, relative: base.relative ? { ...base.relative, u: base.relative.u ? { ...base.relative.u } : undefined, v: base.relative.v ? { ...base.relative.v } : undefined } : undefined, id: crypto.randomUUID(), name: `${base.name} copy`, position: [base.position[0] + 1, base.position[1] + 1, base.position[2]] } : { id: crypto.randomUUID(), name: `Box ${boxes.length + 1}`, size: [2, 2, 2], position: [0, 0, 0], color: PALETTE[boxes.length % PALETTE.length] };
@@ -342,6 +569,7 @@ function addBox(duplicate = false) {
 }
 function deleteBox() {
   if (draftDirty) return;
+  if (documentKind === 'sketch') { if (selectedRectangle()) commitRectangles(rectangles.filter((rectangle) => rectangle.id !== selectedId), 'Rectangle deleted', { preserveView: true }); return; }
   if (selectedVariable) { deleteVariable(selectedVariable); return; }
   if (!selectedBox()) return;
   const deletedId = selectedId!;
@@ -403,24 +631,36 @@ function duplicateFromMenu() {
 async function runSource() {
   const epoch = ++runEpoch; const source = editor.value; $('#run-code').toggleAttribute('disabled', true); $('#editor-error').toggleAttribute('hidden', true); setStatus('Compiling…');
   try {
-    const compiled = await compileModel(source);
+    const compiled = documentKind === 'sketch' ? await compileModel(source, 'sketch') : await compileModel(source, 'model');
     if (epoch !== runEpoch) return;
-    boxes = cloneBoxes(validateBoxes(compiled.boxes, compiled.variables)); variables = cloneVariables(compiled.variables); hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => boxes.some((box) => box.id === id))); selectedId = null; selectedVariable = null; selectedFace = null; viewport.setBoxes(boxes, { hiddenIds: hiddenBoxIds }); viewport.fit();
-    appliedSource = source; history = history.slice(0, historyAt + 1); history.push({ boxes: cloneBoxes(boxes), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; }
+    if (documentKind === 'sketch') {
+      rectangles = cloneRectangles(compiled as RectangleSpec[]);
+      hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => rectangles.some((rectangle) => rectangle.id === id)));
+      viewport.setRectangles(rectangles, { hiddenIds: hiddenBoxIds });
+    } else {
+      const model = compiled as { boxes: BoxSpec[]; variables: VariableSpec[] };
+      boxes = cloneBoxes(validateBoxes(model.boxes, model.variables)); variables = cloneVariables(model.variables);
+      hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => boxes.some((box) => box.id === id)));
+      viewport.setBoxes(boxes, { hiddenIds: hiddenBoxIds });
+    }
+    selectedId = null; selectedVariable = null; selectedFace = null; viewport.fit();
+    appliedSource = source; recordAfterChange(source);
     if (editor.value === source) setEditor(source); else { draftDirty = true; syncDraftUI(); }
-    renderAll(); setStatus(editor.value === source ? `Updated · ${boxes.length} ${boxes.length === 1 ? 'box' : 'boxes'} · ${variables.length} variables` : 'Model updated · newer source draft retained'); scheduleSave();
+    renderAll(); setStatus(editor.value === source ? `Updated · ${shapeCount()} ${shapeLabel()}${documentKind === 'model' ? ` · ${variables.length} variables` : ''}` : 'Updated · newer source draft retained'); scheduleSave();
   } catch (err) {
     if (epoch !== runEpoch) return;
-    const message = err instanceof Error ? err.message : 'Could not compile model'; const errorEl = $('#editor-error'); errorEl.textContent = message; errorEl.hidden = false; setStatus('Source has errors · last good model kept', true); notify('Model unchanged. Fix the source error and run again.', true);
+    const message = err instanceof Error ? err.message : 'Could not compile source'; const errorEl = $('#editor-error'); errorEl.textContent = message; errorEl.hidden = false; setStatus('Source has errors · last good work kept', true); notify('Work unchanged. Fix the source error and run again.', true); scheduleSave();
   } finally { if (epoch === runEpoch) $('#run-code').toggleAttribute('disabled', false); }
 }
 function undoRedo(delta: number) {
   if (draftDirty) return notify('Run or discard the source draft before undoing.', true);
   const next = historyAt + delta; if (next < 0 || next >= history.length) return;
-  historyAt = next; variables = cloneVariables(history[historyAt].variables ?? []); boxes = cloneBoxes(validateBoxes(history[historyAt].boxes, variables)); hiddenBoxIds = new Set((history[historyAt].hiddenIds ?? []).filter((id) => boxes.some((box) => box.id === id))); appliedSource = history[historyAt].source; selectedId = null; selectedVariable = null; selectedFace = null; viewport.setBoxes(boxes, { preserveView: true, hiddenIds: hiddenBoxIds }); setEditor(history[historyAt].source); renderAll(); setStatus(delta < 0 ? 'Undo' : 'Redo'); scheduleSave();
+  historyAt = next; const snapshot = history[historyAt]; variables = cloneVariables(snapshot.variables ?? []); boxes = cloneBoxes(validateBoxes(snapshot.boxes, variables)); rectangles = cloneRectangles(validateRectangles(snapshot.rectangles ?? [])); hiddenBoxIds = new Set((snapshot.hiddenIds ?? []).filter((id) => (documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === id))); appliedSource = snapshot.source; selectedId = null; selectedVariable = null; selectedFace = null; if (documentKind === 'sketch') viewport.setRectangles(rectangles, { preserveView: true, hiddenIds: hiddenBoxIds }); else viewport.setBoxes(boxes, { preserveView: true, hiddenIds: hiddenBoxIds }); setEditor(snapshot.source); renderAll(); setStatus(delta < 0 ? 'Undo' : 'Redo'); scheduleSave();
 }
 
 $('#add-box').addEventListener('click', () => addBox());
+$('#select-sketch-tool').addEventListener('click', () => activateSketchTool('select'));
+$('#rectangle-sketch-tool').addEventListener('click', () => activateSketchTool('rectangle'));
 $('#add-variable').addEventListener('click', () => void addVariable());
 $('#delete-box').addEventListener('click', deleteBox);
 $('#duplicate-box').addEventListener('click', () => addBox(true));
@@ -432,37 +672,74 @@ document.addEventListener('pointerdown', (event) => {
 });
 window.addEventListener('resize', () => { closeFaceMenu(); closeFaceColorPicker(); });
 $('#run-code').addEventListener('click', runSource);
-$('#reset-code').addEventListener('click', () => { if (draftDirty && !window.confirm('Discard this unrun source draft and load the example?')) return; setEditor(DEFAULT_SOURCE, true); $('#project-name').textContent = 'Workbench example'; void runSource(); });
+$('#reset-code').addEventListener('click', () => { if (draftDirty && !window.confirm('Discard this unrun source draft and reset?')) return; setEditor(documentKind === 'sketch' ? generateSketchSource([]) : DEFAULT_SOURCE, true); void runSource(); });
+function chooseDocumentKind(title: string): Promise<DocumentKind | null> {
+  const dialog = $('#document-kind-dialog') as HTMLDialogElement;
+  $('#document-kind-dialog .eyebrow').textContent = title.startsWith('Open ') ? 'OPEN FILE' : 'NEW FILE';
+  $('#document-kind-title').textContent = title;
+  dialog.returnValue = 'cancel'; dialog.showModal();
+  return new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'model' || dialog.returnValue === 'sketch' ? dialog.returnValue : null), { once: true }));
+}
+async function newTab() {
+  const kind = await chooseDocumentKind('What are you building?');
+  if (!kind) return;
+  captureDocument();
+  const document = createBlankDocument(documents, kind);
+  documents.push(document);
+  loadDocument(document);
+  scheduleSave();
+  editor.focus();
+}
+$('#new-tab').addEventListener('click', newTab);
 $('#open-file').addEventListener('click', () => ($('#file-input') as HTMLInputElement).click());
-$('#file-input').addEventListener('change', async (event) => { const input = event.currentTarget as HTMLInputElement; const file = input.files?.[0]; if (!file) return; if (draftDirty && !window.confirm('Replace the pending source draft?')) { input.value = ''; return; } const source = await file.text(); setEditor(source, true); $('#project-name').textContent = file.name.replace(/\.(m?js|txt)$/i, '') || 'Opened model'; setStatus(`Loaded ${file.name} · press Run`); scheduleSave(); input.value = ''; });
-$('#download').addEventListener('click', () => { const blob = new Blob([editor.value], { type: 'text/javascript' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${($('#project-name').textContent || 'model').trim().replace(/[^a-z0-9-_]+/gi, '-').toLowerCase() || 'model'}.js`; document.body.append(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1500); notify('Download requested'); });
+$('#file-input').addEventListener('change', async (event) => {
+  const input = event.currentTarget as HTMLInputElement; const files = Array.from(input.files ?? []); input.value = '';
+  if (!files.length) return;
+  const opened: ModelDocument[] = []; const failed: string[] = [];
+  for (const file of files) {
+    const kind = await chooseDocumentKind(`Open ${file.name} as…`);
+    if (!kind) continue;
+    try { opened.push(createDocument(file.name, await file.text(), kind)); }
+    catch { failed.push(file.name); }
+  }
+  if (opened.length) { captureDocument(); documents.push(...opened); loadDocument(opened[0]); scheduleSave(); }
+  if (failed.length) notify(`Could not read: ${failed.join(', ')}`, true);
+  else if (opened.length > 1) notify(`Opened ${opened.length} files · select a tab and Run`);
+});
+$('#download').addEventListener('click', () => { captureDocument(); downloadDocument(activeDocument()); });
 $('#undo').addEventListener('click', () => undoRedo(-1)); $('#redo').addEventListener('click', () => undoRedo(1));
-editor.addEventListener('input', () => { draftDirty = true; updateLineNumbers(); syncDraftUI(); setStatus('Draft changed · run to update model'); scheduleSave(); });
+editor.addEventListener('input', () => { if (documentKind === 'sketch' && sketchTool === 'rectangle') activateSketchTool('select'); draftDirty = true; updateLineNumbers(); syncDraftUI(); setStatus(`Draft changed · run to update ${documentKind === 'sketch' ? 'sketch' : 'model'}`); scheduleSave(); });
 editor.addEventListener('scroll', () => { $('#line-numbers').scrollTop = editor.scrollTop; });
-root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.addEventListener('click', () => { viewMode = button.dataset.view as typeof viewMode; viewport.setView(viewMode); root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b === button)); scheduleSave(); }));
+root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.addEventListener('click', () => { if (documentKind === 'sketch') return; viewMode = button.dataset.view as typeof viewMode; viewport.setView(viewMode); root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b === button)); scheduleSave(); }));
 $('#fit').addEventListener('click', () => viewport.fit());
-$('#projection').addEventListener('click', () => { projectionMode = projectionMode === 'perspective' ? 'orthographic' : 'perspective'; viewport.setProjection(projectionMode); $('#projection').textContent = projectionMode === 'perspective' ? 'PERSPECTIVE' : 'ORTHOGRAPHIC'; scheduleSave(); });
+$('#projection').addEventListener('click', () => { if (documentKind === 'sketch') return; projectionMode = projectionMode === 'perspective' ? 'orthographic' : 'perspective'; viewport.setProjection(projectionMode); $('#projection').textContent = projectionMode === 'perspective' ? 'PERSPECTIVE' : 'ORTHOGRAPHIC'; scheduleSave(); });
 $('#grid-toggle').addEventListener('click', () => { gridVisible = !gridVisible; viewport.setGrid(gridVisible); $('#grid-toggle').classList.toggle('active', gridVisible); scheduleSave(); });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !$('#face-menu').hidden) { event.preventDefault(); event.stopPropagation(); closeFaceMenu(); return; }
-  if (($('#variable-dialog') as HTMLDialogElement).open || ($('#delete-variable-dialog') as HTMLDialogElement).open) return;
+  if (($('#document-kind-dialog') as HTMLDialogElement).open || ($('#variable-dialog') as HTMLDialogElement).open || ($('#delete-variable-dialog') as HTMLDialogElement).open || closeDocumentDialog.open) return;
   const target = event.target as HTMLElement; const textEditing = target instanceof HTMLTextAreaElement || target.isContentEditable; const editing = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || textEditing;
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void runSource(); }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); newTab(); }
+  else if (documentKind === 'sketch' && event.key === 'Escape' && sketchTool === 'rectangle') { event.preventDefault(); activateSketchTool('select'); }
+  else if (documentKind === 'sketch' && !editing && event.key.toLowerCase() === 'r') { event.preventDefault(); activateSketchTool('rectangle'); }
+  else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void runSource(); }
   else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !editing) { event.preventDefault(); undoRedo(event.shiftKey ? 1 : -1); }
   else if (!editing && event.key.toLowerCase() === 'f') viewport.fit();
-  else if (!editing && ['1', '3', '7'].includes(event.key)) { const view = ({ '1': 'front', '3': 'right', '7': 'top' } as const)[event.key as '1' | '3' | '7']; viewMode = view; viewport.setView(view); root.querySelector(`[data-view="${view}"]`)?.classList.add('active'); root.querySelectorAll(`[data-view]:not([data-view="${view}"])`).forEach((b) => b.classList.remove('active')); }
+  else if (!editing && documentKind === 'model' && ['1', '3', '7'].includes(event.key)) { const view = ({ '1': 'front', '3': 'right', '7': 'top' } as const)[event.key as '1' | '3' | '7']; viewMode = view; viewport.setView(view); root.querySelector(`[data-view="${view}"]`)?.classList.add('active'); root.querySelectorAll(`[data-view]:not([data-view="${view}"])`).forEach((b) => b.classList.remove('active')); }
   else if (!editing && (event.key === 'Delete' || event.key === 'Backspace')) { event.preventDefault(); deleteBox(); }
 });
 
 function restoreLocal() {
-  try { const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return false; const data = JSON.parse(raw) as { boxes?: BoxSpec[]; variables?: VariableSpec[]; source?: string; appliedSource?: string; draftDirty?: boolean; viewMode?: typeof viewMode; projectionMode?: typeof projectionMode; gridVisible?: boolean; hiddenBoxIds?: string[] };
-    if (typeof data.source !== 'string' || !Array.isArray(data.boxes)) return false; variables = Array.isArray(data.variables) ? cloneVariables(data.variables) : []; boxes = cloneBoxes(validateBoxes(data.boxes, variables)); hiddenBoxIds = new Set((Array.isArray(data.hiddenBoxIds) ? data.hiddenBoxIds : []).filter((id) => boxes.some((box) => box.id === id))); selectedId = null; selectedVariable = null; selectedFace = null; setEditor(data.source, data.draftDirty === true); appliedSource = typeof data.appliedSource === 'string' ? data.appliedSource : (data.draftDirty ? generateSource(boxes, variables) : data.source); viewport.setBoxes(boxes, { hiddenIds: hiddenBoxIds }); history = [{ boxes: cloneBoxes(boxes), variables: cloneVariables(variables), source: appliedSource, hiddenIds: [...hiddenBoxIds] }]; historyAt = 0;
-    if (data.viewMode) { viewMode = data.viewMode; viewport.setView(viewMode); root.querySelector(`[data-view="${viewMode}"]`)?.classList.add('active'); root.querySelectorAll(`[data-view]:not([data-view="${viewMode}"])`).forEach((b) => b.classList.remove('active')); }
-    if (data.projectionMode) { projectionMode = data.projectionMode; viewport.setProjection(projectionMode); $('#projection').textContent = projectionMode.toUpperCase(); }
-    if (typeof data.gridVisible === 'boolean') { gridVisible = data.gridVisible; viewport.setGrid(gridVisible); $('#grid-toggle').classList.toggle('active', gridVisible); }
-    $('#project-name').textContent = 'Recovered local model'; $('#save-state').textContent = 'Recovered'; return true;
-  } catch { return false; }
+  for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+    try {
+      const raw = localStorage.getItem(key); if (!raw) continue;
+      const restored = restoreWorkspace(raw); documents = restored.documents;
+      loadDocument(documents.find((document) => document.id === restored.activeId)!);
+      $('#save-state').textContent = 'Recovered'; return true;
+    } catch { /* Try the original single-model save if available. */ }
+  }
+  return false;
 }
-if (!restoreLocal()) { setEditor(DEFAULT_SOURCE, true); $('#project-name').textContent = 'Workbench example'; void runSource(); }
+if (!restoreLocal()) { const example = createDocument('Workbench example.js', DEFAULT_SOURCE); documents.push(example); loadDocument(example); void runSource(); }
 renderAll();
-window.addEventListener('beforeunload', () => viewport.dispose());
+window.addEventListener('pagehide', saveWorkspace);
+window.addEventListener('beforeunload', () => { saveWorkspace(); viewport.dispose(); });
