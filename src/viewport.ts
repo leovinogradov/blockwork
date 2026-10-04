@@ -1,19 +1,26 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
+import { withDepthBias } from './depth-bias';
 import { getFaceFrame, parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
+import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
+import { autoMeasurementPlane, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementOffsetAtPointer, measurementPlaneLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementPlane, type MeasurementPlaneChoice, type MeasurementSegment } from './measurements';
 
 export type ViewName = 'iso' | 'front' | 'right' | 'top';
 export type ProjectionMode = 'perspective' | 'orthographic';
 export type SketchTool = 'select' | 'rectangle' | 'line';
 
 export interface Viewport {
-  setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string> }): void;
+  setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[] }): void;
   setRectangles(rectangles: SketchShape[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string> }): void;
   setMode(mode: 'model' | 'sketch'): void;
   setSketchTool(tool: SketchTool): void;
+  setMeasurementTool(active: boolean): void;
+  setMeasurementPlane(plane: MeasurementPlaneChoice): void;
+  setMeasurements(measurements: Measurement[]): void;
   select(id: string | null, face?: FaceName | null): void;
   selectMany(ids: Iterable<string>): void;
   setVisibility(id: string, visible: boolean): void;
@@ -30,6 +37,8 @@ type BoxObject = {
   edges: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   size: THREE.Vector3;
   edgeColor: number;
+  sketch?: boolean;
+  bounds?: THREE.Box3;
 };
 
 const CLEAR_COLOR = 0x101923;
@@ -49,6 +58,8 @@ export function createViewport(
   onSketchDraw?: (first: [number, number], opposite: [number, number], tool: SketchTool) => void,
   onSketchStage?: (stage: 'idle' | 'first' | 'opposite') => void,
   onSketchSelect?: (ids: string[], action: SelectionAction) => void,
+  onMeasure?: (start: MeasurementAnchor, end: MeasurementAnchor, offset: number, plane: MeasurementPlane) => void,
+  onMeasureStage?: (stage: 'first' | 'second' | 'placement' | 'invalid' | 'same', plane?: MeasurementPlane) => void,
 ): Viewport {
   let disposed = false;
   let selectedId: string | null = null;
@@ -61,6 +72,15 @@ export function createViewport(
   let sketchHover: [number, number] | null = null;
   let lineInputMode: 'cartesian' | 'polar' = 'cartesian';
   let sketchRectangles: SketchShape[] = [];
+  let measurementTool = false;
+  let measurementPlane: MeasurementPlaneChoice = 'auto';
+  let measurementDraftPlane: MeasurementPlane | null = null;
+  let measurementFirst: MeasurementAnchor | null = null;
+  let measurementSecond: MeasurementAnchor | null = null;
+  let measurementPlacementCursor: [number, number] | null = null;
+  let measurementHover: ReturnType<typeof snapMeasurement> = null;
+  let measurementGeometry: MeasurementGeometry = {};
+  let measurementEdges: MeasurementSegment[] = [];
   let currentView: ViewName = 'iso';
   let animationFrame = 0;
   let pointerDown: { x: number; y: number; button: number; pointerId: number; dragged: boolean; additive: boolean; world?: [number, number] } | null = null;
@@ -93,7 +113,7 @@ export function createViewport(
     clearFaceHighlight();
     if (!selectedId || !selectedFace) return;
     const object = objects.get(selectedId);
-    if (!object) return;
+    if (!object || object.sketch) return;
 
     const frame = getFaceFrame(selectedFace);
     const dimensions = [object.size.x, object.size.y, object.size.z];
@@ -142,13 +162,30 @@ export function createViewport(
   fill.position.set(-80, 30, 50);
   scene.add(hemi, key, fill);
 
-  const grid = new THREE.GridHelper(240, 240, 0x304b58, 0x23343e);
+  const grid = new THREE.Group();
+  const inchGrid = new THREE.GridHelper(600, 600, 0x304b58, 0x23343e);
+  const footGrid = new THREE.GridHelper(600, 50, 0x304b58, 0x23343e);
+  footGrid.visible = false;
+  // This fill represents the averaged hidden inch lines, not a decorative
+  // ground color. Keep its color matched to the grid's non-axis line color;
+  // gridAppearanceForCamera computes its opacity and fade into visible lines.
+  const gridFill = new THREE.Mesh(
+    new THREE.PlaneGeometry(600, 600),
+    new THREE.MeshBasicMaterial({ color: 0x23343e, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  // GridHelper lies in local XZ; place the tint just beneath its lines.
+  gridFill.rotation.x = -Math.PI / 2;
+  gridFill.position.y = -0.002;
+  gridFill.renderOrder = -2;
+  inchGrid.renderOrder = footGrid.renderOrder = -1;
+  grid.add(gridFill, inchGrid, footGrid);
   grid.rotation.x = Math.PI / 2;
   grid.position.z = -0.015;
-  const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
+  const gridMaterials = [inchGrid, footGrid].flatMap((helper) => Array.isArray(helper.material) ? helper.material : [helper.material]);
   gridMaterials.forEach((material) => {
     material.transparent = true;
-    material.opacity = 0.48;
+    material.opacity = GRID_LINE_OPACITY;
+    material.depthWrite = false;
   });
   root.add(grid);
 
@@ -158,7 +195,7 @@ export function createViewport(
       new THREE.Vector3(-to.x, -to.y, -to.z),
       to,
     ]);
-    const material = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 });
+    const material = withDepthBias(new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 }), -1);
     axes.add(new THREE.Line(geometry, material));
   };
   addAxis(new THREE.Vector3(55, 0, 0), 0xe06262);
@@ -217,6 +254,121 @@ export function createViewport(
   selectionBox.className = 'sketch-selection-box';
   selectionBox.hidden = true;
   if (renderer) host.append(selectionBox);
+  const measurementOverlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  measurementOverlay.classList.add('measurement-overlay');
+  measurementOverlay.setAttribute('aria-label', 'Distance measurements');
+  if (renderer) host.append(measurementOverlay);
+  const makeAnnotation = (preview = false) => {
+    const group = document.createElementNS(measurementOverlay.namespaceURI, 'g');
+    group.setAttribute('class', preview ? 'measurement-annotation preview' : 'measurement-annotation');
+    const path = document.createElementNS(measurementOverlay.namespaceURI, 'path');
+    const background = document.createElementNS(measurementOverlay.namespaceURI, 'rect');
+    const text = document.createElementNS(measurementOverlay.namespaceURI, 'text');
+    text.setAttribute('text-anchor', 'middle'); text.setAttribute('dominant-baseline', 'central');
+    group.append(path, background, text); measurementOverlay.append(group);
+    return { group, path, background, text };
+  };
+  const previewAnnotation = makeAnnotation(true);
+  const measurementMarker = document.createElementNS(measurementOverlay.namespaceURI, 'circle');
+  measurementMarker.setAttribute('class', 'measurement-marker'); measurementMarker.setAttribute('r', '5');
+  measurementOverlay.append(measurementMarker);
+  let annotations: { measurement: Measurement; elements: ReturnType<typeof makeAnnotation> }[] = [];
+  const setMeasurements = (measurements: Measurement[]) => {
+    annotations.forEach(({ elements }) => elements.group.remove());
+    annotations = measurements.map((measurement) => ({ measurement, elements: makeAnnotation() }));
+  };
+  const projectMeasurementPoint = (p: [number, number, number]) => {
+    const clip = new THREE.Vector4(...p, 1).applyMatrix4(camera.matrixWorldInverse).applyMatrix4(camera.projectionMatrix);
+    return { x: (clip.x / clip.w + 1) * host.clientWidth / 2, y: (1 - clip.y / clip.w) * host.clientHeight / 2, w: clip.w, visible: clip.w > 0 && Math.abs(clip.z / clip.w) <= 1 };
+  };
+  const planeRaycaster = new THREE.Raycaster();
+  const pointOnMeasurementPlane = (frame: ReturnType<typeof measurementPlaneLayout>, point: [number, number]) => {
+    planeRaycaster.setFromCamera(new THREE.Vector2(point[0] / host.clientWidth * 2 - 1, 1 - point[1] / host.clientHeight * 2), camera);
+    if (Math.abs(planeRaycaster.ray.direction.dot(new THREE.Vector3(...frame.normal))) < 1e-6) return null;
+    const hit = planeRaycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...frame.normal), new THREE.Vector3(...frame.midpoint)), new THREE.Vector3());
+    return hit ? hit.toArray() as [number, number, number] : null;
+  };
+  const drawAnnotation = (elements: ReturnType<typeof makeAnnotation>, measurement: Measurement) => {
+    const hide = () => { elements.group.setAttribute('display', 'none'); elements.group.setAttribute('aria-hidden', 'true'); };
+    const resolved = resolveMeasurement(measurement, measurementGeometry);
+    if (!resolved || hiddenIds.has(measurement.id) || hiddenIds.has(measurement.start.objectId) || hiddenIds.has(measurement.end.objectId)) { hide(); return; }
+    const frame = measurementAnnotationLayout(resolved.start, resolved.end, measurement, sketchMode);
+    const view = camera.getWorldDirection(new THREE.Vector3());
+    if (Math.abs(view.dot(new THREE.Vector3(...frame.normal))) < 1e-5) { hide(); return; }
+    const a = projectMeasurementPoint(resolved.start), b = projectMeasurementPoint(resolved.end);
+    const pa = projectMeasurementPoint(frame.dimensionStart), pb = projectMeasurementPoint(frame.dimensionEnd), center = projectMeasurementPoint(frame.labelPosition);
+    if ([a, b, pa, pb, center].some((p) => !p.visible)) { hide(); return; }
+    const overhang = frame.lineHeight * .2;
+    const extend = (point: [number, number, number], dimension: [number, number, number]) => {
+      const delta = new THREE.Vector3(...dimension).sub(new THREE.Vector3(...point));
+      if (delta.lengthSq() < 1e-12) delta.set(...frame.perpendicular).multiplyScalar(Math.sign(frame.offset) || 1);
+      return projectMeasurementPoint(new THREE.Vector3(...dimension).addScaledVector(delta.normalize(), overhang).toArray() as [number, number, number]);
+    };
+    const tick = (point: [number, number, number], sign: number) => projectMeasurementPoint(point.map((n, i) => n + frame.perpendicular[i] * overhang * sign) as [number, number, number]);
+    const ea = extend(resolved.start, frame.dimensionStart), eb = extend(resolved.end, frame.dimensionEnd);
+    const ta = tick(frame.dimensionStart, -1), tb = tick(frame.dimensionStart, 1), tc = tick(frame.dimensionEnd, -1), td = tick(frame.dimensionEnd, 1);
+    elements.path.setAttribute('d', `M ${a.x} ${a.y} L ${ea.x} ${ea.y} M ${b.x} ${b.y} L ${eb.x} ${eb.y} M ${pa.x} ${pa.y} L ${pb.x} ${pb.y} M ${ta.x} ${ta.y} L ${tb.x} ${tb.y} M ${tc.x} ${tc.y} L ${td.x} ${td.y}`);
+    // SVG local coordinates are inches. Project a small world-space step to
+    // derive pixels per inch at the label, preserving its size as the view changes.
+    const u: [number, number, number] = sketchMode ? [1, 0, 0] : frame.direction;
+    const v: [number, number, number] = sketchMode ? [0, 1, 0] : frame.perpendicular;
+    const step = .001;
+    const px = projectMeasurementPoint(frame.labelPosition.map((n, i) => n + u[i] * step) as [number, number, number]);
+    const py = projectMeasurementPoint(frame.labelPosition.map((n, i) => n + v[i] * step) as [number, number, number]);
+    let ux = (px.x - center.x) / step, uy = (px.y - center.y) / step, vx = (py.x - center.x) / step, vy = (py.y - center.y) / step;
+    if (Math.hypot(ux, uy) < 1e-6 || Math.abs(ux * vy - uy * vx) < 1e-6) { hide(); return; }
+    if (ux < 0 || Math.abs(ux) < 1e-6 && uy > 0) { ux = -ux; uy = -uy; }
+    if (ux * vy - uy * vx < 0) { vx = -vx; vy = -vy; }
+    const transform = `matrix(${ux} ${uy} ${vx} ${vy} ${center.x} ${center.y})`;
+    const label = `${formatInches(resolved.distance)} in`, fontSize = frame.lineHeight / 1.2, padding = frame.lineHeight * .2;
+    const width = label.length * fontSize * .6 + padding * 2, height = frame.lineHeight + padding;
+    elements.text.textContent = label; elements.text.setAttribute('x', '0'); elements.text.setAttribute('y', '0');
+    const textNode = elements.text as SVGTextElement;
+    textNode.style.fontSize = `${fontSize}px`; textNode.style.lineHeight = `${frame.lineHeight}px`;
+    elements.background.setAttribute('x', String(-width / 2)); elements.background.setAttribute('y', String(-height / 2)); elements.background.setAttribute('width', String(width)); elements.background.setAttribute('height', String(height)); elements.background.setAttribute('rx', String(padding));
+    for (const node of [elements.text, elements.background]) node.setAttribute('transform', transform);
+    elements.background.setAttribute('vector-effect', 'non-scaling-stroke');
+    elements.group.classList.toggle('selected', selectedIds.has(measurement.id));
+    elements.group.removeAttribute('display'); elements.group.removeAttribute('aria-hidden');
+    elements.group.setAttribute('aria-label', `Distance ${label}${sketchMode ? '' : ' · ' + frame.plane.toUpperCase() + ' plane'}`);
+  };
+  const updateMeasurements = () => {
+    for (const { elements, measurement } of annotations) drawAnnotation(elements, measurement);
+    previewAnnotation.group.setAttribute('display', 'none'); previewAnnotation.group.setAttribute('aria-hidden', 'true'); measurementMarker.setAttribute('display', 'none');
+    if (!measurementTool) return;
+    if (measurementFirst && measurementSecond) {
+      drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), plane: measurementDraftPlane ?? 'xy' });
+      return;
+    }
+    if (measurementFirst && measurementHover) drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementHover.anchor, plane: measurementDraftPlane ?? 'xy' });
+    const point = measurementHover?.point ?? (measurementFirst ? resolveMeasurementAnchor(measurementFirst, measurementGeometry) : null);
+    if (point) {
+      const p = projectMeasurementPoint(point);
+      if (p.visible) { measurementMarker.removeAttribute('display'); measurementMarker.setAttribute('cx', String(p.x)); measurementMarker.setAttribute('cy', String(p.y)); }
+    }
+  };
+  const setMeasurementTool = (active: boolean) => {
+    measurementTool = active; clearMeasurementDraft(); pointerDown = null;
+    if (active) { setSketchTool('select'); onMeasureStage?.('first'); }
+    if (renderer) renderer.domElement.style.cursor = active ? 'crosshair' : sketchMode && sketchTool !== 'select' ? 'crosshair' : '';
+  };
+  const clearMeasurementDraft = () => {
+    measurementDraftPlane = null; measurementFirst = null; measurementSecond = null; measurementPlacementCursor = null; measurementHover = null;
+  };
+  const placementOffset = () => {
+    if (!measurementFirst || !measurementSecond || !measurementPlacementCursor) return 0;
+    const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry), end = resolveMeasurementAnchor(measurementSecond, measurementGeometry);
+    if (!start || !end) return 0;
+    const plane = sketchMode ? 'xy' : measurementDraftPlane ?? 'xy';
+    const frame = measurementPlaneLayout(start, end, plane);
+    const cursor = pointOnMeasurementPlane(frame, measurementPlacementCursor);
+    return cursor ? measurementOffsetAtPointer(start, end, cursor, plane) : DEFAULT_MEASUREMENT_OFFSET;
+  };
+  const updatePlacementCursor = (event: PointerEvent) => {
+    if (!renderer) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    measurementPlacementCursor = [event.clientX - rect.left, event.clientY - rect.top];
+  };
   const guideX = sketchOverlay.querySelector<HTMLElement>('.sketch-guide-x')!;
   const guideY = sketchOverlay.querySelector<HTMLElement>('.sketch-guide-y')!;
   const sizeBox = sketchOverlay.querySelector<HTMLElement>('.sketch-dimensions')!;
@@ -442,9 +594,9 @@ export function createViewport(
   };
 
   const applySelection = (ids: Iterable<string>, face: FaceName | null = null) => {
-    selectedIds = new Set([...ids].filter((id) => objects.has(id) && !hiddenIds.has(id)));
+    selectedIds = new Set([...ids].filter((id) => (objects.has(id) || annotations.some((a) => a.measurement.id === id)) && !hiddenIds.has(id)));
     selectedId = selectedIds.size === 1 ? [...selectedIds][0] : null;
-    selectedFace = selectedId ? face : null;
+    selectedFace = selectedId && objects.has(selectedId) && !objects.get(selectedId)?.sketch ? face : null;
     for (const [objectId, object] of objects) {
       object.edges.material.color.setHex(selectedIds.has(objectId) ? SELECTED_EDGE_COLOR : object.edgeColor);
       object.edges.material.opacity = selectedIds.has(objectId) ? 1 : 0.74;
@@ -454,16 +606,24 @@ export function createViewport(
   const select = (id: string | null, face: FaceName | null = null) => applySelection(id ? [id] : [], face);
   const selectMany = (ids: Iterable<string>) => applySelection(ids);
 
-  const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean; hiddenIds?: Iterable<string> } = {}) => {
+  const disposeObject = (object: BoxObject) => {
+    object.mesh.traverse((child) => {
+      if (child instanceof THREE.LineSegments) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); }
+    });
+    object.mesh.geometry.dispose(); object.mesh.material.dispose();
+    object.edges.geometry.dispose(); object.edges.material.dispose();
+    boxRoot.remove(object.mesh, object.edges);
+  };
+
+  const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[] } = {}) => {
+    measurementGeometry = { boxes, sketches: options.sketches ?? [] };
+    measurementHover = null;
+    if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
     clearFaceHighlight();
     hiddenIds.clear();
     for (const id of options.hiddenIds ?? []) hiddenIds.add(id);
     for (const object of objects.values()) {
-      object.mesh.geometry.dispose();
-      object.mesh.material.dispose();
-      object.edges.geometry.dispose();
-      object.edges.material.dispose();
-      boxRoot.remove(object.mesh, object.edges);
+      disposeObject(object);
     }
     objects.clear();
     sketchRectangles = [];
@@ -489,11 +649,11 @@ export function createViewport(
       mesh.position.set(x + width / 2, y + depth / 2, z + height / 2);
       mesh.userData.boxId = spec.id;
       const edgeGeometry = new THREE.EdgesGeometry(geometry, 20);
-      const edgeMaterial = new THREE.LineBasicMaterial({
+      const edgeMaterial = withDepthBias(new THREE.LineBasicMaterial({
         color: EDGE_COLOR,
         transparent: true,
         opacity: 0.74,
-      });
+      }), 0.5);
       const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
       edges.position.copy(mesh.position);
       const isVisible = !hiddenIds.has(spec.id);
@@ -506,19 +666,49 @@ export function createViewport(
         lastBounds.expandByPoint(new THREE.Vector3(x + width, y + depth, z + height));
       }
     }
+    for (const spec of options.sketches ?? []) {
+      const [width, height] = spec.size;
+      const frame = modelSketchFrame({ ...spec, groupId: undefined });
+      const u = new THREE.Vector3(...frame.u), v = new THREE.Vector3(...frame.v), normal = new THREE.Vector3(...frame.normal);
+      const geometry = new THREE.PlaneGeometry(width, height);
+      const color = parseFaceColor(spec.color).color;
+      const mesh = new THREE.Mesh(geometry, withDepthBias(new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }), 1));
+      mesh.position.set(...spec.position).addScaledVector(u, width / 2).addScaledVector(v, height / 2);
+      mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(u, v, normal));
+      mesh.userData.boxId = spec.id;
+      const edgeColor = new THREE.Color(color).getHex();
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), withDepthBias(new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.74 }), 2));
+      edges.position.copy(mesh.position); edges.quaternion.copy(mesh.quaternion);
+      for (const shape of spec.shapes) {
+        const [x, y] = shape.position, [dx, dy] = shape.size;
+        const a = new THREE.Vector3(x - width / 2, y - height / 2, 0);
+        const b = new THREE.Vector3(x + dx - width / 2, y + dy - height / 2, 0);
+        const points = shape.kind === 'line' ? [a, b] : [a, new THREE.Vector3(b.x, a.y, a.z), new THREE.Vector3(b.x, a.y, a.z), b, b, new THREE.Vector3(a.x, b.y, a.z), new THREE.Vector3(a.x, b.y, a.z), a];
+        const stroke = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points), withDepthBias(new THREE.LineBasicMaterial({ color: parseFaceColor(shape.color).color }), 2));
+        stroke.userData.boxId = spec.id;
+        mesh.add(stroke);
+      }
+      const bounds = new THREE.Box3().setFromPoints(modelSketchPoints(spec).map((point) => new THREE.Vector3(...point)));
+      mesh.visible = edges.visible = !hiddenIds.has(spec.id);
+      boxRoot.add(mesh, edges);
+      objects.set(spec.id, { id: spec.id, mesh, edges, size: new THREE.Vector3(width, height, 0), edgeColor, sketch: true, bounds });
+      if (mesh.visible) lastBounds.union(bounds);
+    }
     select(selectedId, selectedFace);
+    measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     if (!options.preserveView) fit();
   };
 
   const setRectangles = (rectangles: SketchShape[], options: { preserveView?: boolean; hiddenIds?: Iterable<string> } = {}) => {
+    measurementGeometry = { rectangles };
+    measurementHover = null;
+    if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
     clearFaceHighlight();
     sketchRectangles = rectangles;
     hiddenIds.clear();
     for (const id of options.hiddenIds ?? []) hiddenIds.add(id);
     for (const object of objects.values()) {
-      object.mesh.geometry.dispose(); object.mesh.material.dispose();
-      object.edges.geometry.dispose(); object.edges.material.dispose();
-      boxRoot.remove(object.mesh, object.edges);
+      disposeObject(object);
     }
     objects.clear(); lastBounds = new THREE.Box3();
     for (const spec of rectangles) {
@@ -529,24 +719,26 @@ export function createViewport(
       // Keep the plane raycastable while rendering the outline only.
       const material = new THREE.MeshBasicMaterial({ color: faceColor.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.set(x + width / 2, y + height / 2, 0.01);
+      mesh.position.set(x + width / 2, y + height / 2, 0);
       mesh.userData.boxId = spec.id;
       const edgeColor = new THREE.Color(faceColor.color).getHex();
       const edgeGeometry = spec.kind === 'line'
         ? new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-width / 2, -height / 2, 0), new THREE.Vector3(width / 2, height / 2, 0)])
         : new THREE.EdgesGeometry(geometry);
-      const edges = new THREE.LineSegments(edgeGeometry, new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.95 }));
-      edges.position.set(x + width / 2, y + height / 2, 0.02);
+      const edges = new THREE.LineSegments(edgeGeometry, withDepthBias(new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.95 }), 2));
+      edges.position.set(x + width / 2, y + height / 2, 0);
       mesh.visible = edges.visible = !hiddenIds.has(spec.id);
       boxRoot.add(mesh, edges);
       objects.set(spec.id, { id: spec.id, mesh, edges, size: new THREE.Vector3(width, height, 0), edgeColor });
       if (mesh.visible) { lastBounds.expandByPoint(new THREE.Vector3(x, y, 0)); lastBounds.expandByPoint(new THREE.Vector3(x + width, y + height, 0)); }
     }
     selectMany(selectedIds);
+    measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     if (!options.preserveView) fit();
   };
 
   const setMode = (mode: 'model' | 'sketch') => {
+    setMeasurementTool(false);
     sketchMode = mode === 'sketch';
     setSketchTool('select');
     axes.visible = !sketchMode;
@@ -563,14 +755,15 @@ export function createViewport(
 
   const setVisibility = (id: string, visible: boolean) => {
     const object = objects.get(id);
-    if (!object) return;
+    if (!object && !annotations.some((a) => a.measurement.id === id)) return;
     if (visible) hiddenIds.delete(id);
     else hiddenIds.add(id);
-    object.mesh.visible = visible;
-    object.edges.visible = visible;
+    if (object) { object.mesh.visible = visible; object.edges.visible = visible; }
+    if (!visible && (measurementFirst?.objectId === id || measurementSecond?.objectId === id)) { clearMeasurementDraft(); onMeasureStage?.('first'); }
+    measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     lastBounds.makeEmpty();
     for (const candidate of objects.values()) {
-      if (candidate.mesh.visible) lastBounds.union(new THREE.Box3().setFromObject(candidate.mesh));
+      if (candidate.mesh.visible) lastBounds.union(candidate.bounds ?? new THREE.Box3().setFromObject(candidate.mesh));
     }
     if (!visible && selectedIds.has(id)) applySelection([...selectedIds].filter((selected) => selected !== id), selectedFace);
   };
@@ -678,15 +871,37 @@ export function createViewport(
       }
       if (closest) return { boxId: closest, face: 'top' as FaceName };
     }
-    const hit = raycaster.intersectObjects([...objects.values()].filter((object) => !hiddenIds.has(object.id) && (!sketchMode || sketchRectangles.find((s) => s.id === object.id)?.kind !== 'line')).map((object) => object.mesh), false)[0];
+    raycaster.params.Line.threshold = Math.max(0.05, boundsRadius() / 150);
+    const hit = raycaster.intersectObjects([...objects.values()].filter((object) => !hiddenIds.has(object.id) && (!sketchMode || sketchRectangles.find((s) => s.id === object.id)?.kind !== 'line')).map((object) => object.mesh), true)[0];
     const boxId = hit?.object.userData.boxId as string | undefined;
+    if (boxId && objects.get(boxId)?.sketch) return { boxId, face: null };
     if (!hit?.face || !boxId) return null;
     if (sketchMode) return { boxId, face: 'top' as FaceName };
     const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
     return { boxId, face: faceFromNormal(normal) };
   };
 
+  const measurementAtPointer = (event: PointerEvent) => {
+    if (!renderer) return null;
+    const rect = renderer.domElement.getBoundingClientRect();
+    camera.updateMatrixWorld(); boxRoot.updateMatrixWorld(true);
+    return snapMeasurement([event.clientX - rect.left, event.clientY - rect.top], measurementEdges, projectMeasurementPoint, (point) => {
+      if (sketchMode) return true;
+      const p = new THREE.Vector3(...point).project(camera);
+      raycaster.setFromCamera(new THREE.Vector2(p.x, p.y), camera);
+      const hit = raycaster.intersectObjects([...objects.values()].filter((object) => !object.sketch && !hiddenIds.has(object.id)).map((object) => object.mesh), false)[0];
+      const distance = new THREE.Vector3(...point).sub(raycaster.ray.origin).dot(raycaster.ray.direction);
+      return !hit || hit.distance >= distance - Math.max(0.001, boundsRadius() * 1e-5);
+    });
+  };
+
   const onPointerDown = (event: PointerEvent) => {
+    if (measurementTool && event.button === 0) {
+      event.preventDefault(); event.stopImmediatePropagation(); renderer?.domElement.focus({ preventScroll: true });
+      renderer?.domElement.setPointerCapture(event.pointerId);
+      pointerDown = { x: event.clientX, y: event.clientY, button: 0, pointerId: event.pointerId, dragged: false, additive: false };
+      return;
+    }
     const drawing = sketchMode && sketchTool !== 'select' && event.button === 0;
     const selecting = sketchMode && sketchTool === 'select' && event.button === 0;
     const snap = drawing ? sketchPointAtPointer(event) : null;
@@ -703,6 +918,11 @@ export function createViewport(
     };
   };
   const onPointerMove = (event: PointerEvent) => {
+    if (measurementTool) {
+      if (measurementSecond) updatePlacementCursor(event);
+      else measurementHover = measurementAtPointer(event);
+      if (!pointerDown || pointerDown.button === 0) { event.stopImmediatePropagation(); return; }
+    }
     if (sketchMode && sketchTool !== 'select') {
       if (dimensionInputs.includes(document.activeElement as HTMLInputElement)) return;
       const snap = sketchPointAtPointer(event);
@@ -730,6 +950,28 @@ export function createViewport(
   };
   const onPointerUp = (event: PointerEvent) => {
     const down = pointerDown;
+    if (measurementTool && event.button === 0) {
+      event.preventDefault(); event.stopImmediatePropagation(); pointerDown = null;
+      if (renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+      if (!down || down.pointerId !== event.pointerId || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+      if (measurementFirst && measurementSecond) {
+        updatePlacementCursor(event); camera.updateMatrixWorld();
+        const first = measurementFirst, second = measurementSecond, offset = parseInches(placementOffset()), plane = measurementDraftPlane ?? 'xy';
+        clearMeasurementDraft(); onMeasure?.(first, second, offset, plane); onMeasureStage?.('first'); return;
+      }
+      const snap = measurementAtPointer(event); measurementHover = snap;
+      if (!snap) { onMeasureStage?.('invalid'); return; }
+      if (!measurementFirst) {
+        measurementFirst = structuredClone(snap.anchor);
+        const view = camera.getWorldDirection(new THREE.Vector3());
+        measurementDraftPlane = sketchMode ? 'xy' : measurementPlane === 'auto' ? autoMeasurementPlane([view.x, view.y, view.z]) : measurementPlane;
+        onMeasureStage?.('second', measurementDraftPlane); return;
+      }
+      const distance = resolveMeasurement({ id: 'preview', start: measurementFirst, end: snap.anchor }, measurementGeometry)?.distance ?? 0;
+      if (distance < 1 / 128) { onMeasureStage?.('same'); return; }
+      measurementSecond = structuredClone(snap.anchor); measurementHover = null;
+      updatePlacementCursor(event); onMeasureStage?.('placement'); return;
+    }
     if (sketchMode && sketchTool !== 'select') {
       if (event.button === 0) { event.preventDefault(); event.stopImmediatePropagation(); }
       if (event.button === 0 && renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
@@ -776,7 +1018,7 @@ export function createViewport(
     } else if (event.button === 2) {
       select(hit?.boxId ?? null, hit?.face ?? null);
       onSelect(hit?.boxId ?? null, hit?.face ?? null);
-      if (hit && !sketchMode) {
+      if (hit?.face && !sketchMode) {
         onFaceContext?.({ ...hit, clientX: event.clientX, clientY: event.clientY });
       }
     }
@@ -792,13 +1034,42 @@ export function createViewport(
     event.preventDefault();
     (sketchTool === 'line' ? lengthInput : widthInput).focus();
   };
-  const onPointerLeave = () => sketchOverlay.classList.remove('pointing');
-  const onPointerCancel = () => { pointerDown = null; selectionBox.hidden = true; };
+  const onPointerLeave = () => { sketchOverlay.classList.remove('pointing'); measurementHover = null; };
+  const onPointerCancel = () => { pointerDown = null; selectionBox.hidden = true; measurementHover = null; };
+
+  const clipCenter = new THREE.Vector3();
+  const clipDirection = new THREE.Vector3();
+  const clipSize = new THREE.Vector3();
+  const updateClippingRange = () => {
+    const center = lastBounds.isEmpty() ? clipCenter.set(0, 0, 0) : lastBounds.getCenter(clipCenter);
+    const radius = lastBounds.isEmpty() ? EMPTY_RADIUS : Math.max(lastBounds.getSize(clipSize).length() / 2, 2);
+    const distance = center.sub(camera.position).dot(camera.getWorldDirection(clipDirection));
+    // Keep the near plane outside the model's bounding sphere. A near plane
+    // fitted to the view gives the small line bias enough depth precision.
+    const near = Math.max(0.01, (distance - radius) / 2);
+    // Include the world-origin axes and 600-inch grid in the far range.
+    const far = Math.max(near + 1, distance + radius * 2, camera.position.length() + 500);
+    if (camera.near === near && camera.far === far) return;
+    camera.near = near;
+    camera.far = far;
+    camera.updateProjectionMatrix();
+  };
 
   const render = () => {
     if (disposed || !renderer) return;
     animationFrame = requestAnimationFrame(render);
     controls?.update();
+    const { inchBlend, fillOpacity } = gridAppearanceForCamera(camera, camera.position.distanceTo(controls?.target ?? grid.position), host.clientHeight);
+    inchGrid.visible = inchBlend > 0;
+    footGrid.visible = inchBlend < 1;
+    gridFill.visible = inchBlend < 1;
+    gridFill.material.opacity = fillOpacity;
+    for (const [helper, opacity] of [[inchGrid, inchBlend], [footGrid, 1 - inchBlend]] as const) {
+      const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
+      materials.forEach((material) => { material.opacity = GRID_LINE_OPACITY * opacity; });
+    }
+    updateClippingRange();
+    updateMeasurements();
     renderer.render(scene, camera);
   };
 
@@ -823,6 +1094,9 @@ export function createViewport(
     setRectangles,
     setMode,
     setSketchTool,
+    setMeasurementTool,
+    setMeasurementPlane: (plane) => { measurementPlane = plane; if (measurementFirst && plane !== 'auto') measurementDraftPlane = plane; },
+    setMeasurements,
     select,
     selectMany,
     setVisibility,
@@ -853,12 +1127,12 @@ export function createViewport(
       sketchPreview.geometry.dispose();
       sketchPreview.material.dispose();
       for (const object of objects.values()) {
-        object.mesh.geometry.dispose();
-        object.mesh.material.dispose();
-        object.edges.geometry.dispose();
-        object.edges.material.dispose();
+        disposeObject(object);
       }
-      grid.geometry.dispose();
+      inchGrid.geometry.dispose();
+      footGrid.geometry.dispose();
+      gridFill.geometry.dispose();
+      gridFill.material.dispose();
       gridMaterials.forEach((material) => material.dispose());
       axes.traverse((child) => {
         if (child instanceof THREE.Line) {
@@ -868,6 +1142,7 @@ export function createViewport(
       });
       renderer?.dispose();
       renderer?.domElement.remove();
+      measurementOverlay.remove();
       objects.clear();
     },
   };

@@ -1,5 +1,6 @@
-import { generateGroupSource, validateGroups, validateGroupMembers, type GroupSpec } from './groups';
+import { generateGroupedSource, validateGroups, validateGroupMembers, type GroupSpec } from './groups';
 import { formatInches, parseInches } from './model';
+import { serializeMeasurement, validateMeasurements, type Measurement } from './measurements';
 
 export type SketchShape = {
   /** Missing kind is a rectangle for compatibility with saved sketches. */
@@ -127,17 +128,19 @@ export function validateSketchShapes(input: unknown, inputGroups: unknown = []):
   return shapes;
 }
 
-export function generateSketchSource(rectangles: SketchShape[], groups: GroupSpec[] = []): string {
+export function generateSketchSource(rectangles: SketchShape[], groups: GroupSpec[] = [], order: string[] = [], measurements: Measurement[] = []): string {
   const lines = ['// Draw rectangles and lines on the X/Y plane. Dimensions are in inches.'];
-  lines.push(...generateGroupSource(groups));
-  for (const rectangle of validateSketchShapes(rectangles, groups)) {
+  const validGroups = validateGroups(groups, true);
+  lines.push(...generateGroupedSource<SketchShape | Measurement>(validGroups, [...validateSketchShapes(rectangles, validGroups), ...validateMeasurements(measurements, { rectangles, groups: validGroups })], (item) => 'start' in item ? serializeMeasurement(item) : serializeSketchShape(item), order));
+  return `${lines.join('\n')}\n`;
+}
+
+export function serializeSketchShape(rectangle: SketchShape): string {
     const vector = (values: [number, number]) => `[${values.map((value) => `inch(${JSON.stringify(formatInches(value))})`).join(', ')}]`;
     const geometry = rectangle.kind === 'line'
       ? `start: ${vector(rectangle.position)}, end: ${vector([rectangle.position[0] + rectangle.size[0], rectangle.position[1] + rectangle.size[1]])}`
       : `size: ${vector(rectangle.size)}, position: ${vector(rectangle.position)}`;
-    lines.push(`${rectangle.kind === 'line' ? 'line' : 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${geometry}, color: ${JSON.stringify(rectangle.color)}${rectangle.groupId ? `, groupId: ${JSON.stringify(rectangle.groupId)}` : ""} });`);
-  }
-  return `${lines.join('\n')}\n`;
+    return `${rectangle.kind === 'line' ? 'line' : 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
 }
 
 // Compatibility for existing rectangle-only consumers.

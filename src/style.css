@@ -48,7 +48,7 @@
 .document-tab:hover{background:#1b2731}
 .document-tab.active{background:#202d37;border-color:#354651;box-shadow:inset 0 2px 0 var(--amber);color:#e0e7eb}
 .document-select{display:flex;align-items:center;gap:7px;min-width:0;height:32px;padding:0 8px;border:0;background:transparent;color:inherit;font:11px var(--mono);cursor:pointer}
-.document-select>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.document-select>span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .document-draft{flex:none;color:var(--amber);font-size:8px}
 .document-close{flex:none;width:22px;height:24px;padding:0;margin-right:3px;border:0;border-radius:4px;background:transparent;color:#7e929f;font-size:16px;cursor:pointer}
 .document-close:hover{background:#36434d;color:#edf1f3}
@@ -86,6 +86,7 @@
 .document-kind-option span{font-size:12px;color:#afc0ca}
 .document-kind-mark{font-size:16px;color:#e8bd79;margin-right:5px}
 .row-square{width:14px;height:14px;flex:none;background:var(--cube);border:1px solid #c8d6db;box-shadow:2px 2px 0 #20343e}
+.row-sketch{width:16px;height:12px;flex:none;display:inline-block;border:1px dashed var(--cube);background:color-mix(in srgb,var(--cube) 12%,transparent);transform:skewY(-12deg)}
 .row-line{width:16px;height:2px;flex:none;background:var(--cube);transform:rotate(-35deg)}
 .sketch-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .line-inspector-heading{display:flex;align-items:center;gap:8px;margin-bottom:10px}
@@ -116,6 +117,10 @@
 .model-tool-actions .add-variable svg{width:14px;height:14px;display:block}
 .sketch-tools-section{display:none;flex:none;padding:12px;border-bottom:1px solid var(--line)}
 .sketch-mode .sketch-tools-section{display:block}
+.inspector-content{display:flex;flex-direction:column;min-height:0}
+/* Keep form controls at their intended sizes while allowing the panel to scroll. */
+.inspector-content>*{flex-shrink:0}
+.inspector-content>.inspector-empty{flex:1;height:auto;min-height:0}
 .sketch-tools-section h2{margin:0 0 9px;font-weight:500}
 .sketch-tool-group{display:grid;gap:4px}
 .sketch-tool-button{display:flex;align-items:center;gap:9px;width:100%;height:29px;padding:0 9px;border:1px solid #30404b;border-radius:4px;background:#18232c;color:#aebcc6;font-size:11px;text-align:left;cursor:pointer}
@@ -163,6 +168,8 @@
 .group-member small{margin-left:auto;color:var(--muted);font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ungroup-button{margin-top:16px;width:100%}
 
+.measure-computed{display:block;margin:5px 1px 0;color:var(--muted);font:10px/1.4 var(--mono);overflow-wrap:anywhere}
+
 /* Component tree drag feedback. */
 .component-row[data-tree-id]{position:relative;user-select:none}
 .component-row[draggable="true"] .component-select{cursor:grab}
@@ -175,3 +182,22 @@
 .tree-root-drop.tree-drop-inside{border-color:var(--amber);background:#493a25;color:#f0c58d}
 
 .sketch-selection-box{position:absolute;pointer-events:none;border:1px solid var(--amber);background:#e7ad6020;z-index:4}.sketch-selection-box[hidden]{display:none}.sketch-selected-components{list-style:none;padding:0;margin:8px 0 0;max-height:240px;overflow:auto}.sketch-selected-components li{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line-soft);font-size:11px}.selection-component-name{flex:1;min-width:0;overflow-wrap:anywhere}.sketch-selected-components small{color:var(--muted);font-size:9px}
+
+/* Screen-sized dimensions stay readable while orbiting and zooming. */
+.measurement-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
+.measurement-annotation path { fill: none; stroke: #8dd9d0; stroke-width: 1.2; }
+.measurement-annotation rect { fill: #152a32; stroke: #497e80; stroke-width: 1; }
+.measurement-annotation text { fill: #c8f4ed; font: 600 12px ui-monospace, monospace; }
+.measurement-annotation.preview { opacity: .75; }
+.measurement-annotation.preview path { stroke-dasharray: 4 3; }
+.measurement-marker { fill: #152a32; stroke: #b4fff2; stroke-width: 2; }
+#measure-tool.active { color: #b4fff2; background: #254441; border-color: #497e80; }
+#measure-tool { display: inline-flex; align-items: center; gap: 5px; }
+#measure-tool svg { width: 15px; height: 15px; flex-shrink: 0; }
+.measurement-symbol { width: 14px; height: 14px; flex-shrink: 0; color: #8dd9d0; }
+.measurement-value { color: #c8f4ed; font: 16px var(--mono); padding: 12px 0 18px; }
+.measurement-plane-tool { padding: 12px; border-bottom: 1px solid var(--line-soft); }
+.measurement-plane-tool .text-field { margin-bottom: 0; }
+.measurement-annotation.selected path, .measurement-annotation.selected rect { stroke: var(--amber); }
+.model-mode #add-sketch-group { display: none; }
+#add-sketch-group svg { width: 14px; height: 14px; display: block; }

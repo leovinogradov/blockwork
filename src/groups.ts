@@ -83,8 +83,29 @@ export function groupDescendants(groups: GroupSpec[], id: string): Set<string> {
   return result;
 }
 
-export function generateGroupSource(groups: GroupSpec[]): string[] {
-  return groups.map((g) => `group(${JSON.stringify(g)});`);
+/** Emit ownership as nested helper calls, using IDs only in the internal model. */
+export function generateGroupedSource<T extends { id: string; groupId?: string }>(groups: GroupSpec[], items: T[], serializeItem: (item: T) => string, order: string[] = []): string[] {
+  const entries = new Map<string, { parent?: string; group?: GroupSpec; item?: T }>();
+  for (const group of groups) entries.set(group.id, { parent: group.parentId, group });
+  for (const item of items) entries.set(item.id, { parent: item.groupId, item });
+  const children = new Map<string | undefined, string[]>();
+  for (const id of new Set([...order, ...entries.keys()])) {
+    const entry = entries.get(id);
+    if (!entry) continue;
+    const siblings = children.get(entry.parent) ?? [];
+    siblings.push(id); children.set(entry.parent, siblings);
+  }
+  const emit = (id: string, depth: number): string[] => {
+    const entry = entries.get(id)!;
+    const indent = '  '.repeat(depth), ending = depth === 0 ? ';' : ',';
+    if (entry.item) return `${serializeItem(entry.item)}${ending}`.split('\n').map((line) => `${indent}${line}`);
+    const { id: groupId, name, position } = entry.group!;
+    const properties = JSON.stringify({ id: groupId, name, position });
+    const members = children.get(id) ?? [];
+    if (!members.length) return [`${indent}group(${properties}, [])${ending}`];
+    return [`${indent}group(${properties}, [`, ...members.flatMap((child) => emit(child, depth + 1)), `${indent}])${ending}`];
+  };
+  return (children.get(undefined) ?? []).flatMap((id) => emit(id, 0));
 }
 
 /** Common mapping for future plane- or face-mounted sketch containers. */

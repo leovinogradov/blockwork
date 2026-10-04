@@ -1,0 +1,136 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Depth bias rendering checks</title>
+<style>body{font:16px system-ui;background:#101923;color:#ddd;padding:24px}canvas{width:258px;height:258px;image-rendering:pixelated}.sketch-drawing-overlay,.sketch-selection-box{display:none}</style>
+<h1>Depth bias rendering checks</h1>
+<p id="result">Running GPU checks…</p>
+<pre id="failures"></pre>
+<h2>App viewport preview</h2>
+<button id="projection">Toggle projection</button>
+<button id="top">Top</button>
+<button id="iso">Isometric</button>
+<div id="viewport" style="width:600px;height:450px;position:relative;margin-top:12px"></div>
+<script type="module">
+// Run npm run dev and open /tests/depth-bias.html to run these real-WebGL checks.
+import * as THREE from 'three';
+import { withDepthBias } from '/src/depth-bias.ts';
+import { createViewport } from '/src/viewport.ts';
+
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(513, 513);
+document.body.append(renderer.domElement);
+const target = new THREE.WebGLRenderTarget(513, 513);
+const pixels = new Uint8Array(513 * 513 * 4);
+const errors = [];
+let checks = 0;
+const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(-2, 0, 0), new THREE.Vector3(2, 0, 0),
+  new THREE.Vector3(0, -2, 0), new THREE.Vector3(0, 2, 0),
+]);
+
+function stroke(color, priority, z, transparent = false) {
+  const line = new THREE.LineSegments(lineGeometry,
+    withDepthBias(new THREE.LineBasicMaterial({ color, transparent, opacity: transparent ? 0.55 : 1 }), priority));
+  line.position.z = z;
+  return line;
+}
+
+function render(scene, camera) {
+  renderer.setRenderTarget(target);
+  renderer.render(scene, camera);
+  renderer.readRenderTargetPixels(target, 0, 0, 513, 513, pixels);
+  return pixels.slice();
+}
+
+function visibleColor(pixels, channel) {
+  let count = 0;
+  for (let y = 253; y <= 259; y++) for (let x = 253; x <= 259; x++) {
+    const offset = (y * 513 + x) * 4;
+    if (pixels[offset + channel] > 80 && pixels[offset + channel] > pixels[offset + (channel + 1) % 3] * 1.1
+      && pixels[offset + channel] > pixels[offset + (channel + 2) % 3] * 1.1) count++;
+  }
+  return count > 0;
+}
+
+for (const projection of ['perspective', 'orthographic']) {
+  for (const distance of [20, 200, 2000]) for (const angle of [0, 0.6, 1.1, 1.45]) {
+    const camera = projection === 'perspective'
+      ? new THREE.PerspectiveCamera(42, 1, distance / 4, distance + 500)
+      : new THREE.OrthographicCamera(-4, 4, 4, -4, distance / 4, distance + 500);
+    if (projection === 'perspective') camera.zoom = distance / 20;
+    camera.position.set(Math.sin(angle) * distance, 0, Math.cos(angle) * distance);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    const label = `${projection}, distance ${distance}, angle ${angle}`;
+    for (const [name, z, priority, color, expected] of [
+      ['coplanar sketch wins', 0, 2, 0xff0000, true],
+      ['sketch behind 1/64 inch stays hidden', -1 / 64, 2, 0xff0000, false],
+      ['sketch ahead 1/64 inch stays visible', 1 / 64, 2, 0xff0000, true],
+      ['coplanar axis stays hidden', 0, -1, 0x00ff00, false],
+      ['axis ahead 1/64 inch stays visible', 1 / 64, -1, 0x00ff00, true],
+    ]) {
+      const scene = new THREE.Scene();
+      const box = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 1), new THREE.MeshBasicMaterial({ color: 0x0000ff }));
+      box.position.z = -0.5;
+      scene.add(box, stroke(color, priority, z, true));
+      const actual = visibleColor(render(scene, camera), color === 0xff0000 ? 0 : 1);
+      checks++;
+      if (actual !== expected) errors.push(`${name}: ${label}`);
+      scene.traverse((object) => { if (object.material) object.material.dispose(); });
+      box.geometry.dispose();
+    }
+
+    // All three occupy the same surface; the opaque sketch must also beat
+    // the transparent axis, despite Three.js's separate render queues.
+    const scene = new THREE.Scene();
+    const box = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), new THREE.MeshBasicMaterial({ color: 0x0000ff }));
+    scene.add(box, stroke(0xff0000, 2, 0), stroke(0x00ff00, -1, 0, true));
+    const overlap = render(scene, camera);
+    checks++;
+    if (!visibleColor(overlap, 0) || visibleColor(overlap, 1)) errors.push(`sketch > box > axis: ${label}`);
+    scene.traverse((object) => { if (object.material) object.material.dispose(); });
+    box.geometry.dispose();
+
+    // Bias must not change the line's screen-space footprint.
+    const unbiased = new THREE.Scene();
+    const biased = new THREE.Scene();
+    unbiased.add(stroke(0xff0000, 0, 0));
+    biased.add(stroke(0xff0000, 2, 0));
+    const before = render(unbiased, camera);
+    const after = render(biased, camera);
+    checks++;
+    if (before.some((value, index) => value !== after[index])) errors.push(`screen positions changed: ${label}`);
+    unbiased.children[0].material.dispose();
+    biased.children[0].material.dispose();
+  }
+}
+
+renderer.setRenderTarget(null);
+const preview = new THREE.Scene();
+preview.background = new THREE.Color(0x101923);
+preview.add(new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.MeshBasicMaterial({ color: 0x334477 })), stroke(0xff0000, 2, 0));
+const previewCamera = new THREE.OrthographicCamera(-4, 4, 4, -4, 1, 100);
+previewCamera.position.z = 20;
+renderer.render(preview, previewCamera);
+document.getElementById('result').textContent = `${checks - errors.length}/${checks} checks passed${errors.length ? ' — FAILED' : ' — PASS'}`;
+document.getElementById('failures').textContent = errors.join('\n');
+target.dispose();
+
+const viewport = createViewport(document.getElementById('viewport'), () => {});
+const shapes = [{id:'line',kind:'line',name:'Line',position:[1,1],size:[6,6],color:'#ff5050'}];
+viewport.setBoxes([
+  {id:'box',name:'Box',size:[8,8,1],position:[0,0,-1],color:'#5075a0'},
+  {id:'cover',name:'Occluding box',size:[3,3,1],position:[2.5,2.5,0],color:'#779070'},
+], {sketches:[
+  {id:'sketch',name:'Coincident sketch',axis:'z',size:[8,8],position:[0,0,0],color:'#ffbb50',shapes},
+  {id:'hidden',name:'Sketch behind 1/64 inch',axis:'z',size:[8,8],position:[0,0,-1/64],color:'#ff0000',shapes:[]},
+]});
+viewport.setGrid(false);
+let projection = 'perspective';
+document.getElementById('projection').onclick = () => {
+  projection = projection === 'perspective' ? 'orthographic' : 'perspective';
+  viewport.setProjection(projection);
+};
+document.getElementById('top').onclick = () => viewport.setView('top');
+document.getElementById('iso').onclick = () => viewport.setView('iso');
+</script>

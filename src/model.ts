@@ -1,4 +1,6 @@
-import { generateGroupSource, groupOffset, validateGroups, validateGroupMembers, worldPosition, type GroupSpec } from './groups';
+import { generateGroupedSource, groupOffset, reparentPosition, validateGroups, validateGroupMembers, worldPosition, type GroupSpec } from './groups';
+import { serializeModelSketch, validateModelSketches, type ModelSketch } from './model-sketch';
+import { serializeMeasurement, validateMeasurements, type Measurement } from './measurements';
 
 /** The canonical model representation. All lengths are inches on a 1/64" grid. */
 export type FaceName = "front" | "back" | "left" | "right" | "top" | "bottom";
@@ -29,7 +31,7 @@ export type BoxSpec = {
 
 export type NumericField = "size.0" | "size.1" | "size.2" | "position.0" | "position.1" | "position.2" | "relative.offset" | "relative.u.offset" | "relative.v.offset";
 export type VariableSpec = { name: string; value: number; expression?: string };
-export type ModelSpec = { boxes: BoxSpec[]; variables: VariableSpec[]; groups?: GroupSpec[] };
+export type ModelSpec = { boxes: BoxSpec[]; variables: VariableSpec[]; groups?: GroupSpec[]; sketches?: ModelSketch[]; measurements?: Measurement[] };
 
 export class MissingVariableError extends Error {
   readonly variableName: string;
@@ -341,8 +343,8 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = [], gr
       const parent = byId.get(box.relative.boxId);
       if (!parent) throw new Error(`Box ${box.id} references unknown box ${box.relative.boxId}.`);
       if (parent === box) throw new Error(`Box ${box.id} cannot be placed relative to itself.`);
-      if (box.groupId !== parent.groupId) throw new Error('Face-linked boxes must belong to the same group. Detach the face link before changing groups.');
       resolve(parent);
+      // Face relations resolve in world space, even across group boundaries.
       const offset = groupOffset(groups, box.groupId);
       const placed = placeOnFace({ ...parent, position: worldPosition(parent.position, groups, parent.groupId) }, { ...box, position: worldPosition(box.position, groups, box.groupId) });
       box.position = placed.map((n, i) => n - offset[i]) as [number, number, number];
@@ -354,10 +356,26 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = [], gr
 }
 
 /** Resolve a complete model while retaining its editable expression text. */
-export function resolveModel(boxes: unknown, variables: unknown = [], inputGroups: unknown = []): ModelSpec {
+export function resolveModel(boxes: unknown, variables: unknown = [], inputGroups: unknown = [], inputSketches: unknown = [], inputMeasurements: unknown = []): ModelSpec {
   const resolvedVariables = resolveVariables(variables);
   const groups = validateGroups(inputGroups);
-  return { variables: resolvedVariables, boxes: validateBoxes(boxes, resolvedVariables, groups), ...(groups.length ? { groups } : {}) };
+  const validBoxes = validateBoxes(boxes, resolvedVariables, groups);
+  const sketches = validateModelSketches(inputSketches, groups);
+  const ids = new Set(validBoxes.map((box) => box.id));
+  for (const sketch of sketches) if (ids.has(sketch.id)) throw new Error(`Box and sketch IDs must be distinct: ${sketch.id}.`);
+  const measurements = validateMeasurements(inputMeasurements, { boxes: validBoxes, sketches, groups });
+  return { variables: resolvedVariables, boxes: validBoxes, ...(groups.length ? { groups } : {}), ...(sketches.length ? { sketches } : {}), ...(measurements.length ? { measurements } : {}) };
+}
+
+/** Change ownership without moving the box or removing its relative relations. */
+export function reparentBox(box: BoxSpec, groups: GroupSpec[], nextGroup?: string): BoxSpec {
+  const position = reparentPosition(box.position, groups, box.groupId, nextGroup);
+  const expressions = { ...box.expressions };
+  for (let i = 0; i < 3; i++) {
+    const key = `position.${i}` as NumericField, expression = expressions[key];
+    if (expression) expressions[key] = `(${expression}) + (${position[i] - box.position[i]})`;
+  }
+  return { ...box, position, expressions, groupId: nextGroup };
 }
 
 /**
@@ -405,23 +423,22 @@ export function createBoxFromFace(parent: BoxSpec, face: FaceName, id: string, g
 }
 
 /** Turn the current model into plain editable JavaScript for the code editor. */
-export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [], groups: GroupSpec[] = []): string {
-  const lines = ["// Edit these boxes to build your model. Dimensions are in inches."];
-  const model = resolveModel(boxes, variables, groups);
+export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [], groups: GroupSpec[] = [], order: string[] = [], sketches: ModelSketch[] = [], measurements: Measurement[] = []): string {
+  const lines = ["// Edit these components to build your model. Dimensions are in inches."];
+  const model = resolveModel(boxes, variables, groups, sketches, measurements);
   for (const variable of model.variables) {
     lines.push(`variable({ name: ${JSON.stringify(variable.name)}, value: inch(${JSON.stringify(formatInches(variable.value))})${variable.expression ? `, expression: ${JSON.stringify(variable.expression)}` : ""} });`);
   }
   if (model.variables.length) lines.push("");
-  lines.push(...generateGroupSource(groups));
-  for (const box of model.boxes) {
+  lines.push(...generateGroupedSource<BoxSpec | ModelSketch | Measurement>(model.groups ?? [], [...model.boxes, ...(model.sketches ?? []), ...(model.measurements ?? [])], (box) => {
+    if ('start' in box) return serializeMeasurement(box);
+    if ('shapes' in box) return serializeModelSketch(box);
     const field = (key: NumericField, value: number) => box.expressions?.[key] ? JSON.stringify(box.expressions[key]) : `inch(${JSON.stringify(formatInches(value))})`;
     const vec = (values: number[], prefix: "size" | "position") => `[${values.map((n, index) => field(`${prefix}.${index}` as NumericField, n)).join(", ")}]`;
     const relative = box.relative
       ? `, relative: { boxId: ${JSON.stringify(box.relative.boxId)}, face: ${JSON.stringify(box.relative.face)}, offset: ${field("relative.offset", box.relative.offset)}${box.relative.u ? `, u: { side: ${JSON.stringify(box.relative.u.side)}, offset: ${field("relative.u.offset", box.relative.u.offset)} }` : ""}${box.relative.v ? `, v: { side: ${JSON.stringify(box.relative.v.side)}, offset: ${field("relative.v.offset", box.relative.v.offset)} }` : ""} }`
       : "";
-    lines.push(
-      `box({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, size: ${vec(box.size, "size")}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${box.groupId ? `, groupId: ${JSON.stringify(box.groupId)}` : ""}${relative} });`,
-    );
-  }
+    return `box({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, size: ${vec(box.size, "size")}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${relative} })`;
+  }, order));
   return `${lines.join("\n")}\n`;
 }

@@ -76,7 +76,7 @@ Use `color: 'transparent'` for the preset translucent face color, or use an alph
 
 Change the source and choose **Run** (or press Ctrl/Cmd+Enter) to compile it. The previous model stays visible when the source has an error. The compiler runs in a disposable Web Worker with a short timeout. This keeps an accidental infinite loop from freezing the interface; it is not a security sandbox for untrusted JavaScript. Only open source you trust.
 
-GUI edits rewrite the editor as literal `box(...)` calls. A notice in the inspector explains this, and Undo can return to earlier source. While the editor contains an unrun draft, GUI edits pause so they do not discard that work. Use **＋** in the top header (or Ctrl/Cmd+N) to create a new file tab and choose its type. Use **Open .js** to select one or more files, then choose whether to open them as 3D models or 2D sketches; each opens in its own tab. You can also open more files later without replacing existing tabs. Select a tab and choose **Run** to compile its source. Each tab keeps its own geometry, draft, undo history, selection, and view settings while open. All open files, their drafts, and their last successfully compiled geometry are saved locally and restored on reload; undo history starts fresh after reload. **Download .js** downloads the active tab. Close a file with its tab's **×** button; **Save and close** downloads its current source as a `.js` file before removing the tab and its local recovery copy.
+GUI edits rewrite the editor as literal `box(...)` calls. A notice in the inspector explains this, and Undo can return to earlier source. While the editor contains an unrun draft, GUI edits pause so they do not discard that work. Use **＋** in the top header (or Ctrl/Cmd+N) to create a new file tab and choose its type. Use **Open .js** to select one or more files, then choose whether to open them as 3D models or 2D sketches; each opens in its own tab. You can also open more files later without replacing existing tabs. Select a tab and choose **Run** to compile its source. Each tab keeps its own geometry, draft, undo history, selection, and view settings while open. All open files, their drafts, and their last successfully compiled geometry are saved locally and restored on reload; undo history starts fresh after reload. **Save .js** (or Ctrl/Cmd+S) saves the active tab's current source, including any unrun draft. Supported browsers show a native save dialog and return the chosen filename, which updates the tab and source heading and is retained after reload. Other browsers download immediately with the existing filename as a suggestion; the tab name stays unchanged because ordinary downloads do not report the final saved filename. There is no additional in-app filename dialog. Canceling or failing a save keeps the previous name. Close a file with its tab's **×** button; **Save and close** uses the same save flow before removing the tab and its local recovery copy.
 
 ## Groups
 
@@ -86,19 +86,67 @@ The tree's disclosure arrow collapses a group and its children without hiding ge
 
 Drag a component row to rearrange the tree. A line marks insertion before or after a row; dropping onto the middle of a group adds the component to it, including empty or collapsed groups. Groups move with their whole branch, and cannot be dropped into their descendants. The **Move to top level** target appears during dragging and removes group membership. These moves preserve world positions, support undo/redo, and save the tree order locally for each file. Dragging pauses while the source has an unrun draft. Browser dragging, hitboxes, and auto-scrolling use Atlassian Pragmatic Drag and Drop; group transforms and undo remain in the app's model code.
 
-Source declares groups with `group(spec)` and connects objects using `groupId`. A group's `position` has three inch values, with Z = 0 in a 2D sketch. Use `parentId` to nest groups. IDs must be unique across groups and objects.
+Source defines membership by nesting helper calls in `group(properties, items)`. A group's `position` has three inch values, with Z = 0 in a 2D sketch. IDs must be unique across groups and objects.
 
 ```js
-group({ id: 'panel', name: 'Panel assembly', position: [12, 0, 0] });
-box({ id: 'board', name: 'Board', groupId: 'panel', size: [8, 4, 1], position: [0, 0, 0], color: '#d9a76e' });
+group({ id: 'panel', name: 'Panel assembly', position: [12, 0, 0] }, [
+  box({ id: 'board', name: 'Board', size: [8, 4, 1], position: [0, 0, 0], color: '#d9a76e' }),
+  group({ id: 'detail', name: 'Detail', position: [0, 4, 0] }, [
+    box({ id: 'trim', name: 'Trim', size: [8, 1, 1], position: [0, 0, 0], color: '#86a9a3' })
+  ])
+]);
 ```
 
-This board's world position is `[12, 0, 0]`. Changing the group position moves the board while its local position remains `[0, 0, 0]`. Lines and rectangles use the same `groupId` in sketch files. Face-linked boxes must share a group; moving a linked box into a different group detaches links that cross the group boundary at their current positions.
+The board's world position is `[12, 0, 0]`. Changing the group position moves its whole branch; positions remain local to the immediate group. Sketch files support the same form with `rectangle(...)` and `line(...)`. Use `group(properties, [])` for an empty group. Items must be values returned by geometry or group helpers; listing one item twice or assigning it to two groups is rejected. The compiler rejects `groupId` and `parentId` properties in source; nesting is the only membership syntax. Inspector selectors, member checkboxes, and tree moves write this same nested format while preserving world positions. Relative box placements can reference boxes in any group. Changing membership, creating groups, and ungrouping preserve those relations and their offset expressions. Relations resolve in world coordinates and keep following reference boxes after regrouping. If a member references a box outside its group, its anchored axes continue to follow that reference when the group moves; unconstrained axes move with the group.
 
-The shared group module provides plane frames, box-face frames, and a local-point mapping for future sketch containers on planes or box faces. Sketch mounting in a 3D model is not yet exposed in the UI.
+## Add a sketch to a model
+
+Choose **Add sketch** (□) in the model tools to add a finite 2D frame. The inspector sets its width, height, XYZ position, frame color, and normal axis. **X** places width/height along Y/Z, **Y** along X/Z, and **Z** along X/Y. Sketches have no thickness. Their rectangles and lines use coordinates local to that frame; resizing the frame does not scale or clip the shapes.
+
+Use **Reference sketch** to link an open 2D tab's last applied rectangles and lines to the frame. Run any pending draft in that tab before creating the reference. Linking flattens its groups, moves the geometry's minimum corner to the frame origin, and fits the frame to its initial bounds. Later drawing, property changes, group movement, successful source runs, and undo/redo in that tab automatically update every linked model sketch. The initial reference origin stays fixed, so moving shapes moves them inside the model frame. The model's plane, placement, and frame size stay independent of the drawing.
+
+**Edit contents in 2D** opens the linked tab if it is already open, preserving its draft, selection, and undo history. Otherwise it creates a linked sketch tab from the model's current contents. Links survive local workspace recovery. Models also embed their last applied shapes in `sketch(properties, items)`, so saved `.js` files work independently and closing the editor retains the geometry. Choose **No linked tab** to detach a reference. If the model has an unrun source draft, automatic updates change its last applied geometry while preserving the draft text.
+
+Model source saves sketches with the same container syntax as groups:
+
+```js
+sketch({
+  id: 'panel-drawing', name: 'Panel drawing',
+  axis: 'y', size: [12, 8], position: [0, -1, 4], color: '#86a9a3'
+}, [
+  rectangle({ id: 'outline', size: [12, 8], position: [0, 0] }),
+  line({ id: 'diagonal', start: [1, 1], end: [11, 7] })
+]);
+```
+
+Items must be results of `rectangle(...)` or `line(...)`; each shape belongs to one sketch. Shape IDs are local to their sketch. A sketch can be an item inside `group(properties, items)` alongside boxes and other groups. Its position is then local to that group. Tree selection, visibility, duplication, deletion, grouping, undo/redo, saving, and local recovery all work for model sketches.
+
+## Measurements
+
+Choose **Measure** in either a sketch or model, or press **M**. Click the start corner or edge point, click the end point, then move the mouse to preview the label's offset and click a third time to place it. The third click can be anywhere in the viewport, on either side of the measured points. The dimension has extension lines and an inch label whose physical offset and line height stay fixed while zooming or orbiting. Press **Escape** to cancel an unfinished dimension and finish using the tool. Measurements appear as regular selectable objects in the component tree. Select one to rename it, edit its label offset and line height, assign its group, hide it, duplicate it, or delete it.
+
+Endpoints reference the geometry by ID and a fraction along its edge, so moving or resizing a box, rectangle, line, mounted sketch, or group updates the dimension. Distances use the actual 2D or 3D separation, rounded for display to 1/64 inch. Measurements survive undo/redo, local recovery, and saving/opening source files. Hiding a referenced object hides its dimensions; deleting geometry removes its attached dimensions in the same undoable change.
+
+In 3D, the dimension line and label lie on an XY, XZ, or YZ plane through the midpoint of the endpoints. **Auto** chooses and saves the plane facing the camera when the first endpoint is clicked. The plane stays fixed as the camera moves or the second point is chosen. Change it manually in the Measure tool or the selected measurement's **Label plane** field. The displayed value remains the true distance, including separation perpendicular to the chosen plane. A plane viewed exactly edge-on hides its annotation until the view changes. In a 2D sketch, the same measurement record is used and the plane setting is ignored.
+
+Measurements can belong to groups for organization. Their group never applies a transform directly: moving a group affects a measurement only when it moves referenced geometry. Regrouping or ungrouping a measurement preserves its endpoints and offset. Grouped source uses `group(properties, [measurement(...)])`, just like other objects.
+
+Source uses `measurement({ id, name, start, end, offset, lineHeight, plane })`, with optional `name`, `offset`, `lineHeight`, and `plane`. Each endpoint has `objectId` and `coordinates`: three fractions for a box, two for a rectangle or sketch frame, or one for a line. Corner coordinates are 0 or 1; an edge has at most one fractional coordinate. For a shape inside a mounted sketch, also include `shapeId`. The third click saves the signed `offset` in inches along the fixed plane's perpendicular direction. The default offset is 2 inches. `lineHeight` is a positive inch distance, defaulting to **4 inches**. Both inspector fields accept decimal or fractional inches, like geometry fields. The renderer derives their projected size; it never stores screen-pixel dimensions. Older local workspaces with pixel offsets recover using the default inch offset on the same side of the dimension. Older source files need their pixel offset numbers adjusted to inches. Saved planes are `xy`, `xz`, or `yz`; omitted planes and legacy `auto` source use a fixed XY plane.
+
+```js
+// Measure a box's width at its front top edge.
+measurement({
+  id: 'width',
+  plane: 'xz',
+  offset: inch('6'),
+  lineHeight: inch('4'),
+  start: { objectId: 'board', coordinates: [0, 0, 1] },
+  end: { objectId: 'board', coordinates: [1, 0, 1] }
+});
+```
 
 ## View controls
 
 Drag with the middle mouse button to orbit. Hold Shift while dragging with the middle button, or use the right mouse button, to pan. Scroll the wheel to zoom. The viewport also shows these controls while you work. The toolbar provides isometric, front, right, and top views, perspective or orthographic projection, grid toggle, and fit-to-model. Keyboard shortcuts: **1** front, **3** right, **7** top, **F** fit, and **Delete** remove the selected box. Undo and redo use Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z when focus is outside text fields.
 
-3D models contain boxes and 2D sketches contain rectangles and lines. Blockwork does not currently copy sketches into models, create boolean operations, or export CAD formats.
+3D models contain boxes and mounted sketches; 2D sketch files contain rectangles and lines. Blockwork does not currently create boolean operations or export CAD formats.

@@ -3,7 +3,9 @@ import { resolveModel, type ModelSpec } from "./model";
 import { validateSketchShapes, type SketchShape } from './sketch';
 import type { DocumentKind } from './documents';
 
-export type CompiledSketch = { rectangles: SketchShape[]; groups: GroupSpec[] };
+import { validateMeasurements, type Measurement } from './measurements';
+
+export type CompiledSketch = { rectangles: SketchShape[]; groups: GroupSpec[]; measurements: Measurement[] };
 
 /** Compile editable model JavaScript in a disposable worker with a strict time limit. */
 export function compileModel(source: string, kind: 'model'): Promise<ModelSpec>;
@@ -29,16 +31,21 @@ export function compileModel(source: string, kind: DocumentKind = 'model'): Prom
     };
     const timer = setTimeout(() => finish(() => reject(new Error("Model compilation timed out after 1500 ms."))), 1500);
 
-    worker.onmessage = (event: MessageEvent<{ boxes?: unknown; rectangles?: unknown; variables?: unknown; groups?: unknown; error?: string }>) => {
+    worker.onmessage = (event: MessageEvent<{ boxes?: unknown; sketches?: unknown; rectangles?: unknown; variables?: unknown; groups?: unknown; measurements?: unknown; error?: string }>) => {
       const result = event.data;
       if (result?.error) {
         finish(() => reject(new Error(result.error)));
       } else if (kind === 'sketch' && Array.isArray(result?.rectangles)) {
-        try { const groups = validateGroups(result.groups ?? [], true); const rectangles = validateSketchShapes(result.rectangles, groups); finish(() => resolve({ rectangles, groups })); }
+        try {
+          const groups = validateGroups(result.groups ?? [], true);
+          const rectangles = validateSketchShapes(result.rectangles, groups);
+          const measurements = validateMeasurements(result.measurements, { rectangles, groups });
+          finish(() => resolve({ rectangles, groups, measurements }));
+        }
         catch (error) { finish(() => reject(error instanceof Error ? error : new Error(String(error)))); }
       } else if (Array.isArray(result?.boxes) && Array.isArray(result?.variables)) {
         try {
-          const model = resolveModel(result.boxes, result.variables, result.groups ?? []);
+          const model = resolveModel(result.boxes, result.variables, result.groups ?? [], result.sketches ?? [], result.measurements ?? []);
           finish(() => resolve(model));
         } catch (error) {
           finish(() => reject(error instanceof Error ? error : new Error(String(error))));
