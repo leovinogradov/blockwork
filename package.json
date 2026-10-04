@@ -9,6 +9,7 @@
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "lucide": "^1.49.0",
     "three": "^0.180.0",
     "vanilla-picker": "^2.12.3"
   },

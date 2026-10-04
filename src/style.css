@@ -71,6 +71,11 @@
 .button-danger{border-color:#874b47;background:#61312f;color:#ffe0dc}
 .button-danger:hover{border-color:#ac625b;background:#793c38;color:#fff}
 @media(max-width:480px){.close-document-actions{display:grid;grid-template-columns:1fr}.close-document-actions .button{width:100%}}
+.empty-cube svg{width:28px;height:28px;stroke-width:1.5}
+.document-kind-option strong{display:flex;align-items:center;gap:8px}
+.document-kind-option strong svg{width:19px;height:19px;flex:none;color:#e8bd79;stroke-width:1.75}
+.document-kind-mark{display:inline-flex;align-items:center;justify-content:center}
+.document-kind-mark svg{display:block;width:15px;height:15px;stroke-width:1.8}
 .document-kind-dialog{width:min(480px,calc(100vw - 28px));padding:24px}
 .document-kind-dialog h2{margin:8px 0 6px}
 .document-kind-dialog p{color:#aebdc6;font-size:12px;margin:0 0 18px}
@@ -81,21 +86,80 @@
 .document-kind-option span{font-size:12px;color:#afc0ca}
 .document-kind-mark{font-size:16px;color:#e8bd79;margin-right:5px}
 .row-square{width:14px;height:14px;flex:none;background:var(--cube);border:1px solid #c8d6db;box-shadow:2px 2px 0 #20343e}
+.row-line{width:16px;height:2px;flex:none;background:var(--cube);transform:rotate(-35deg)}
 .sketch-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.line-inspector-heading{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.line-inspector-symbol{color:var(--cube);font-size:26px;line-height:1;flex:none}
+.line-inspector-heading .text-field{margin:0;min-width:0;flex:1;font-weight:600;height:29px}
+.line-kind{color:var(--quiet);font:8px var(--mono);letter-spacing:.7px}
+.line-measurements{padding:8px;border:1px solid var(--line);border-radius:5px;background:#111a2155;gap:8px}
+.line-measurements .measure-field>span:first-child{font-size:9px;color:#a1b1bd;margin-bottom:4px}
+.line-measurements .measure-input{height:28px}
+.line-angle-hint{color:#718693;font:8px var(--mono);margin:7px 0 10px;text-align:center}
+.line-coordinates{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px 0}
+.line-coordinates summary{color:#a3b2bd;font-size:10px;cursor:pointer;user-select:none}
+.line-coordinates summary>span{float:right;color:var(--quiet);font:8px var(--mono);padding-top:2px}
+.line-coordinate-grid{display:grid;grid-template-columns:32px minmax(0,1fr) minmax(0,1fr);gap:6px;align-items:center;margin-top:9px}
+.coordinate-axis{font:8px var(--mono);color:#6f8493;text-align:center}
+.coordinate-point{font-size:9px;color:#8c9eab}
+.line-coordinate-grid .measure-field>span:first-child{display:none}
+.line-coordinate-grid .measure-input{height:27px}
+.line-color-row{display:flex;gap:9px;align-items:center;margin-top:13px}
+.line-color-row .swatch-grid{gap:6px;margin-left:auto}
+.line-color-row input[type=color]{width:21px;height:21px;border:1px solid #47545d;padding:1px;border-radius:4px;background:#111a21;cursor:pointer;flex:none}
+.line-inspector-tip{margin-top:10px;color:#60727f;font-size:9px}
 .sketch-mode .view-group [data-view="iso"],.sketch-mode .view-group [data-view="front"],.sketch-mode .view-group [data-view="right"],.sketch-mode #projection,.sketch-mode #add-variable{display:none}
-.sketch-tool-group{display:none;align-items:center;gap:4px;margin-right:auto}
-.sketch-mode .sketch-tool-group{display:flex}
-.sketch-tool-group .view-button.active{border-color:#a98050;color:#f3ca91;background:#30291f}
-.sketch-tool-group .view-button:disabled{opacity:.4;cursor:not-allowed}
+.model-tools-section{display:none;flex:none;height:76px;padding:10px 12px;border-bottom:1px solid var(--line);flex-direction:column;justify-content:space-between}
+.model-mode .model-tools-section{display:flex}
+.model-tools-section h2{margin:0;font-weight:500}
+.model-tool-actions{gap:6px}
+.model-tool-actions .add-variable svg{width:14px;height:14px;display:block}
+.sketch-tools-section{display:none;flex:none;padding:12px;border-bottom:1px solid var(--line)}
+.sketch-mode .sketch-tools-section{display:block}
+.sketch-tools-section h2{margin:0 0 9px;font-weight:500}
+.sketch-tool-group{display:grid;gap:4px}
+.sketch-tool-button{display:flex;align-items:center;gap:9px;width:100%;height:29px;padding:0 9px;border:1px solid #30404b;border-radius:4px;background:#18232c;color:#aebcc6;font-size:11px;text-align:left;cursor:pointer}
+.sketch-tool-button svg{width:15px;height:15px;flex:none;stroke-width:1.7}
+.sketch-tool-button kbd{margin-left:auto;color:#728693;font:9px var(--mono)}
+.sketch-tool-button:hover{border-color:#536775;background:#22313b;color:#edf2f5}
+.sketch-tool-button.active{border-color:#a98050;color:#f3ca91;background:#30291f}
+.sketch-tool-button.active kbd{color:#cfa979}
+.sketch-tool-button:disabled{opacity:.4;cursor:not-allowed}
 .sketch-drawing-overlay{position:absolute;inset:0;z-index:3;pointer-events:none;display:none}
 .sketch-drawing-overlay.active{display:block}
 .sketch-guide{position:absolute;display:none;pointer-events:none;opacity:.7}
 .sketch-drawing-overlay.pointing .sketch-guide{display:block}
 .sketch-guide-x{left:0;right:0;height:0;border-top:1px dashed #a98c63}
 .sketch-guide-y{top:0;bottom:0;width:0;border-left:1px dashed #6b9aab}
+.sketch-snap-indicator{position:absolute;display:none;transform:translate(10px,-23px);padding:2px 5px;border:1px solid #d6aa69;border-radius:3px;background:#30291f;color:#f5ce91;font:9px var(--mono);letter-spacing:.4px;white-space:nowrap}
+.sketch-snap-indicator::before{content:'';position:absolute;left:-14px;top:17px;width:7px;height:7px;border:2px solid #f5ce91;border-radius:50%;background:#18232b;box-shadow:0 0 0 2px #18232b}
+.sketch-drawing-overlay.pointing .sketch-snap-indicator.visible{display:block}
 .sketch-dimensions{position:absolute;display:none;min-width:128px;padding:7px;border:1px solid #778996;border-radius:5px;background:#17232cee;box-shadow:0 5px 18px #0007;color:#cbd6dc;font:10px var(--mono);pointer-events:none}
 .sketch-drawing-overlay.sizing .sketch-dimensions{display:grid;grid-template-columns:1fr 1fr;gap:4px}
 .sketch-dimensions label{display:flex;align-items:center;gap:4px}
+.sketch-dimensions label[hidden]{display:none}
+.sketch-dimensions.line-dimensions{width:240px}
+.sketch-dimensions.line-dimensions label{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:4px}
+.sketch-dimensions.line-dimensions input{width:100%}
+.line-polar-field span{color:#91a3ad;font-size:9px}
 .sketch-dimensions input{width:46px;min-width:0;height:23px;padding:2px 4px;border:1px solid #556b78;border-radius:3px;background:#0e1921;color:#e8f0f2;font:10px var(--mono);pointer-events:auto}
 .sketch-dimensions input.invalid{border-color:#de897e;color:#f2a99f}
 .sketch-dimensions small{grid-column:1/-1;color:#91a3ad;font:9px var(--mono)}
+
+/* Group containers share the model and sketch object tree. */
+.component-row[style*="--tree-depth"]{padding-left:calc(10px + var(--tree-depth,0)*14px)}
+.group-row{background:#1b2931;min-height:36px;border-left:2px solid #68808e;gap:5px}
+.group-row.selected{border-left-color:var(--amber);background:#303129}
+.group-collapse{width:18px;height:28px;flex:none;border:0;background:transparent;padding:0;color:#9badb8;cursor:pointer;font-size:15px}
+.group-symbol{color:#a3bdcc;font-size:20px;line-height:1;flex:none}
+.group-row .row-size{color:#8eabb9;max-width:55px}
+.group-membership-label{margin-top:16px}
+.group-member-list{max-height:260px;overflow-y:auto;margin-top:8px;border:1px solid var(--line);border-radius:4px}
+.group-member{display:flex;align-items:center;gap:8px;padding:8px;font-size:12px;border-bottom:1px solid var(--line-soft);cursor:pointer}
+.group-member:last-child{border-bottom:0}
+.group-member input{accent-color:var(--amber);flex:none}
+.group-member span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.group-member small{margin-left:auto;color:var(--muted);font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ungroup-button{margin-top:16px;width:100%}
+
+.sketch-selection-box{position:absolute;pointer-events:none;border:1px solid var(--amber);background:#e7ad6020;z-index:4}.sketch-selection-box[hidden]{display:none}.sketch-selected-components{list-style:none;padding:0;margin:8px 0 0;max-height:240px;overflow:auto}.sketch-selected-components li{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line-soft);font-size:11px}.selection-component-name{flex:1;min-width:0;overflow-wrap:anywhere}.sketch-selected-components small{color:var(--muted);font-size:9px}

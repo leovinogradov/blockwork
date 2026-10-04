@@ -1,8 +1,9 @@
+import { validateGroups, type GroupSpec } from './groups';
 import { parseInches, resolveModel, type ModelSpec } from "./model";
-import { validateRectangles, type RectangleSpec } from './sketch';
+import { validateSketchShapes, type SketchShape } from './sketch';
 
 type CompileRequest = { source: string; kind?: 'model' | 'sketch' };
-type CompileResponse = ModelSpec | { rectangles: RectangleSpec[] } | { error: string };
+type CompileResponse = ModelSpec | { rectangles: SketchShape[]; groups: GroupSpec[] } | { error: string };
 type BoxHelper = (raw: unknown) => unknown;
 type InchHelper = (value: string | number) => number | string;
 
@@ -14,6 +15,15 @@ const workerScope = self as unknown as {
 workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) => {
   try {
     if (!event.data || typeof event.data.source !== "string") throw new Error("Compiler expected JavaScript source text.");
+    const groups: unknown[] = [];
+    let nextGroupId = 1;
+    const group = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('group(...) expects an object.');
+      if (groups.length >= 2000) throw new Error('At most 2000 groups are allowed.');
+      const spec = raw as Record<string, unknown>;
+      const result = { ...spec, id: spec.id ?? `group-${nextGroupId++}`, name: spec.name ?? `Group ${groups.length + 1}` };
+      groups.push(result); return result;
+    };
     if (event.data.kind === 'sketch') {
       const rectangles: unknown[] = [];
       let nextId = 1;
@@ -21,13 +31,27 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('rectangle(...) expects an object.');
         if (rectangles.length >= 2000) throw new Error('A sketch can contain at most 2000 rectangles.');
         const spec = raw as Record<string, unknown>;
-        const result = { id: spec.id ?? `rectangle-${nextId++}`, name: spec.name ?? `Rectangle ${rectangles.length + 1}`, size: spec.size, position: spec.position ?? [0, 0], color: spec.color ?? '#8795a1' };
+        const result = { id: spec.id ?? `rectangle-${nextId++}`, name: spec.name ?? `Rectangle ${rectangles.length + 1}`, size: spec.size, position: spec.position ?? [0, 0], color: spec.color ?? '#ffffff', groupId: spec.groupId };
         rectangles.push(result);
         return result;
       };
-      const evaluate = new Function('rectangle', 'inch', `"use strict";\n${event.data.source}`) as (rectangleHelper: BoxHelper, inchHelper: InchHelper) => unknown;
-      evaluate(rectangle, parseInches);
-      workerScope.postMessage({ rectangles: validateRectangles(rectangles) });
+      const line = (raw: unknown) => {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('line(...) expects an object.');
+        const spec = raw as Record<string, unknown>;
+        const point = (value: unknown): [number, number] => {
+          if (!Array.isArray(value) || value.length !== 2 || value.some((v) => typeof v !== 'number' && typeof v !== 'string')) throw new Error('Line start and end must have two inch values.');
+          return value.map((v) => parseInches(v)) as [number, number];
+        };
+        const start = point(spec.start), end = point(spec.end);
+        if (rectangles.length >= 2000) throw new Error('A sketch can contain at most 2000 shapes.');
+        const result = { id: spec.id ?? `line-${nextId++}`, name: spec.name ?? `Line ${rectangles.length + 1}`, kind: 'line', position: start, size: [end[0] - start[0], end[1] - start[1]], color: spec.color ?? '#ffffff', groupId: spec.groupId };
+        rectangles.push(result);
+        return result;
+      };
+      const evaluate = new Function('rectangle', 'line', 'inch', 'group', `"use strict";\n${event.data.source}`) as (rectangleHelper: BoxHelper, lineHelper: BoxHelper, inchHelper: InchHelper, groupHelper: BoxHelper) => unknown;
+      evaluate(rectangle, line, parseInches, group);
+      const validGroups = validateGroups(groups, true);
+      workerScope.postMessage({ rectangles: validateSketchShapes(rectangles, validGroups), groups: validGroups });
       return;
     }
     const boxes: unknown[] = [];
@@ -54,7 +78,7 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
         name,
         size: vector(spec.size, "size"),
         position: vector(spec.position, "position", [0, 0, 0]),
-        color,
+        color, groupId: spec.groupId,
         ...(spec.expressions === undefined ? {} : { expressions: spec.expressions }),
         ...(spec.relative === undefined ? {} : { relative: (() => {
           if (!spec.relative || typeof spec.relative !== "object" || Array.isArray(spec.relative)) throw new Error("relative must be an object.");
@@ -84,9 +108,9 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
     // Only defer variable references; ordinary inch() calls retain legacy numeric behavior.
     const inch = (value: string | number) => typeof value === "string" && /\bvar\s*\(/.test(value) ? value : parseInches(value);
     // Code runs in a disposable worker. The main thread enforces a hard timeout.
-    const evaluate = new Function("box", "variable", "inch", `"use strict";\n${event.data.source}`) as (boxHelper: BoxHelper, variableHelper: BoxHelper, inchHelper: InchHelper) => unknown;
-    evaluate(box, variable, inch);
-    const response: CompileResponse = resolveModel(boxes, variables);
+    const evaluate = new Function("box", "variable", "inch", "group", `"use strict";\n${event.data.source}`) as (boxHelper: BoxHelper, variableHelper: BoxHelper, inchHelper: InchHelper, groupHelper: BoxHelper) => unknown;
+    evaluate(box, variable, inch, group);
+    const response: CompileResponse = resolveModel(boxes, variables, groups);
     workerScope.postMessage(response);
   } catch (error) {
     const response: CompileResponse = { error: error instanceof Error ? error.message : String(error) };

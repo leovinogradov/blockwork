@@ -1,16 +1,21 @@
 import './style.css';
 import Picker from 'vanilla-picker';
-import { compileModel } from './compiler';
+import { Box, createIcons, Eye, EyeOff, Group, MousePointer2, RectangleHorizontal, Slash, Square } from 'lucide';
+import { groupDescendants, groupOffset, reparentPosition, validateGroups, worldPosition, type GroupSpec, type Vector3 } from './groups';
+import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, formatInches, generateSource, parseInches, removeVariable, resolveModel, validateBoxes, type BoxSpec, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
 import { createViewport, type SketchTool } from './viewport';
-import { createBlankDocument, createDocument, restoreWorkspace, serializeWorkspace, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
-import { generateSketchSource, rectangleFromCorners, validateRectangles, type RectangleSpec } from './sketch';
+import { updateSketchSelection, type SelectionAction } from './sketch-selection';
+import { createBlankDocument, createDocument, restoreWorkspace, resolveSnapshot, serializeWorkspace, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
+import { generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
 
 const STORAGE_KEY = 'blockwork.workspace.v2';
 const LEGACY_STORAGE_KEY = 'blockwork.project.v1';
 const TRANSPARENT_COLOR = 'transparent';
 const PALETTE = ['#d9a76e', '#86a9a3', '#bd8c79', '#8798b5', '#b5a477', '#a68fb3'];
+const SKETCH_DEFAULT_COLOR = '#ffffff';
+const SKETCH_COLOR_OPTIONS = [SKETCH_DEFAULT_COLOR, ...PALETTE];
 const COLOR_OPTIONS = [...PALETTE, TRANSPARENT_COLOR];
 const root = document.querySelector<HTMLDivElement>('#app')!;
 root.innerHTML = `
@@ -33,10 +38,26 @@ root.innerHTML = `
     </header>
     <div class="workspace">
       <aside class="sidebar panel">
-        <div class="panel-heading"><div><div class="eyebrow">MODEL TREE</div><div class="heading-title">Components <span class="count-pill" id="box-count">0</span></div></div><div class="tree-actions"><button id="add-variable" class="add-variable" title="Add variable" aria-label="Add variable">ƒ</button><button id="add-box" class="add-button" title="Add box">＋</button></div></div>
+        <section class="sketch-tools-section" aria-labelledby="sketch-tools-title">
+          <h2 id="sketch-tools-title" class="eyebrow">DRAWING TOOLS</h2>
+          <div class="sketch-tool-group" role="group" aria-label="Sketch tools">
+            <button id="select-sketch-tool" class="sketch-tool-button active" type="button" aria-pressed="true" title="Select sketch shapes (Escape)"><i data-lucide="mouse-pointer-2" aria-hidden="true"></i><span>Select</span><kbd>Esc</kbd></button>
+            <button id="rectangle-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw rectangle (R)"><i data-lucide="rectangle-horizontal" aria-hidden="true"></i><span>Rectangle</span><kbd>R</kbd></button>
+            <button id="line-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw line (L)"><i data-lucide="slash" aria-hidden="true"></i><span>Line</span><kbd>L</kbd></button>
+          </div>
+        </section>
+        <section class="model-tools-section" aria-labelledby="model-tools-title">
+          <h2 id="model-tools-title" class="eyebrow">TOOLS</h2>
+          <div class="tree-actions model-tool-actions" role="group" aria-label="Model tools">
+            <button id="add-group" class="add-variable" title="Create group" aria-label="Create group"><i data-lucide="group" aria-hidden="true"></i></button>
+            <button id="add-variable" class="add-variable" title="Add variable" aria-label="Add variable">ƒ</button>
+            <button id="add-box" class="add-button" title="Add box" aria-label="Add box">＋</button>
+          </div>
+        </section>
+        <div class="panel-heading"><div><div class="eyebrow">MODEL TREE</div><div class="heading-title">Components <span class="count-pill" id="box-count">0</span></div></div></div>
         <div class="tree-caption"><span>OBJECT</span><span>SIZE · IN</span></div>
         <div id="component-list" class="component-list"></div>
-        <div class="tree-empty" id="tree-empty"><div class="empty-cube">◇</div><div>No components yet</div><small>Add a box or run some model code.</small></div>
+        <div class="tree-empty" id="tree-empty"><div class="empty-cube"><i data-lucide="box" aria-hidden="true"></i></div><div>No components yet</div><small>Add a box or run some model code.</small></div>
         <div class="tree-footer"><span class="key-chip">⌘</span><span>Everything here is a box.</span></div>
       </aside>
       <section class="stage panel">
@@ -47,7 +68,6 @@ root.innerHTML = `
             <button data-view="right" class="view-button" title="Right view (3)">RIGHT <kbd>3</kbd></button>
             <button data-view="top" class="view-button" title="Top view (7)">TOP <kbd>7</kbd></button>
           </div>
-          <div class="sketch-tool-group" role="group" aria-label="Sketch tools"><button id="select-sketch-tool" class="view-button active" type="button" aria-pressed="true" title="Select rectangles (Escape)">SELECT</button><button id="rectangle-sketch-tool" class="view-button" type="button" aria-pressed="false" title="Draw rectangle (R)">▭ RECTANGLE <kbd>R</kbd></button></div>
           <div class="stage-actions">
             <button id="projection" class="tool-button" title="Toggle perspective / orthographic">PERSPECTIVE</button>
             <button id="grid-toggle" class="tool-button active" title="Toggle grid">▦ <span>GRID</span></button>
@@ -73,23 +93,30 @@ root.innerHTML = `
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div id="face-color-picker-anchor" class="face-color-picker-anchor"></div>
-    <dialog id="document-kind-dialog" class="variable-dialog document-kind-dialog"><form method="dialog"><div class="eyebrow">NEW WORKSPACE</div><h2 id="document-kind-title">What are you building?</h2><p>Choose the kind of file you want to work on.</p><div class="document-kind-options"><button type="submit" value="model" class="document-kind-option"><strong>◇ 3D model</strong><span>Build with boxes in three dimensions.</span></button><button type="submit" value="sketch" class="document-kind-option"><strong>▭ 2D sketch</strong><span>Draw rectangles on a flat plane.</span></button></div><div class="dialog-actions"><button type="submit" value="cancel" class="button button-quiet">Cancel</button></div></form></dialog>
+    <dialog id="document-kind-dialog" class="variable-dialog document-kind-dialog"><form method="dialog"><div class="eyebrow">NEW WORKSPACE</div><h2 id="document-kind-title">What are you building?</h2><p>Choose the kind of file you want to work on.</p><div class="document-kind-options"><button type="submit" value="model" class="document-kind-option"><strong><i data-lucide="box" aria-hidden="true"></i>3D model</strong><span>Build with boxes in three dimensions.</span></button><button type="submit" value="sketch" class="document-kind-option"><strong><i data-lucide="square" aria-hidden="true"></i>2D sketch</strong><span>Draw lines and rectangles on a flat plane.</span></button></div><div class="dialog-actions"><button type="submit" value="cancel" class="button button-quiet">Cancel</button></div></form></dialog>
     <dialog id="variable-dialog" class="variable-dialog"><form id="variable-form"><div class="eyebrow">MODEL VARIABLE</div><h2 id="variable-dialog-title">Add variable</h2><label class="field-label" for="variable-name">NAME</label><input id="variable-name" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-value">VALUE · INCHES</label><input id="variable-value" class="text-field" autocomplete="off" required/><div id="variable-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="variable-cancel">Cancel</button><button type="submit" class="button button-run" id="variable-submit">Create variable</button></div></form></dialog>
     <dialog id="delete-variable-dialog" class="variable-dialog"><form method="dialog"><div class="eyebrow">VARIABLE IN USE</div><h2>Replace references?</h2><p id="delete-variable-message" class="delete-variable-message"></p><div class="dialog-actions"><button value="cancel" class="button button-quiet">Cancel</button><button value="delete" class="button button-run">Delete and replace</button></div></form></dialog>
     <dialog id="close-document-dialog" class="variable-dialog close-document-dialog" aria-labelledby="close-document-title" aria-describedby="close-document-message"><form method="dialog"><div class="eyebrow">CLOSE FILE</div><h2 id="close-document-title">Close <span id="close-document-name"></span>?</h2><p id="close-document-message">Closing removes this tab and its local recovery copy. Save and close downloads the current source as a .js file.</p><p id="close-document-draft" class="close-document-draft" hidden>This tab has an unrun source draft. Close without saving will discard it.</p><div class="dialog-actions close-document-actions"><button id="close-document-cancel" value="cancel" class="button button-quiet">Cancel</button><button id="close-document-save" type="button" class="button button-run">Save and close</button><button value="close" class="button button-danger">Close without saving</button></div></form></dialog>
     <div id="face-menu" class="face-menu" role="menu" aria-label="Box actions" hidden><div class="face-menu-caption" id="face-menu-caption"></div><div class="face-menu-actions"><button id="new-from-face" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">＋</span><span>New box from face</span></button><button id="duplicate-from-menu" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">⧉</span><span>Duplicate</span></button></div><div class="face-menu-reason" id="face-menu-reason"></div></div>
   </main>`;
 
+const lucideIcons = { Box, Group, Square, Eye, EyeOff, MousePointer2, RectangleHorizontal, Slash };
+function renderIcons(scope: HTMLElement) { createIcons({ icons: lucideIcons, root: scope }); }
+renderIcons(root);
+
 const $ = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
 const editor = $('#source-editor') as HTMLTextAreaElement;
 const viewportHost = $('#viewport');
 const listEl = $('#component-list');
+let groups: GroupSpec[] = [];
+let collapsedGroupIds = new Set<string>();
 let boxes: BoxSpec[] = [];
-let rectangles: RectangleSpec[] = [];
+let rectangles: SketchShape[] = [];
 let documentKind: DocumentKind = 'model';
 let sketchTool: SketchTool = 'select';
 let variables: VariableSpec[] = [];
 let selectedId: string | null = null;
+let selectedSketchIds = new Set<string>();
 let selectedVariable: string | null = null;
 let selectedFace: FaceName | null = null;
 let contextFace: { boxId: string; face: FaceName; clientX: number; clientY: number } | null = null;
@@ -112,22 +139,25 @@ let offsetsOpen = false;
 let faceColorPicker: Picker | null = null;
 const viewport = createViewport(
   viewportHost,
-  (id, face) => { selectedId = id; selectedVariable = null; selectedFace = documentKind === 'sketch' ? null : face ?? null; renderAll(); },
+  (id, face) => { if (documentKind === 'sketch') { selectSketchShapes(id ? [id] : [], 'replace'); return; } selectedId = id; selectedVariable = null; selectedFace = face ?? null; renderAll(); },
   (hit) => openFaceMenu(hit),
-  (first, opposite) => {
+  (first, opposite, tool) => {
     if (documentKind !== 'sketch' || draftDirty) return;
     try {
-      const rectangle = rectangleFromCorners(first, opposite, crypto.randomUUID(), `Rectangle ${rectangles.length + 1}`, PALETTE[rectangles.length % PALETTE.length]);
-      commitRectangles([...rectangles, rectangle], 'Rectangle drawn · click to draw another', { preserveView: true });
-      selectedId = rectangle.id; renderAll();
-    } catch (error) { notify(error instanceof Error ? error.message : 'Could not draw rectangle', true); }
+      const rectangle = (tool === 'line' ? lineFromPoints : rectangleFromCorners)(first, opposite, crypto.randomUUID(), `${tool === 'line' ? 'Line' : 'Rectangle'} ${rectangles.length + 1}`, SKETCH_DEFAULT_COLOR);
+      const targetGroup = selectedGroup();
+      if (targetGroup) { rectangle.position = reparentPosition(rectangle.position, groups, undefined, targetGroup.id).slice(0, 2) as [number, number]; rectangle.groupId = targetGroup.id; }
+      commitRectangles([...rectangles, rectangle], `${tool === 'line' ? 'Line' : 'Rectangle'} drawn · click to draw another`, { preserveView: true });
+      selectSketchShapes([rectangle.id], 'replace');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not draw sketch shape', true); }
   },
   (stage) => {
     if (documentKind !== 'sketch' || draftDirty) return;
-    if (stage === 'first') setStatus('Rectangle tool · click the first corner');
-    else if (stage === 'opposite') setStatus('Click the opposite corner, or enter width and height');
-    else setStatus('Select rectangles · drag to pan');
+    if (stage === 'first') setStatus(sketchTool === 'line' ? 'Line tool · click the start point' : 'Rectangle tool · click the first corner');
+    else if (stage === 'opposite') setStatus(sketchTool === 'line' ? 'Click end point · Tab: length, angle, ΔX, ΔY · Enter to draw' : 'Click the opposite corner, or press Tab for width, then height');
+    else setStatus('Select shapes · Shift-click to add · drag to select');
   },
+  (ids, action) => selectSketchShapes(ids, action),
 );
 
 function closeFaceColorPicker() { faceColorPicker?.hide(); }
@@ -147,9 +177,9 @@ function openFaceColorPicker(trigger: HTMLElement) {
 }
 
 function cloneBoxes(value: BoxSpec[]) { return value.map((box) => ({ ...box, expressions: box.expressions ? { ...box.expressions } : undefined, size: [...box.size] as [number, number, number], position: [...box.position] as [number, number, number], relative: box.relative ? { ...box.relative, u: box.relative.u ? { ...box.relative.u } : undefined, v: box.relative.v ? { ...box.relative.v } : undefined } : undefined })); }
-function cloneRectangles(value: RectangleSpec[]) { return value.map((rectangle) => ({ ...rectangle, size: [...rectangle.size] as [number, number], position: [...rectangle.position] as [number, number] })); }
+function cloneRectangles(value: SketchShape[]) { return value.map((rectangle) => ({ ...rectangle, size: [...rectangle.size] as [number, number], position: [...rectangle.position] as [number, number] })); }
 function shapeCount() { return documentKind === 'sketch' ? rectangles.length : boxes.length; }
-function shapeLabel(count = shapeCount()) { return documentKind === 'sketch' ? count === 1 ? 'rectangle' : 'rectangles' : count === 1 ? 'box' : 'boxes'; }
+function shapeLabel(count = shapeCount()) { return documentKind === 'sketch' ? count === 1 ? 'shape' : 'shapes' : count === 1 ? 'box' : 'boxes'; }
 function setStatus(message: string, isError = false) {
   $('#status-text').textContent = message;
   $('.status-indicator').classList.toggle('status-error', isError);
@@ -165,26 +195,34 @@ function syncDraftUI() {
   $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : `Edit the code, then run it to update the ${documentKind === 'sketch' ? 'sketch' : 'model'}.`;
   $('#draft-note').classList.toggle('warning-note', draftDirty);
   $('#add-box').toggleAttribute('disabled', draftDirty);
-  $('#rectangle-sketch-tool').toggleAttribute('disabled', draftDirty);
+  $('#add-group').toggleAttribute('disabled', draftDirty);
+  $('#rectangle-sketch-tool').toggleAttribute('disabled', draftDirty); $('#line-sketch-tool').toggleAttribute('disabled', draftDirty);
   $('#add-variable').toggleAttribute('disabled', draftDirty || documentKind === 'sketch');
-  $('#delete-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedRectangle() || selectedVariable));
+  $('#delete-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedRectangle() || selectedVariable || selectedGroup()));
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedRectangle()));
   renderList(); renderInspector();
 }
 function selectedBox() { return boxes.find((box) => box.id === selectedId) ?? null; }
 function selectedRectangle() { return rectangles.find((rectangle) => rectangle.id === selectedId) ?? null; }
+function selectedSketchShapes() { return rectangles.filter((shape) => selectedSketchIds.has(shape.id) && !hiddenBoxIds.has(shape.id)); }
+function selectSketchShapes(ids: string[], action: SelectionAction) {
+  selectedSketchIds = updateSketchSelection(selectedSketchIds, ids.filter((id) => rectangles.some((shape) => shape.id === id) && !hiddenBoxIds.has(id)), action);
+  selectedId = selectedSketchIds.size === 1 ? [...selectedSketchIds][0] : null;
+  selectedVariable = null; selectedFace = null;
+  renderAll();
+}
 function renderSketchToolUI() {
-  for (const tool of ['select', 'rectangle'] as const) {
+  for (const tool of ['select', 'rectangle', 'line'] as const) {
     const button = $(`#${tool}-sketch-tool`);
     button.classList.toggle('active', sketchTool === tool);
     button.setAttribute('aria-pressed', String(sketchTool === tool));
   }
   $('.navigation-help').innerHTML = documentKind === 'sketch'
-    ? sketchTool === 'rectangle' ? '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>DRAG</span> pan <i>·</i> wheel zoom'
+    ? sketchTool !== 'select' ? sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>SHIFT + CLICK</span> multi-select <i>·</i> <span>DRAG</span> select <i>·</i> <span>MIDDLE / RIGHT DRAG</span> pan <i>·</i> wheel zoom'
     : '<span>MIDDLE DRAG</span> orbit <i>·</i> <span>SHIFT + MIDDLE</span> / right drag pan <i>·</i> wheel zoom';
 }
 function activateSketchTool(tool: SketchTool) {
-  if (documentKind !== 'sketch' || (tool === 'rectangle' && draftDirty)) return;
+  if (documentKind !== 'sketch' || (tool !== 'select' && draftDirty)) return;
   sketchTool = tool;
   viewport.setSketchTool(tool);
   renderSketchToolUI();
@@ -231,22 +269,126 @@ async function changeVariableValue(name: string, text: string, isExpression: boo
     commitBoxes(next, 'Variable updated', { preserveView: true }, updated);
   } catch (error) { if (error instanceof Error && error.message === 'Variable creation cancelled.') { renderInspector(); return; } input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid variable value', true); }
 }
-function resolveModelFromUI(input: BoxSpec[], vars: VariableSpec[]) { return validateBoxes(input, vars); }
-function renderList() {
-  if (documentKind === 'sketch') {
-    $('#box-count').textContent = String(rectangles.length);
-    $('#tree-empty').classList.toggle('hidden', rectangles.length > 0);
-    listEl.innerHTML = rectangles.map((rectangle) => { const hidden = hiddenBoxIds.has(rectangle.id); return `<div class="component-row box-row ${rectangle.id === selectedId ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}"><button type="button" class="component-select" data-id="${escapeAttr(rectangle.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(rectangle.name)}"><span class="row-square" style="--cube:${escapeAttr(rectangle.color)}"></span><span class="row-name">${escapeHTML(rectangle.name)}</span><span class="row-size">${rectangle.size.map(formatInches).join(' × ')}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(rectangle.id)}" aria-label="${hidden ? 'Show' : 'Hide'} ${escapeAttr(rectangle.name)}" title="${hidden ? 'Show' : 'Hide'} ${escapeAttr(rectangle.name)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z"></path><circle cx="12" cy="12" r="2.5"></circle>${hidden ? '<path d="m4 4 16 16"></path>' : ''}</svg></button></div>`; }).join('');
-    listEl.querySelectorAll<HTMLButtonElement>('.component-select[data-id]').forEach((row) => row.addEventListener('click', () => { selectedId = row.dataset.id ?? null; viewport.select(selectedId); renderAll(); }));
-    listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', (event) => { event.stopPropagation(); toggleBoxVisibility(button.dataset.visibilityId!); }));
-    return;
+function resolveModelFromUI(input: BoxSpec[], vars: VariableSpec[]) { return validateBoxes(input, vars, groups); }
+function selectedGroup() { return groups.find((g) => g.id === selectedId) ?? null; }
+function groupItems(id: string) {
+  const ids = groupDescendants(groups, id);
+  return (documentKind === 'sketch' ? rectangles : boxes).filter((item) => item.groupId && ids.has(item.groupId));
+}
+function worldBoxes() { return boxes.map((b) => ({ ...b, position: worldPosition(b.position, groups, b.groupId) })); }
+function worldRectangles() { return rectangles.map((r) => ({ ...r, position: worldPosition(r.position, groups, r.groupId).slice(0, 2) as [number, number] })); }
+function refreshGeometry(preserveView = true) {
+  if (documentKind === 'sketch') viewport.setRectangles(worldRectangles(), { preserveView, hiddenIds: hiddenBoxIds });
+  else viewport.setBoxes(worldBoxes(), { preserveView, hiddenIds: hiddenBoxIds });
+}
+function clearPositionExpressions(box: BoxSpec): BoxSpec {
+  const expressions = { ...box.expressions };
+  for (const key of ['position.0', 'position.1', 'position.2', 'relative.offset', 'relative.u.offset', 'relative.v.offset'] as NumericField[]) delete expressions[key];
+  return { ...box, expressions, relative: undefined };
+}
+function reparentBox(box: BoxSpec, nextGroup?: string): BoxSpec {
+  const position = reparentPosition(box.position, groups, box.groupId, nextGroup);
+  const expressions = { ...box.expressions };
+  for (let i = 0; i < 3; i++) {
+    const key = `position.${i}` as NumericField, expression = expressions[key];
+    if (expression) expressions[key] = `(${expression}) + (${position[i] - box.position[i]})`;
   }
-  $('#box-count').textContent = String(boxes.length);
-  $('#tree-empty').classList.toggle('hidden', boxes.length + variables.length > 0);
-  listEl.innerHTML = `${variables.map((variable) => `<button class="component-row variable-row ${variable.name === selectedVariable ? 'selected' : ''}" data-variable="${escapeAttr(variable.name)}"><span class="variable-symbol">ƒ</span><span class="row-name">${escapeHTML(variable.name)}</span><span class="row-size">${formatInches(variable.value)} in</span></button>`).join('')}${boxes.map((box) => { const hidden = hiddenBoxIds.has(box.id); return `<div class="component-row box-row ${box.id === selectedId && !selectedVariable ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}"><button type="button" class="component-select" data-id="${escapeAttr(box.id)}" ${hidden ? 'disabled' : ''} aria-label="${escapeAttr(hidden ? `${box.name} is hidden` : `Select ${box.name}`)}"><span class="row-cube" style="--cube:${escapeAttr(box.color)}"></span><span class="row-name">${escapeHTML(box.name)}</span><span class="row-size">${box.size.map(formatInches).join(' × ')}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(box.id)}" aria-label="${escapeAttr(hidden ? `Show ${box.name}` : `Hide ${box.name}`)}" title="${escapeAttr(hidden ? `Show ${box.name}` : `Hide ${box.name}`)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z"></path><circle cx="12" cy="12" r="2.5"></circle>${hidden ? '<path d="m4 4 16 16"></path>' : ''}</svg></button></div>`; }).join('')}`;
-  listEl.querySelectorAll<HTMLButtonElement>('.component-select[data-id]').forEach((row) => row.addEventListener('click', () => { if (hiddenBoxIds.has(row.dataset.id ?? '')) return; selectedId = row.dataset.id ?? null; selectedVariable = null; selectedFace = null; viewport.select(selectedId); renderAll(); }));
-  listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', (event) => { event.stopPropagation(); toggleBoxVisibility(button.dataset.visibilityId!); }));
-  listEl.querySelectorAll<HTMLButtonElement>('[data-variable]').forEach((row) => row.addEventListener('click', () => { selectedVariable = row.dataset.variable ?? null; selectedId = null; selectedFace = null; viewport.select(null); renderAll(); }));
+  return { ...box, position, expressions, groupId: nextGroup };
+}
+function detachCrossGroupLinks(next: BoxSpec[]): BoxSpec[] {
+  return next.map((box) => box.relative && next.find((b) => b.id === box.relative!.boxId)?.groupId !== box.groupId ? clearPositionExpressions(box) : box);
+}
+function commitGroups(nextGroups: GroupSpec[], nextBoxes = boxes, nextRectangles = rectangles, message = 'Group updated') {
+  const valid = validateGroups(nextGroups, documentKind === 'sketch');
+  const model = documentKind === 'model' ? resolveModel(nextBoxes, variables, valid) : null;
+  const shapes = documentKind === 'sketch' ? validateSketchShapes(nextRectangles, valid) : [];
+  const source = model ? generateSource(model.boxes, model.variables, valid) : generateSketchSource(shapes, valid);
+  groups = valid;
+  if (model) boxes = cloneBoxes(model.boxes); else rectangles = cloneRectangles(shapes);
+  collapsedGroupIds = new Set([...collapsedGroupIds].filter((id) => groups.some((g) => g.id === id)));
+  if (selectedId && !groups.some((g) => g.id === selectedId) && !(documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === selectedId)) selectedId = null;
+  refreshGeometry(); setEditor(source); appliedSource = source;
+  recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
+}
+function addGroup() {
+  if (draftDirty) return;
+  const selected = documentKind === 'sketch' ? selectedSketchShapes() : selectedBox() ? [selectedBox()!] : [];
+  const firstParent = selected[0]?.groupId;
+  const parentId = selectedGroup()?.id ?? (selected.every((item) => item.groupId === firstParent) ? firstParent : undefined);
+  const group: GroupSpec = { id: crypto.randomUUID(), name: `Group ${groups.length + 1}`, position: [0, 0, 0], ...(parentId ? { parentId } : {}) };
+  const ids = new Set(selected.map((item) => item.id));
+  const nextBoxes = documentKind === 'model' ? detachCrossGroupLinks(boxes.map((b) => ids.has(b.id) ? { ...reparentBox(b, parentId), groupId: group.id } : b)) : boxes;
+  const nextShapes = documentKind === 'sketch' ? rectangles.map((r) => ids.has(r.id) ? { ...r, groupId: group.id, position: reparentPosition(r.position, groups, r.groupId, parentId).slice(0, 2) as [number, number] } : r) : rectangles;
+  try { commitGroups([...groups, group], nextBoxes, nextShapes, 'Group created · add members in the inspector'); selectedId = group.id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll(); }
+  catch (error) { notify(error instanceof Error ? error.message : 'Could not create group', true); }
+}
+function changeItemGroup(id: string, groupId?: string) {
+  if (draftDirty) return;
+  try {
+    if (documentKind === 'model') {
+      const next = detachCrossGroupLinks(boxes.map((b) => b.id === id ? reparentBox(b, groupId) : b));
+      commitBoxes(next, 'Group membership updated · position preserved', { preserveView: true });
+    } else {
+      commitRectangles(rectangles.map((r) => r.id === id ? { ...r, position: reparentPosition(r.position, groups, r.groupId, groupId).slice(0, 2) as [number, number], groupId } : r), 'Group membership updated · position preserved', { preserveView: true });
+    }
+  } catch (error) { notify(error instanceof Error ? error.message : 'Could not change group', true); renderInspector(); }
+}
+function membershipControl(item: BoxSpec | SketchShape) {
+  const host = $('#inspector-content');
+  host.insertAdjacentHTML('beforeend', `<label class="field-label group-membership-label" for="item-group">GROUP</label><select id="item-group" class="text-field" aria-label="Object group" ${draftDirty ? 'disabled' : ''}><option value="">No group</option>${groups.map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === item.groupId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>${item.groupId ? '<div class="inspector-tip">Coordinates are relative to this group.</div>' : ''}`);
+  host.querySelector<HTMLSelectElement>('#item-group')!.addEventListener('change', (event) => changeItemGroup(item.id, (event.currentTarget as HTMLSelectElement).value || undefined));
+}
+function renderGroupInspector(group: GroupSpec) {
+  const host = $('#inspector-content'), disabled = draftDirty ? 'disabled' : '';
+  const descendants = groupDescendants(groups, group.id);
+  const members = documentKind === 'sketch' ? rectangles : boxes;
+  const world = groupOffset(groups, group.id);
+  host.innerHTML = `<div class="object-heading"><span class="group-symbol">▱</span><div><div class="object-name">${escapeHTML(group.name)}</div><div class="object-id">GROUP · ${groupItems(group.id).length} ITEMS</div></div></div>
+    <label class="field-label" for="group-name">NAME</label><input id="group-name" class="text-field" value="${escapeAttr(group.name)}" ${disabled}/>
+    <label class="field-label group-membership-label" for="group-parent">PARENT GROUP</label><select id="group-parent" class="text-field" ${disabled}><option value="">No parent</option>${groups.filter((g) => !descendants.has(g.id)).map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === group.parentId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>
+    <div class="section-label position-label"><span>GROUP POSITION${group.parentId ? ' · IN PARENT' : ''}</span><span>INCHES</span></div><div class="${documentKind === 'sketch' ? 'sketch-fields' : 'triple-fields'}">${(documentKind === 'sketch' ? ['X', 'Y'] : ['X', 'Y', 'Z']).map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Group position ${axis}" data-group-axis="${i}" value="${formatInches(group.position[i])}" ${disabled}/><small>in</small></span></label>`).join('')}</div>
+    <div class="inspector-tip">Moving this origin moves every member and nested group. World origin: ${world.slice(0, documentKind === 'sketch' ? 2 : 3).map(formatInches).join(', ')} in.</div>
+    <div class="section-label"><span>MEMBERS</span></div><div class="group-member-list">${members.map((item) => `<label class="group-member"><input type="checkbox" data-member-id="${escapeAttr(item.id)}" ${item.groupId === group.id ? 'checked' : ''} ${disabled}/><span>${escapeHTML(item.name)}</span>${item.groupId && item.groupId !== group.id ? `<small>${escapeHTML(groups.find((g) => g.id === item.groupId)?.name ?? '')}</small>` : ''}</label>`).join('') || '<div class="inspector-tip">Add objects, then include them here.</div>'}</div>
+    <button id="ungroup" class="button button-quiet ungroup-button" ${disabled}>Ungroup · keep items</button>`;
+  const update = (patch: Partial<GroupSpec>) => { if (draftDirty) return; try { commitGroups(groups.map((g) => g.id === group.id ? { ...g, ...patch } : g)); } catch (error) { notify(error instanceof Error ? error.message : 'Could not update group', true); renderInspector(); } };
+  host.querySelector<HTMLInputElement>('#group-name')!.addEventListener('change', (event) => update({ name: (event.currentTarget as HTMLInputElement).value.trim() || group.name }));
+  host.querySelector<HTMLSelectElement>('#group-parent')!.addEventListener('change', (event) => { const parentId = (event.currentTarget as HTMLSelectElement).value || undefined; update({ parentId, position: reparentPosition(group.position, groups, group.parentId, parentId) }); });
+  host.querySelectorAll<HTMLInputElement>('[data-group-axis]').forEach((input) => {
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter') input.blur(); });
+    input.addEventListener('change', () => { try { const position: Vector3 = [...group.position]; position[Number(input.dataset.groupAxis)] = parseInches(input.value); update({ position }); } catch (error) { notify(error instanceof Error ? error.message : 'Invalid position', true); renderInspector(); } });
+  });
+  host.querySelectorAll<HTMLInputElement>('[data-member-id]').forEach((input) => input.addEventListener('change', () => changeItemGroup(input.dataset.memberId!, input.checked ? group.id : group.parentId)));
+  host.querySelector('#ungroup')!.addEventListener('click', () => ungroup(group));
+}
+function ungroup(group: GroupSpec) {
+  if (draftDirty) return;
+  try {
+    const nextBoxes = detachCrossGroupLinks(boxes.map((b) => b.groupId === group.id ? reparentBox(b, group.parentId) : b));
+    const nextShapes = rectangles.map((r) => r.groupId === group.id ? { ...r, groupId: group.parentId, position: reparentPosition(r.position, groups, r.groupId, group.parentId).slice(0, 2) as [number, number] } : r);
+    const nextGroups = groups.filter((g) => g.id !== group.id).map((g) => g.parentId === group.id ? { ...g, parentId: group.parentId, position: reparentPosition(g.position, groups, g.parentId, group.parentId) } : g);
+    commitGroups(nextGroups, nextBoxes, nextShapes, 'Ungrouped · items kept in place');
+  } catch (error) { notify(error instanceof Error ? error.message : 'Could not ungroup', true); }
+}
+function renderList() {
+  const items = documentKind === 'sketch' ? rectangles : boxes;
+  $('#box-count').textContent = String(items.length);
+  $('#tree-empty').classList.toggle('hidden', items.length + variables.length + groups.length > 0);
+  const itemRow = (item: BoxSpec | SketchShape, depth: number) => {
+    const hidden = hiddenBoxIds.has(item.id), sketch = documentKind === 'sketch';
+    const symbol = sketch ? (item as SketchShape).kind === 'line' ? 'row-line' : 'row-square' : 'row-cube';
+    const size = sketch && (item as SketchShape).kind === 'line' ? `${formatInches(Math.hypot(...item.size))} in` : item.size.map(formatInches).join(' × ');
+    return `<div class="component-row box-row ${(documentKind === 'sketch' ? selectedSketchIds.has(item.id) : item.id === selectedId) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}"><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(item.name)}"><span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span><span class="row-name">${escapeHTML(item.name)}</span><span class="row-size">${size}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(item.id)}" aria-label="${hidden ? 'Show' : 'Hide'} ${escapeAttr(item.name)}" title="${hidden ? 'Show' : 'Hide'} ${escapeAttr(item.name)}"><i data-lucide="${hidden ? 'eye-off' : 'eye'}" aria-hidden="true"></i></button></div>`;
+  };
+  const branch = (parentId: string | undefined, depth: number): string => groups.filter((g) => g.parentId === parentId).map((g) => {
+    const collapsed = collapsedGroupIds.has(g.id);
+    return `<div class="component-row group-row ${selectedId === g.id ? 'selected' : ''}" style="--tree-depth:${depth}"><button class="group-collapse" data-collapse-id="${escapeAttr(g.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeAttr(g.name)}">${collapsed ? '▸' : '▾'}</button><button class="component-select" data-id="${escapeAttr(g.id)}" aria-label="Select ${escapeAttr(g.name)}"><span class="group-symbol" aria-hidden="true">▱</span><span class="row-name">${escapeHTML(g.name)}</span><span class="row-size">${groupItems(g.id).length} items</span></button></div>${collapsed ? '' : branch(g.id, depth + 1)}`;
+  }).join('') + items.filter((item) => item.groupId === parentId).map((item) => itemRow(item, depth)).join('');
+  listEl.innerHTML = (documentKind === 'model' ? variables.map((variable) => `<button class="component-row variable-row ${variable.name === selectedVariable ? 'selected' : ''}" data-variable="${escapeAttr(variable.name)}"><span class="variable-symbol">ƒ</span><span class="row-name">${escapeHTML(variable.name)}</span><span class="row-size">${formatInches(variable.value)} in</span></button>`).join('') : '') + branch(undefined, 0);
+  renderIcons(listEl);
+  listEl.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((row) => row.addEventListener('click', (event) => { const id = row.dataset.id!; if (documentKind === 'sketch' && rectangles.some((shape) => shape.id === id)) { selectSketchShapes([id], event.shiftKey || event.ctrlKey || event.metaKey ? 'toggle' : 'replace'); return; } selectedSketchIds.clear(); selectedId = id; selectedVariable = null; selectedFace = null; renderAll(); }));
+  listEl.querySelectorAll<HTMLButtonElement>('[data-collapse-id]').forEach((button) => button.addEventListener('click', () => { const id = button.dataset.collapseId!; if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id); renderList(); scheduleSave(); }));
+  listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', () => toggleBoxVisibility(button.dataset.visibilityId!)));
+  listEl.querySelectorAll<HTMLButtonElement>('[data-variable]').forEach((row) => row.addEventListener('click', () => { selectedVariable = row.dataset.variable!; selectedId = null; selectedFace = null; renderAll(); }));
 }
 function faceTitle(face: FaceName) { return face[0].toUpperCase() + face.slice(1); }
 const faceDirection: Record<FaceName, string> = {
@@ -272,7 +414,9 @@ function renderInspector() {
   faceColorPicker?.hide();
   faceColorPicker?.destroy();
   faceColorPicker = null;
-  if (documentKind === 'sketch') { renderSketchInspector(); return; }
+  const group = selectedGroup();
+  if (group) { $('#delete-box').toggleAttribute('disabled', draftDirty); $('#duplicate-box').toggleAttribute('disabled', true); renderGroupInspector(group); return; }
+  if (documentKind === 'sketch') { renderSketchInspector(); if (selectedRectangle()) membershipControl(selectedRectangle()!); return; }
   const box = selectedBox();
   const host = $('#inspector-content');
   const variable = variables.find((item) => item.name === selectedVariable);
@@ -292,7 +436,7 @@ function renderInspector() {
   if (!box) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">⊙</div><div>Select a box or variable</div><small>Choose an item from the model tree to inspect it.</small></div><div class="source-warning">GUI edits regenerate this source. Undo can restore earlier source.</div>'; return; }
   const boxId = box.id;
   const relative = box.relative;
-  const refOptions = boxes.filter((candidate) => candidate.id !== box.id && !isDescendant(candidate.id, box.id)).map((candidate) => `<option value="${escapeAttr(candidate.id)}" ${candidate.id === relative?.boxId ? 'selected' : ''}>${escapeHTML(candidate.name)}</option>`).join('');
+  const refOptions = boxes.filter((candidate) => candidate.id !== box.id && candidate.groupId === box.groupId && !isDescendant(candidate.id, box.id)).map((candidate) => `<option value="${escapeAttr(candidate.id)}" ${candidate.id === relative?.boxId ? 'selected' : ''}>${escapeHTML(candidate.name)}</option>`).join('');
   const faceOptions = (value?: FaceName) => (['front', 'back', 'left', 'right', 'top', 'bottom'] as FaceName[]).map((face) => `<option value="${face}" ${face === value ? 'selected' : ''}>${referenceFaceTitle(face)}</option>`).join('');
   const sideOptions = (axis: 'u' | 'v', value?: { side: 'left' | 'right' | 'bottom' | 'top'; offset: number }) => {
     const choices = axis === 'u' ? ['left', 'right'] : ['bottom', 'top'];
@@ -301,7 +445,7 @@ function renderInspector() {
   host.innerHTML = `<div class="source-warning">GUI edits regenerate this source as literal boxes. Undo can restore earlier source.</div><div class="object-heading"><span class="object-swatch" style="--cube:${escapeAttr(box.color)}"></span><div><div class="object-name">${escapeHTML(box.name)}</div><div class="object-id">BOX · ${escapeHTML(box.id.slice(0, 8).toUpperCase())}</div></div></div>
     <label class="field-label" for="box-name">NAME</label><input id="box-name" class="text-field" value="${escapeAttr(box.name)}" ${draftDirty ? 'disabled' : ''} />
     <div class="section-label"><span>SIZE</span><span>INCHES</span></div><div class="triple-fields">${['Width · X', 'Depth · Y', 'Height · Z'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="size" data-index="${i}" value="${escapeAttr(box.expressions?.[`size.${i}` as NumericField] ?? formatInches(box.size[i]))}" title="${box.expressions?.[`size.${i}` as NumericField] ? `Resolved: ${formatInches(box.size[i])} in` : ''}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
-    <div class="section-label position-label"><span>ABSOLUTE POSITION <em>MIN CORNER</em></span><span>INCHES</span></div><div class="triple-fields">${['X', 'Y', 'Z'].map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Absolute position ${axis}" data-kind="position" data-index="${i}" value="${escapeAttr(box.expressions?.[`position.${i}` as NumericField] ?? formatInches(box.position[i]))}" title="${box.expressions?.[`position.${i}` as NumericField] ? `Resolved: ${formatInches(box.position[i])} in` : ''}" inputmode="decimal" ${draftDirty || relative ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
+    <div class="section-label position-label"><span>${box.groupId ? 'POSITION IN GROUP' : 'ABSOLUTE POSITION'} <em>MIN CORNER</em></span><span>INCHES</span></div><div class="triple-fields">${['X', 'Y', 'Z'].map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Absolute position ${axis}" data-kind="position" data-index="${i}" value="${escapeAttr(box.expressions?.[`position.${i}` as NumericField] ?? formatInches(box.position[i]))}" title="${box.expressions?.[`position.${i}` as NumericField] ? `Resolved: ${formatInches(box.position[i])} in` : ''}" inputmode="decimal" ${draftDirty || relative ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
     <section class="relative-card" aria-label="Relative placement"><div class="relative-heading"><div><div class="section-label"><span>RELATIVE PLACEMENT</span></div><div class="relative-summary">${relative ? `Linked to ${escapeHTML(boxes.find((candidate) => candidate.id === relative.boxId)?.name ?? relative.boxId)} · ${referenceFaceTitle(relative.face)}` : 'Anchor this box to another box face.'}</div></div>${relative ? '<button class="small-action" id="detach-relative" type="button">Detach</button>' : ''}</div>
       <div class="relative-grid"><label class="measure-field"><span>Reference box</span><select id="relative-reference" aria-label="Reference box" ${draftDirty || !boxes.some((candidate) => candidate.id !== box.id && !isDescendant(candidate.id, box.id)) ? 'disabled' : ''}><option value="">${boxes.length < 2 ? 'No other boxes' : 'Choose box'}</option>${refOptions}</select></label>
       <label class="measure-field"><span>Reference face</span><select id="relative-face" aria-label="Reference face" ${draftDirty || !relative ? 'disabled' : ''}>${faceOptions(relative?.face)}</select></label></div>
@@ -364,29 +508,109 @@ function renderInspector() {
     });
     colorTrigger.addEventListener('click', () => openFaceColorPicker(colorTrigger));
   }
+  membershipControl(box);
+}
+function renderSketchSelectionInspector(host: HTMLElement, shapes: SketchShape[]) {
+  const colors = new Set(shapes.map((shape) => shape.color.toLowerCase()));
+  const commonColor = colors.size === 1 ? shapes[0].color.toLowerCase() : null;
+  const disabled = draftDirty ? 'disabled' : '';
+  host.innerHTML = `<div class="object-heading"><div><div class="object-name">${shapes.length} components selected</div><div class="object-id">2D SKETCH SELECTION</div></div></div>
+    <div class="section-label"><span>SELECTED COMPONENTS</span></div><ul class="sketch-selected-components">${shapes.map((shape) => `<li><span class="${shape.kind === 'line' ? 'row-line' : 'row-square'}" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true"></span><span class="selection-component-name">${escapeHTML(shape.name)}</span><small>${shape.kind === 'line' ? 'Line' : 'Rectangle'}</small></li>`).join('')}</ul>
+    <div class="section-label color-label"><span>STROKE COLOR</span><span>${commonColor ? 'ALL SELECTED' : 'MIXED COLORS'}</span></div>
+    <div class="color-row"><div class="swatch-grid">${SKETCH_COLOR_OPTIONS.map((color) => `<button class="swatch ${color === commonColor ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" aria-pressed="${color === commonColor}" ${disabled}></button>`).join('')}</div><input id="selection-color" type="color" aria-label="Color for all selected components" value="${escapeAttr(commonColor && /^#[0-9a-f]{6}$/i.test(commonColor) ? commonColor : SKETCH_DEFAULT_COLOR)}" ${disabled}/></div>
+    <div class="inspector-tip">Color changes apply to all ${shapes.length} selected components. Shift-click a component to add or remove it.</div>`;
+  const applyColor = (color: string) => {
+    if (draftDirty) return;
+    const ids = new Set(shapes.map((shape) => shape.id));
+    try { commitRectangles(rectangles.map((shape) => ids.has(shape.id) ? { ...shape, color } : shape), `${ids.size} component colors updated`, { preserveView: true }); }
+    catch (error) { notify(error instanceof Error ? error.message : 'Could not update colors', true); renderInspector(); }
+  };
+  host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => applyColor(button.dataset.color!)));
+  host.querySelector<HTMLInputElement>('#selection-color')!.addEventListener('change', (event) => applyColor((event.currentTarget as HTMLInputElement).value));
 }
 function renderSketchInspector() {
   const host = $('#inspector-content');
+  const shapes = selectedSketchShapes();
   const rectangle = selectedRectangle();
-  $('#delete-box').toggleAttribute('disabled', draftDirty || !rectangle);
-  $('#duplicate-box').toggleAttribute('disabled', draftDirty || !rectangle);
-  if (!rectangle) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">▭</div><div>Select a rectangle</div><small>Choose a rectangle from the tree or sketch to edit it.</small></div><div class="source-warning">GUI edits regenerate the sketch source. Undo can restore earlier source.</div>'; return; }
-  host.innerHTML = `<div class="source-warning">GUI edits regenerate this source as rectangles. Undo can restore earlier source.</div><div class="object-heading"><span class="object-swatch" style="--cube:${escapeAttr(rectangle.color)}"></span><div><div class="object-name">${escapeHTML(rectangle.name)}</div><div class="object-id">RECTANGLE · ${escapeHTML(rectangle.id.slice(0, 8).toUpperCase())}</div></div></div>
+  $('#delete-box').toggleAttribute('disabled', draftDirty || !shapes.length);
+  $('#duplicate-box').toggleAttribute('disabled', draftDirty || !shapes.length);
+  if (shapes.length > 1) { renderSketchSelectionInspector(host, shapes); return; }
+  if (!rectangle) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">▭</div><div>Select a sketch shape</div><small>Choose a shape from the tree or sketch to edit it.</small></div>'; return; }
+  if (rectangle.kind === 'line') { renderLineInspector(host, rectangle); return; }
+  host.innerHTML = `<div class="source-warning">GUI edits regenerate this sketch source. Undo can restore earlier source.</div><div class="object-heading"><span class="object-swatch" style="--cube:${escapeAttr(rectangle.color)}"></span><div><div class="object-name">${escapeHTML(rectangle.name)}</div><div class="object-id">${rectangle.kind === 'line' ? 'LINE' : 'RECTANGLE'} · ${escapeHTML(rectangle.id.slice(0, 8).toUpperCase())}</div></div></div>
     <label class="field-label" for="rectangle-name">NAME</label><input id="rectangle-name" class="text-field" value="${escapeAttr(rectangle.name)}" ${draftDirty ? 'disabled' : ''}/>
-    <div class="section-label"><span>SIZE</span><span>INCHES</span></div><div class="sketch-fields">${['Width · X', 'Height · Y'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="size" data-index="${i}" value="${formatInches(rectangle.size[i])}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
-    <div class="section-label position-label"><span>POSITION <em>MIN CORNER</em></span><span>INCHES</span></div><div class="sketch-fields">${['X', 'Y'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="position" data-index="${i}" value="${formatInches(rectangle.position[i])}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
-    <div class="section-label color-label"><span>STROKE COLOR</span></div><div class="color-row"><div class="swatch-grid">${PALETTE.map((color) => `<button class="swatch ${color === rectangle.color ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" ${draftDirty ? 'disabled' : ''}></button>`).join('')}</div><input id="rectangle-color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(rectangle.color) ? rectangle.color : '#d9a76e')}" ${draftDirty ? 'disabled' : ''}/></div>
+    <div class="section-label"><span>${rectangle.kind === 'line' ? 'END POINT' : 'SIZE'}</span><span>INCHES</span></div><div class="sketch-fields">${(rectangle.kind === 'line' ? ['End X', 'End Y'] : ['Width · X', 'Height · Y']).map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="size" data-index="${i}" value="${formatInches(rectangle.size[i] + (rectangle.kind === 'line' ? rectangle.position[i] : 0))}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
+    <div class="section-label position-label"><span>${rectangle.kind === 'line' ? 'START POINT' : 'POSITION <em>MIN CORNER</em>'}</span><span>INCHES</span></div><div class="sketch-fields">${['X', 'Y'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="position" data-index="${i}" value="${formatInches(rectangle.position[i])}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span></label>`).join('')}</div>
+    <div class="section-label color-label"><span>STROKE COLOR</span></div><div class="color-row"><div class="swatch-grid">${SKETCH_COLOR_OPTIONS.map((color) => `<button class="swatch ${color === rectangle.color ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" ${draftDirty ? 'disabled' : ''}></button>`).join('')}</div><input id="rectangle-color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(rectangle.color) ? rectangle.color : SKETCH_DEFAULT_COLOR)}" ${draftDirty ? 'disabled' : ''}/></div>
     <div class="inspector-tip">Enter an inch value or arithmetic; press Enter or leave the field to apply it.</div>`;
   host.querySelector<HTMLInputElement>('#rectangle-name')?.addEventListener('change', (event) => updateRectangle(rectangle.id, { name: (event.currentTarget as HTMLInputElement).value.trim() || rectangle.name }));
   host.querySelectorAll<HTMLInputElement>('.measure-input input[data-kind]').forEach((input) => {
     input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } });
-    input.addEventListener('change', () => { try { const value = parseInches(input.value); const kind = input.dataset.kind as 'size' | 'position'; const index = Number(input.dataset.index); const next = [...rectangle[kind]] as [number, number]; next[index] = value; updateRectangle(rectangle.id, { [kind]: next }); } catch (error) { input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid dimension', true); } });
+    input.addEventListener('change', () => { try { const value = parseInches(input.value); const kind = input.dataset.kind as 'size' | 'position'; const index = Number(input.dataset.index); const next = [...rectangle[kind]] as [number, number]; next[index] = rectangle.kind === 'line' && kind === 'size' ? value - rectangle.position[index] : value; if (rectangle.kind === 'line' && kind === 'position') { const size = [...rectangle.size] as [number, number]; size[index] += rectangle.position[index] - value; updateRectangle(rectangle.id, { position: next, size }); } else updateRectangle(rectangle.id, { [kind]: next }); } catch (error) { input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid dimension', true); } });
   });
   host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => updateRectangle(rectangle.id, { color: button.dataset.color! })));
   host.querySelector<HTMLInputElement>('#rectangle-color')?.addEventListener('input', (event) => updateRectangle(rectangle.id, { color: (event.currentTarget as HTMLInputElement).value }));
 }
+function renderLineInspector(host: HTMLElement, line: SketchShape) {
+  const { length, angle } = lineMeasurements(line.size);
+  const coordinatesOpen = host.querySelector<HTMLDetailsElement>('.line-coordinates')?.open ?? false;
+  const disabled = draftDirty ? 'disabled' : '';
+  const field = (label: string, key: string, value: number, unit = 'in') => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input aria-label="Line ${label}" data-line-field="${key}" value="${unit === '°' ? Number(value.toFixed(2)) : formatInches(value)}" inputmode="decimal" autocomplete="off" ${disabled}/><small>${unit}</small></span></label>`;
+  host.innerHTML = `<div class="line-inspector">
+    <div class="line-inspector-heading"><span class="line-inspector-symbol" style="--cube:${escapeAttr(line.color)}" aria-hidden="true">╱</span><input class="text-field" id="line-name" aria-label="Line name" value="${escapeAttr(line.name)}" ${disabled}/><span class="line-kind">LINE</span></div>
+    <div class="line-measurements sketch-fields">${field('Length', 'length', length)}${field('Angle', 'angle', angle, '°')}${field('ΔX', 'dx', line.size[0])}${field('ΔY', 'dy', line.size[1])}</div>
+    <div class="line-angle-hint">+ clockwise · − counterclockwise</div>
+    <details class="line-coordinates" ${coordinatesOpen ? 'open' : ''}><summary>Coordinates <span>inches</span></summary><div class="line-coordinate-grid"><span class="coordinate-axis"></span><span class="coordinate-axis">X</span><span class="coordinate-axis">Y</span><span class="coordinate-point">Start</span>${field('Start X', 'start-x', line.position[0])}${field('Start Y', 'start-y', line.position[1])}<span class="coordinate-point">End</span>${field('End X', 'end-x', line.position[0] + line.size[0])}${field('End Y', 'end-y', line.position[1] + line.size[1])}</div></details>
+    <div class="line-color-row"><span class="field-label">STROKE</span><div class="swatch-grid">${SKETCH_COLOR_OPTIONS.map((color) => `<button class="swatch ${color === line.color ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" aria-pressed="${color === line.color}" ${disabled}></button>`).join('')}</div><input id="line-color" aria-label="Custom line color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(line.color) ? line.color : SKETCH_DEFAULT_COLOR)}" ${disabled}/></div>
+    <div class="line-inspector-tip">Enter or leave a field to apply.</div>
+  </div>`;
+  host.querySelector<HTMLInputElement>('#line-name')!.addEventListener('change', (event) => updateRectangle(line.id, { name: (event.currentTarget as HTMLInputElement).value.trim() || line.name }));
+  host.querySelectorAll<HTMLInputElement>('[data-line-field]').forEach((input) => {
+    input.addEventListener('focus', () => input.select());
+    input.addEventListener('input', () => input.classList.remove('invalid'));
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } });
+    input.addEventListener('change', () => {
+      if (draftDirty) return;
+      try {
+        const key = input.dataset.lineField!;
+        const value = key === 'angle' ? parseLineAngle(input.value) : parseInches(input.value);
+        const position: [number, number] = [...line.position];
+        let size: [number, number] = [...line.size];
+        if (key === 'length' || key === 'angle') {
+          if (key === 'length' && value <= 0) throw new Error('Line length must be positive.');
+          size = lineDisplacement(key === 'length' ? value : length, key === 'angle' ? value : angle);
+        } else if (key === 'dx' || key === 'dy') size[key === 'dx' ? 0 : 1] = value;
+        else {
+          const index = key.endsWith('x') ? 0 : 1;
+          if (key.startsWith('start')) { size[index] += position[index] - value; position[index] = value; }
+          else size[index] = value - position[index];
+        }
+        commitRectangles(rectangles.map((shape) => shape.id === line.id ? { ...shape, position, size } : shape), 'Line updated', { preserveView: true });
+      } catch (error) { input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid line dimension', true); }
+    });
+  });
+  host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => updateRectangle(line.id, { color: button.dataset.color! })));
+  host.querySelector<HTMLInputElement>('#line-color')!.addEventListener('input', (event) => updateRectangle(line.id, { color: (event.currentTarget as HTMLInputElement).value }));
+}
 function isDescendant(candidateId: string, ancestorId: string) { let current = boxes.find((box) => box.id === candidateId); const seen = new Set<string>(); while (current?.relative && !seen.has(current.id)) { if (current.relative.boxId === ancestorId) return true; seen.add(current.id); current = boxes.find((box) => box.id === current!.relative!.boxId); } return false; }
-function renderAll() { if (selectedId && hiddenBoxIds.has(selectedId)) { selectedId = null; selectedFace = null; } renderList(); renderInspector(); viewport.select(selectedId, documentKind === 'sketch' ? null : selectedFace); $('#delete-box').toggleAttribute('disabled', draftDirty || (!selectedBox() && !selectedRectangle() && !selectedVariable)); $('#duplicate-box').toggleAttribute('disabled', draftDirty || (!selectedBox() && !selectedRectangle())); $('#selection-status').textContent = selectedVariable ? `VARIABLE · ${selectedVariable.toUpperCase()}` : selectedRectangle() ? `SELECTED · ${selectedRectangle()!.name.toUpperCase()}` : selectedBox() ? `SELECTED · ${selectedBox()!.name.toUpperCase()}${selectedFace ? ` · ${faceTitle(selectedFace).toUpperCase()} FACE` : ''}` : 'NO SELECTION'; }
+function renderAll() {
+  if (documentKind === 'sketch') {
+    if (selectedGroup()) selectedSketchIds.clear();
+    else {
+      if (selectedId && !selectedSketchIds.has(selectedId) && rectangles.some((shape) => shape.id === selectedId)) selectedSketchIds = new Set([selectedId]);
+      selectedSketchIds = new Set(selectedSketchShapes().map((shape) => shape.id));
+      selectedId = selectedSketchIds.size === 1 ? [...selectedSketchIds][0] : null;
+    }
+  } else if (selectedId && hiddenBoxIds.has(selectedId)) { selectedId = null; selectedFace = null; }
+  renderList(); renderInspector();
+  if (documentKind === 'sketch' && !selectedGroup()) viewport.selectMany(selectedSketchIds);
+  else if (selectedGroup()) viewport.selectMany(groupItems(selectedId!).map((item) => item.id));
+  else viewport.select(selectedId, selectedFace);
+  const sketchCount = documentKind === 'sketch' ? selectedSketchIds.size : 0;
+  $('#delete-box').toggleAttribute('disabled', draftDirty || (!sketchCount && !selectedBox() && !selectedVariable && !selectedGroup()));
+  $('#duplicate-box').toggleAttribute('disabled', draftDirty || (!sketchCount && !selectedBox()));
+  $('#selection-status').textContent = selectedGroup() ? `GROUP · ${selectedGroup()!.name.toUpperCase()}` : sketchCount > 1 ? `SELECTED · ${sketchCount} COMPONENTS` : selectedVariable ? `VARIABLE · ${selectedVariable.toUpperCase()}` : selectedRectangle() ? `SELECTED · ${selectedRectangle()!.name.toUpperCase()}` : selectedBox() ? `SELECTED · ${selectedBox()!.name.toUpperCase()}${selectedFace ? ` · ${faceTitle(selectedFace).toUpperCase()} FACE` : ''}` : 'NO SELECTION';
+}
 function escapeHTML(s: string) { return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!); }
 function escapeAttr(s: string) { return escapeHTML(s); }
 function activeDocument() { return documents.find((document) => document.id === activeDocumentId)!; }
@@ -394,8 +618,8 @@ function captureDocument() {
   const document = activeDocument();
   if (!document) return;
   Object.assign(document, structuredClone({
-    boxes, rectangles, variables, source: editor.value, appliedSource, draftDirty, hiddenBoxIds: [...hiddenBoxIds],
-    viewMode, projectionMode, gridVisible, history, historyAt, selectedId, selectedVariable, selectedFace,
+    groups, collapsedGroupIds: [...collapsedGroupIds], boxes, rectangles, variables, source: editor.value, appliedSource, draftDirty, hiddenBoxIds: [...hiddenBoxIds],
+    viewMode, projectionMode, gridVisible, history, historyAt, selectedId, selectedSketchIds: [...selectedSketchIds], selectedVariable, selectedFace,
     error: $('#editor-error').hidden ? '' : $('#editor-error').textContent ?? '',
     scrollTop: editor.scrollTop, scrollLeft: editor.scrollLeft, selectionStart: editor.selectionStart, selectionEnd: editor.selectionEnd,
   }));
@@ -407,8 +631,9 @@ function renderDocumentTabs() {
   host.innerHTML = documents.map((document) => {
     const active = document.id === activeDocumentId;
     const pending = active ? draftDirty : document.draftDirty;
-    return `<div class="document-tab ${active ? 'active' : ''}"><button class="document-select" data-document-id="${escapeAttr(document.id)}" ${active ? 'aria-current="page"' : ''} title="${escapeAttr(document.name)} · ${document.kind === 'sketch' ? '2D sketch' : '3D model'}${pending ? ' · pending draft' : ''}"><span class="document-kind-mark" aria-hidden="true">${document.kind === 'sketch' ? '▭' : '◇'}</span><span>${escapeHTML(document.name)}</span>${pending ? '<span class="document-draft" aria-label="Pending draft">●</span>' : ''}</button><button class="document-close" data-document-id="${escapeAttr(document.id)}" aria-label="Close ${escapeAttr(document.name)}" title="Close file">×</button></div>`;
+    return `<div class="document-tab ${active ? 'active' : ''}"><button class="document-select" data-document-id="${escapeAttr(document.id)}" ${active ? 'aria-current="page"' : ''} title="${escapeAttr(document.name)} · ${document.kind === 'sketch' ? '2D sketch' : '3D model'}${pending ? ' · pending draft' : ''}"><span class="document-kind-mark" aria-hidden="true"><i data-lucide="${document.kind === 'sketch' ? 'square' : 'box'}"></i></span><span>${escapeHTML(document.name)}</span>${pending ? '<span class="document-draft" aria-label="Pending draft">●</span>' : ''}</button><button class="document-close" data-document-id="${escapeAttr(document.id)}" aria-label="Close ${escapeAttr(document.name)}" title="Close file">×</button></div>`;
   }).join('');
+  renderIcons(host);
   host.querySelectorAll<HTMLButtonElement>('.document-select').forEach((button) => button.addEventListener('click', () => switchDocument(button.dataset.documentId!)));
   host.querySelectorAll<HTMLButtonElement>('.document-close').forEach((button) => button.addEventListener('click', () => closeDocument(button.dataset.documentId!)));
   if (focused) Array.from(host.querySelectorAll<HTMLButtonElement>(closing ? '.document-close' : '.document-select')).find((button) => button.dataset.documentId === focused)?.focus();
@@ -419,27 +644,29 @@ function loadDocument(document: ModelDocument) {
   $('#run-code').toggleAttribute('disabled', false);
   closeFaceMenu(); closeFaceColorPicker();
   activeDocumentId = document.id;
+  groups = structuredClone(document.groups); collapsedGroupIds = new Set(document.collapsedGroupIds);
   documentKind = document.kind; boxes = cloneBoxes(document.boxes); rectangles = cloneRectangles(document.rectangles); variables = cloneVariables(document.variables);
   sketchTool = 'select';
   appliedSource = document.appliedSource; hiddenBoxIds = new Set(document.hiddenBoxIds);
   history = structuredClone(document.history); historyAt = document.historyAt;
-  selectedId = document.selectedId; selectedVariable = document.selectedVariable; selectedFace = document.selectedFace;
+  selectedId = document.selectedId; selectedSketchIds = new Set(document.selectedSketchIds ?? (selectedRectangle() ? [selectedId!] : [])); selectedVariable = document.selectedVariable; selectedFace = document.selectedFace;
   offsetsOpenBoxId = null; offsetsOpen = false;
   viewMode = documentKind === 'sketch' ? 'top' : document.viewMode; projectionMode = documentKind === 'sketch' ? 'orthographic' : document.projectionMode; gridVisible = document.gridVisible;
   root.classList.toggle('sketch-mode', documentKind === 'sketch');
+  root.classList.toggle('model-mode', documentKind === 'model');
   viewport.setMode(documentKind);
-  if (documentKind === 'sketch') viewport.setRectangles(rectangles, { hiddenIds: hiddenBoxIds }); else viewport.setBoxes(boxes, { hiddenIds: hiddenBoxIds });
+  if (documentKind === 'sketch') viewport.setRectangles(worldRectangles(), { hiddenIds: hiddenBoxIds }); else viewport.setBoxes(worldBoxes(), { hiddenIds: hiddenBoxIds });
   viewport.setProjection(projectionMode); viewport.setView(viewMode); viewport.setGrid(gridVisible);
   root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === viewMode));
   $('#projection').textContent = projectionMode.toUpperCase(); $('#grid-toggle').classList.toggle('active', gridVisible);
   $('#source-name').textContent = document.name;
-  $('.sidebar .eyebrow').textContent = documentKind === 'sketch' ? 'SKETCH TREE' : 'MODEL TREE';
+  $('.sidebar > .panel-heading .eyebrow').textContent = documentKind === 'sketch' ? 'SKETCH TREE' : 'MODEL TREE';
   viewportHost.setAttribute('aria-label', documentKind === 'sketch' ? '2D sketch viewport' : '3D model viewport');
   $('#fit').setAttribute('title', documentKind === 'sketch' ? 'Fit sketch (F)' : 'Fit model (F)');
   renderSketchToolUI();
   $('#add-box').setAttribute('title', documentKind === 'sketch' ? 'Add rectangle' : 'Add box');
-  $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Add a rectangle or run some sketch code.' : 'Add a box or run some model code.';
-  $('.tree-footer').querySelector('span:last-child')!.textContent = documentKind === 'sketch' ? 'Everything here is a rectangle.' : 'Everything here is a box.';
+  $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Draw a line or rectangle, or run sketch code.' : 'Add a box or run some model code.';
+  $('.tree-footer').querySelector('span:last-child')!.textContent = documentKind === 'sketch' ? 'Lines and rectangles on one plane.' : 'Groups move their items together.';
   $('#reset-code').textContent = documentKind === 'sketch' ? 'Reset sketch' : 'Reset example';
   $('#source-editor').setAttribute('aria-label', documentKind === 'sketch' ? 'JavaScript sketch source' : 'JavaScript model source');
   setEditor(document.source, document.draftDirty);
@@ -515,26 +742,26 @@ function scheduleSave() {
   saveTimer = window.setTimeout(saveWorkspace, 350);
 }
 function cloneVariables(value: VariableSpec[]) { return value.map((item) => ({ ...item })); }
-function recordAfterChange(source = editor.value) { history = history.slice(0, historyAt + 1); history.push({ boxes: cloneBoxes(boxes), rectangles: cloneRectangles(rectangles), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } }
-function commitRectangles(next: RectangleSpec[], message: string, options?: { preserveView?: boolean }) {
-  rectangles = cloneRectangles(validateRectangles(next));
+function recordAfterChange(source = editor.value) { history = history.slice(0, historyAt + 1); history.push({ groups: structuredClone(groups), boxes: cloneBoxes(boxes), rectangles: cloneRectangles(rectangles), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } }
+function commitRectangles(next: SketchShape[], message: string, options?: { preserveView?: boolean }) {
+  rectangles = cloneRectangles(validateSketchShapes(next, groups));
   hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => rectangles.some((rectangle) => rectangle.id === id)));
-  if (!rectangles.some((rectangle) => rectangle.id === selectedId) || hiddenBoxIds.has(selectedId!)) selectedId = null;
-  viewport.setRectangles(rectangles, { ...options, hiddenIds: hiddenBoxIds });
-  const source = generateSketchSource(rectangles); setEditor(source); appliedSource = source;
+  if ((!selectedGroup() && !rectangles.some((rectangle) => rectangle.id === selectedId)) || hiddenBoxIds.has(selectedId!)) selectedId = null;
+  viewport.setRectangles(worldRectangles(), { ...options, hiddenIds: hiddenBoxIds });
+  const source = generateSketchSource(rectangles, groups); setEditor(source); appliedSource = source;
   recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
-function updateRectangle(id: string, patch: Partial<RectangleSpec>) {
+function updateRectangle(id: string, patch: Partial<SketchShape>) {
   if (draftDirty) return notify('Run or discard the source draft before editing rectangles.', true);
-  try { commitRectangles(rectangles.map((rectangle) => rectangle.id === id ? { ...rectangle, ...patch } : rectangle), 'Rectangle updated', { preserveView: true }); }
+  try { commitRectangles(rectangles.map((rectangle) => rectangle.id === id ? { ...rectangle, ...patch } : rectangle), 'Sketch shape updated', { preserveView: true }); }
   catch (error) { notify(error instanceof Error ? error.message : 'Could not update rectangle', true); renderInspector(); }
 }
 function commitBoxes(next: BoxSpec[], message: string, options?: { preserveView?: boolean }, nextVariables = variables) {
-  const resolved = resolveModel(next, nextVariables);
-  const source = generateSource(resolved.boxes, resolved.variables);
-  boxes = cloneBoxes(resolved.boxes); variables = cloneVariables(resolved.variables); hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => boxes.some((box) => box.id === id))); selectedId = boxes.some((b) => b.id === selectedId) && !hiddenBoxIds.has(selectedId!) ? selectedId : null;
+  const resolved = resolveModel(next, nextVariables, groups);
+  const source = generateSource(resolved.boxes, resolved.variables, groups);
+  boxes = cloneBoxes(resolved.boxes); variables = cloneVariables(resolved.variables); hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => boxes.some((box) => box.id === id))); selectedId = (selectedGroup() || boxes.some((b) => b.id === selectedId)) && !hiddenBoxIds.has(selectedId!) ? selectedId : null;
   if (!selectedId) selectedFace = null;
-  viewport.setBoxes(boxes, { ...options, hiddenIds: hiddenBoxIds }); setEditor(source); appliedSource = editor.value; recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
+  viewport.setBoxes(worldBoxes(), { ...options, hiddenIds: hiddenBoxIds }); setEditor(source); appliedSource = editor.value; recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
 function toggleBoxVisibility(id: string) {
   if (draftDirty || !(documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === id)) return;
@@ -554,9 +781,14 @@ function addBox(duplicate = false) {
   if (draftDirty) return;
   if (documentKind === 'sketch') {
     if (!duplicate) { activateSketchTool('rectangle'); return; }
+    if (duplicate && selectedSketchShapes().length > 1) {
+      const copies = selectedSketchShapes().map((shape) => ({ ...shape, id: crypto.randomUUID(), name: `${shape.name} copy`, size: [...shape.size] as [number, number], position: [shape.position[0] + 1, shape.position[1] + 1] as [number, number] }));
+      commitRectangles([...rectangles, ...copies], `${copies.length} sketch shapes duplicated`, { preserveView: true });
+      selectSketchShapes(copies.map((shape) => shape.id), 'replace'); return;
+    }
     const base = duplicate ? selectedRectangle() : null;
     if (duplicate && !base) return;
-    const rectangle: RectangleSpec = base ? { ...base, id: crypto.randomUUID(), name: `${base.name} copy`, size: [...base.size], position: [base.position[0] + 1, base.position[1] + 1] } : { id: crypto.randomUUID(), name: `Rectangle ${rectangles.length + 1}`, size: [3, 2], position: [0, 0], color: PALETTE[rectangles.length % PALETTE.length] };
+    const rectangle: SketchShape = base ? { ...base, id: crypto.randomUUID(), name: `${base.name} copy`, size: [...base.size], position: [base.position[0] + 1, base.position[1] + 1] } : { id: crypto.randomUUID(), name: `Rectangle ${rectangles.length + 1}`, size: [3, 2], position: [0, 0], color: SKETCH_DEFAULT_COLOR };
     try { commitRectangles([...rectangles, rectangle], base ? 'Rectangle duplicated' : 'Rectangle added'); selectedId = rectangle.id; renderAll(); }
     catch (error) { notify(error instanceof Error ? error.message : 'Could not add rectangle', true); }
     return;
@@ -564,12 +796,14 @@ function addBox(duplicate = false) {
   const base = duplicate ? selectedBox() : null;
   if (duplicate && !base) return;
   const box: BoxSpec = base ? { ...base, expressions: base.expressions ? { ...base.expressions } : undefined, relative: base.relative ? { ...base.relative, u: base.relative.u ? { ...base.relative.u } : undefined, v: base.relative.v ? { ...base.relative.v } : undefined } : undefined, id: crypto.randomUUID(), name: `${base.name} copy`, position: [base.position[0] + 1, base.position[1] + 1, base.position[2]] } : { id: crypto.randomUUID(), name: `Box ${boxes.length + 1}`, size: [2, 2, 2], position: [0, 0, 0], color: PALETTE[boxes.length % PALETTE.length] };
+  if (!base && selectedGroup()) box.groupId = selectedGroup()!.id;
   try { commitBoxes([...boxes, box], base ? 'Box duplicated' : 'Box added'); selectedId = box.id; selectedVariable = null; renderAll(); }
   catch (err) { notify(err instanceof Error ? err.message : 'Could not add box', true); }
 }
 function deleteBox() {
   if (draftDirty) return;
-  if (documentKind === 'sketch') { if (selectedRectangle()) commitRectangles(rectangles.filter((rectangle) => rectangle.id !== selectedId), 'Rectangle deleted', { preserveView: true }); return; }
+  if (selectedGroup()) { ungroup(selectedGroup()!); return; }
+  if (documentKind === 'sketch') { const ids = new Set(selectedSketchShapes().map((shape) => shape.id)); if (ids.size) commitRectangles(rectangles.filter((shape) => !ids.has(shape.id)), ids.size === 1 ? 'Sketch shape deleted' : `${ids.size} sketch shapes deleted`, { preserveView: true }); return; }
   if (selectedVariable) { deleteVariable(selectedVariable); return; }
   if (!selectedBox()) return;
   const deletedId = selectedId!;
@@ -603,7 +837,7 @@ function awaitDialogResult(dialog: HTMLDialogElement): Promise<boolean> {
 }
 function replaceAndDeleteVariable(name: string) {
   try {
-    const next = removeVariable(boxes, variables, name);
+    const next = removeVariable(boxes, variables, name, groups);
     commitBoxes(next.boxes, 'Variable deleted · references replaced', { preserveView: true }, next.variables); selectedVariable = null; renderAll();
   }
   catch (error) { notify(error instanceof Error ? error.message : 'Could not delete variable', true); }
@@ -613,7 +847,7 @@ function createFromFace() {
   if (draftDirty || !hit) return;
   const parent = boxes.find((box) => box.id === hit.boxId); if (!parent) return;
   try {
-    const child = createBoxFromFace(parent, hit.face, crypto.randomUUID());
+    const child = createBoxFromFace(parent, hit.face, crypto.randomUUID(), groups);
     child.name = `${parent.name} ${faceTitle(hit.face)} box`;
     child.color = PALETTE[boxes.length % PALETTE.length];
     commitBoxes([...boxes, child], 'Box created from face', { preserveView: true }); selectedId = child.id; selectedVariable = null; selectedFace = null; renderAll();
@@ -634,16 +868,17 @@ async function runSource() {
     const compiled = documentKind === 'sketch' ? await compileModel(source, 'sketch') : await compileModel(source, 'model');
     if (epoch !== runEpoch) return;
     if (documentKind === 'sketch') {
-      rectangles = cloneRectangles(compiled as RectangleSpec[]);
+      const sketch = compiled as CompiledSketch; groups = structuredClone(sketch.groups); rectangles = cloneRectangles(sketch.rectangles);
       hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => rectangles.some((rectangle) => rectangle.id === id)));
-      viewport.setRectangles(rectangles, { hiddenIds: hiddenBoxIds });
+      viewport.setRectangles(worldRectangles(), { hiddenIds: hiddenBoxIds });
     } else {
-      const model = compiled as { boxes: BoxSpec[]; variables: VariableSpec[] };
-      boxes = cloneBoxes(validateBoxes(model.boxes, model.variables)); variables = cloneVariables(model.variables);
+      const model = compiled as { boxes: BoxSpec[]; variables: VariableSpec[]; groups?: GroupSpec[] };
+      groups = structuredClone(model.groups ?? []);
+      boxes = cloneBoxes(validateBoxes(model.boxes, model.variables, groups)); variables = cloneVariables(model.variables);
       hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => boxes.some((box) => box.id === id)));
-      viewport.setBoxes(boxes, { hiddenIds: hiddenBoxIds });
+      viewport.setBoxes(worldBoxes(), { hiddenIds: hiddenBoxIds });
     }
-    selectedId = null; selectedVariable = null; selectedFace = null; viewport.fit();
+    selectedId = null; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; viewport.fit();
     appliedSource = source; recordAfterChange(source);
     if (editor.value === source) setEditor(source); else { draftDirty = true; syncDraftUI(); }
     renderAll(); setStatus(editor.value === source ? `Updated · ${shapeCount()} ${shapeLabel()}${documentKind === 'model' ? ` · ${variables.length} variables` : ''}` : 'Updated · newer source draft retained'); scheduleSave();
@@ -655,12 +890,20 @@ async function runSource() {
 function undoRedo(delta: number) {
   if (draftDirty) return notify('Run or discard the source draft before undoing.', true);
   const next = historyAt + delta; if (next < 0 || next >= history.length) return;
-  historyAt = next; const snapshot = history[historyAt]; variables = cloneVariables(snapshot.variables ?? []); boxes = cloneBoxes(validateBoxes(snapshot.boxes, variables)); rectangles = cloneRectangles(validateRectangles(snapshot.rectangles ?? [])); hiddenBoxIds = new Set((snapshot.hiddenIds ?? []).filter((id) => (documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === id))); appliedSource = snapshot.source; selectedId = null; selectedVariable = null; selectedFace = null; if (documentKind === 'sketch') viewport.setRectangles(rectangles, { preserveView: true, hiddenIds: hiddenBoxIds }); else viewport.setBoxes(boxes, { preserveView: true, hiddenIds: hiddenBoxIds }); setEditor(snapshot.source); renderAll(); setStatus(delta < 0 ? 'Undo' : 'Redo'); scheduleSave();
+  const snapshot = history[next], geometry = resolveSnapshot(snapshot, documentKind);
+  historyAt = next; groups = structuredClone(geometry.groups);
+  collapsedGroupIds = new Set([...collapsedGroupIds].filter((id) => groups.some((g) => g.id === id)));
+  variables = cloneVariables(geometry.variables); boxes = cloneBoxes(geometry.boxes); rectangles = cloneRectangles(geometry.rectangles);
+  hiddenBoxIds = new Set((snapshot.hiddenIds ?? []).filter((id) => (documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === id)));
+  appliedSource = snapshot.source; selectedId = null; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null;
+  refreshGeometry(); setEditor(snapshot.source); renderAll(); setStatus(delta < 0 ? 'Undo' : 'Redo'); scheduleSave();
 }
 
+$('#add-group').addEventListener('click', addGroup);
 $('#add-box').addEventListener('click', () => addBox());
 $('#select-sketch-tool').addEventListener('click', () => activateSketchTool('select'));
 $('#rectangle-sketch-tool').addEventListener('click', () => activateSketchTool('rectangle'));
+$('#line-sketch-tool').addEventListener('click', () => activateSketchTool('line'));
 $('#add-variable').addEventListener('click', () => void addVariable());
 $('#delete-box').addEventListener('click', deleteBox);
 $('#duplicate-box').addEventListener('click', () => addBox(true));
@@ -708,7 +951,7 @@ $('#file-input').addEventListener('change', async (event) => {
 });
 $('#download').addEventListener('click', () => { captureDocument(); downloadDocument(activeDocument()); });
 $('#undo').addEventListener('click', () => undoRedo(-1)); $('#redo').addEventListener('click', () => undoRedo(1));
-editor.addEventListener('input', () => { if (documentKind === 'sketch' && sketchTool === 'rectangle') activateSketchTool('select'); draftDirty = true; updateLineNumbers(); syncDraftUI(); setStatus(`Draft changed · run to update ${documentKind === 'sketch' ? 'sketch' : 'model'}`); scheduleSave(); });
+editor.addEventListener('input', () => { if (documentKind === 'sketch' && sketchTool !== 'select') activateSketchTool('select'); draftDirty = true; updateLineNumbers(); syncDraftUI(); setStatus(`Draft changed · run to update ${documentKind === 'sketch' ? 'sketch' : 'model'}`); scheduleSave(); });
 editor.addEventListener('scroll', () => { $('#line-numbers').scrollTop = editor.scrollTop; });
 root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.addEventListener('click', () => { if (documentKind === 'sketch') return; viewMode = button.dataset.view as typeof viewMode; viewport.setView(viewMode); root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b === button)); scheduleSave(); }));
 $('#fit').addEventListener('click', () => viewport.fit());
@@ -719,7 +962,8 @@ document.addEventListener('keydown', (event) => {
   if (($('#document-kind-dialog') as HTMLDialogElement).open || ($('#variable-dialog') as HTMLDialogElement).open || ($('#delete-variable-dialog') as HTMLDialogElement).open || closeDocumentDialog.open) return;
   const target = event.target as HTMLElement; const textEditing = target instanceof HTMLTextAreaElement || target.isContentEditable; const editing = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || textEditing;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); newTab(); }
-  else if (documentKind === 'sketch' && event.key === 'Escape' && sketchTool === 'rectangle') { event.preventDefault(); activateSketchTool('select'); }
+  else if (documentKind === 'sketch' && event.key === 'Escape' && !editing) { event.preventDefault(); if (sketchTool !== 'select') activateSketchTool('select'); else selectSketchShapes([], 'replace'); }
+  else if (documentKind === 'sketch' && !editing && event.key.toLowerCase() === 'l') { event.preventDefault(); activateSketchTool('line'); }
   else if (documentKind === 'sketch' && !editing && event.key.toLowerCase() === 'r') { event.preventDefault(); activateSketchTool('rectangle'); }
   else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void runSource(); }
   else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !editing) { event.preventDefault(); undoRedo(event.shiftKey ? 1 : -1); }

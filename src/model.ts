@@ -1,3 +1,5 @@
+import { generateGroupSource, groupOffset, validateGroups, validateGroupMembers, worldPosition, type GroupSpec } from './groups';
+
 /** The canonical model representation. All lengths are inches on a 1/64" grid. */
 export type FaceName = "front" | "back" | "left" | "right" | "top" | "bottom";
 export type RelativePlacement = {
@@ -19,6 +21,7 @@ export type BoxSpec = {
   /** Minimum corner in X, Y, Z. */
   position: [number, number, number];
   color: string;
+  groupId?: string;
   relative?: RelativePlacement;
   /** Editable expressions retained separately from their resolved inch values. */
   expressions?: Partial<Record<NumericField, string>>;
@@ -26,7 +29,7 @@ export type BoxSpec = {
 
 export type NumericField = "size.0" | "size.1" | "size.2" | "position.0" | "position.1" | "position.2" | "relative.offset" | "relative.u.offset" | "relative.v.offset";
 export type VariableSpec = { name: string; value: number; expression?: string };
-export type ModelSpec = { boxes: BoxSpec[]; variables: VariableSpec[] };
+export type ModelSpec = { boxes: BoxSpec[]; variables: VariableSpec[]; groups?: GroupSpec[] };
 
 export class MissingVariableError extends Error {
   readonly variableName: string;
@@ -291,7 +294,7 @@ function placeOnFace(parent: BoxSpec, child: BoxSpec): [number, number, number] 
 }
 
 /** Validate, normalize, and resolve relative placements in canonical snapped BoxSpecs. */
-export function validateBoxes(input: unknown, variables: VariableSpec[] = []): BoxSpec[] {
+export function validateBoxes(input: unknown, variables: VariableSpec[] = [], groups: GroupSpec[] = []): BoxSpec[] {
   if (!Array.isArray(input)) throw new Error("Model must be an array of boxes.");
   if (input.length > 2000) throw new Error("A model can contain at most 2000 boxes.");
   const resolvedVariables = resolveVariables(variables);
@@ -304,6 +307,7 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = []): B
     ids.add(raw.id);
     if (typeof raw.name !== "string" || !raw.name.trim()) throw new Error(`Box ${raw.id} needs a name.`);
     if (typeof raw.color !== "string" || !raw.color.trim()) throw new Error(`Box ${raw.id} needs a color.`);
+    if (raw.groupId !== undefined && (typeof raw.groupId !== 'string' || !raw.groupId.trim())) throw new Error('Box groupId must be a group ID.');
     const hasRelative = raw.relative !== undefined;
     const expressions = expressionMap(raw.expressions, raw.id, hasRelative);
     const remember = (key: NumericField, value: unknown) => { if (typeof value === "string" && !expressions[key]) expressions[key] = value; };
@@ -324,8 +328,9 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = []): B
     const position = tuple(raw.position, `Box ${raw.id} position`, expressions, "position", resolver);
     if (size.some((part) => part <= 0)) throw new Error(`Box ${raw.id} sizes must be positive after 1/64-inch snapping.`);
     const relative = normalizeRelative(raw.relative, raw.id, expressions, resolver);
-    return { id: raw.id, name: raw.name, size, position, color: raw.color, ...(relative ? { relative } : {}), ...(Object.keys(expressions).length ? { expressions } : {}) };
+    return { id: raw.id, name: raw.name, size, position, color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(relative ? { relative } : {}), ...(Object.keys(expressions).length ? { expressions } : {}) };
   });
+  validateGroupMembers(boxes, groups);
   const byId = new Map(boxes.map((box) => [box.id, box]));
   const state = new Map<string, "visiting" | "done">();
   const resolve = (box: BoxSpec): BoxSpec => {
@@ -336,8 +341,11 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = []): B
       const parent = byId.get(box.relative.boxId);
       if (!parent) throw new Error(`Box ${box.id} references unknown box ${box.relative.boxId}.`);
       if (parent === box) throw new Error(`Box ${box.id} cannot be placed relative to itself.`);
+      if (box.groupId !== parent.groupId) throw new Error('Face-linked boxes must belong to the same group. Detach the face link before changing groups.');
       resolve(parent);
-      box.position = placeOnFace(parent, box);
+      const offset = groupOffset(groups, box.groupId);
+      const placed = placeOnFace({ ...parent, position: worldPosition(parent.position, groups, parent.groupId) }, { ...box, position: worldPosition(box.position, groups, box.groupId) });
+      box.position = placed.map((n, i) => n - offset[i]) as [number, number, number];
     }
     state.set(box.id, "done");
     return box;
@@ -346,9 +354,10 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = []): B
 }
 
 /** Resolve a complete model while retaining its editable expression text. */
-export function resolveModel(boxes: unknown, variables: unknown = []): ModelSpec {
+export function resolveModel(boxes: unknown, variables: unknown = [], inputGroups: unknown = []): ModelSpec {
   const resolvedVariables = resolveVariables(variables);
-  return { variables: resolvedVariables, boxes: validateBoxes(boxes, resolvedVariables) };
+  const groups = validateGroups(inputGroups);
+  return { variables: resolvedVariables, boxes: validateBoxes(boxes, resolvedVariables, groups), ...(groups.length ? { groups } : {}) };
 }
 
 /**
@@ -356,8 +365,8 @@ export function resolveModel(boxes: unknown, variables: unknown = []): ModelSpec
  * references are replaced with the resolved decimal value, parenthesized to
  * preserve arithmetic precedence.
  */
-export function removeVariable(boxes: BoxSpec[], variables: VariableSpec[], name: string): ModelSpec {
-  const model = resolveModel(boxes, variables);
+export function removeVariable(boxes: BoxSpec[], variables: VariableSpec[], name: string, groups: GroupSpec[] = []): ModelSpec {
+  const model = resolveModel(boxes, variables, groups);
   const removed = model.variables.find((variable) => variable.name === name);
   if (!removed) throw new MissingVariableError(name);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -372,11 +381,11 @@ export function removeVariable(boxes: BoxSpec[], variables: VariableSpec[], name
     const expressions = Object.fromEntries(Object.entries(box.expressions).map(([field, expression]) => [field, replace(expression)])) as Partial<Record<NumericField, string>>;
     return { ...box, size: [...box.size] as [number, number, number], position: [...box.position] as [number, number, number], relative: box.relative ? { ...box.relative, u: box.relative.u ? { ...box.relative.u } : undefined, v: box.relative.v ? { ...box.relative.v } : undefined } : undefined, expressions };
   });
-  return resolveModel(nextBoxes, nextVariables);
+  return resolveModel(nextBoxes, nextVariables, groups);
 }
 
 /** Make a default outward child whose footprint matches the selected face. */
-export function createBoxFromFace(parent: BoxSpec, face: FaceName, id: string): BoxSpec {
+export function createBoxFromFace(parent: BoxSpec, face: FaceName, id: string, groups: GroupSpec[] = []): BoxSpec {
   const frame = getFaceFrame(face);
   const size: [number, number, number] = [0, 0, 0];
   size[frame.normalAxis] = 3 / 4;
@@ -388,20 +397,22 @@ export function createBoxFromFace(parent: BoxSpec, face: FaceName, id: string): 
     size,
     position: [...parent.position],
     color: "#8795a1",
+    ...(parent.groupId ? { groupId: parent.groupId } : {}),
     relative: { boxId: parent.id, face, offset: 0, u: { side: "left", offset: 0 }, v: { side: "bottom", offset: 0 } },
   };
   // The selected parent may itself be relative; callers provide its resolved model value.
-  return validateBoxes([{ ...parent, relative: undefined, expressions: undefined }, child])[1];
+  return validateBoxes([{ ...parent, relative: undefined, expressions: undefined }, child], [], groups)[1];
 }
 
 /** Turn the current model into plain editable JavaScript for the code editor. */
-export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = []): string {
+export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [], groups: GroupSpec[] = []): string {
   const lines = ["// Edit these boxes to build your model. Dimensions are in inches."];
-  const model = resolveModel(boxes, variables);
+  const model = resolveModel(boxes, variables, groups);
   for (const variable of model.variables) {
     lines.push(`variable({ name: ${JSON.stringify(variable.name)}, value: inch(${JSON.stringify(formatInches(variable.value))})${variable.expression ? `, expression: ${JSON.stringify(variable.expression)}` : ""} });`);
   }
   if (model.variables.length) lines.push("");
+  lines.push(...generateGroupSource(groups));
   for (const box of model.boxes) {
     const field = (key: NumericField, value: number) => box.expressions?.[key] ? JSON.stringify(box.expressions[key]) : `inch(${JSON.stringify(formatInches(value))})`;
     const vec = (values: number[], prefix: "size" | "position") => `[${values.map((n, index) => field(`${prefix}.${index}` as NumericField, n)).join(", ")}]`;
@@ -409,7 +420,7 @@ export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [])
       ? `, relative: { boxId: ${JSON.stringify(box.relative.boxId)}, face: ${JSON.stringify(box.relative.face)}, offset: ${field("relative.offset", box.relative.offset)}${box.relative.u ? `, u: { side: ${JSON.stringify(box.relative.u.side)}, offset: ${field("relative.u.offset", box.relative.u.offset)} }` : ""}${box.relative.v ? `, v: { side: ${JSON.stringify(box.relative.v.side)}, offset: ${field("relative.v.offset", box.relative.v.offset)} }` : ""} }`
       : "";
     lines.push(
-      `box({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, size: ${vec(box.size, "size")}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${relative} });`,
+      `box({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, size: ${vec(box.size, "size")}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${box.groupId ? `, groupId: ${JSON.stringify(box.groupId)}` : ""}${relative} });`,
     );
   }
   return `${lines.join("\n")}\n`;
