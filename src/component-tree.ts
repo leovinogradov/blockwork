@@ -31,5 +31,8 @@ export function planTreeMove(groups: GroupSpec[], items: TreeItem[], order: stri
   } else {
     nextOrder.splice(nextOrder.indexOf(drop.targetId!) + (drop.placement === 'after' ? 1 : 0), 0, id);
   }
-  return { parentId, order: nextOrder, changed: previousParent !== parentId || currentOrder.some((entryId, index) => entryId !== nextOrder[index]) };
+  const siblings = new Set([...groups.filter((entry) => entry.parentId === previousParent), ...items.filter((entry) => entry.groupId === previousParent)].map((entry) => entry.id));
+  const previousSiblings = currentOrder.filter((entryId) => siblings.has(entryId));
+  const nextSiblings = nextOrder.filter((entryId) => siblings.has(entryId));
+  return { parentId, order: nextOrder, changed: previousParent !== parentId || previousSiblings.some((entryId, index) => entryId !== nextSiblings[index]) };
 }

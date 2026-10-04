@@ -84,6 +84,8 @@ Choose **Create group** (▱) in the object tree to collect the selected box or 
 
 The tree's disclosure arrow collapses a group and its children without hiding geometry. Select a group and edit its X/Y/Z position (X/Y in sketches) to move all members and nested groups together. Member coordinates are local to their group. **Ungroup · keep items**, or Delete with a group selected, removes the container while preserving the items and their positions. Group edits participate in undo/redo; groups and collapsed entries survive local recovery.
 
+Drag a component row to rearrange the tree. A line marks insertion before or after a row; dropping onto the middle of a group adds the component to it, including empty or collapsed groups. Groups move with their whole branch, and cannot be dropped into their descendants. The **Move to top level** target appears during dragging and removes group membership. These moves preserve world positions, support undo/redo, and save the tree order locally for each file. Dragging pauses while the source has an unrun draft. Browser dragging, hitboxes, and auto-scrolling use Atlassian Pragmatic Drag and Drop; group transforms and undo remain in the app's model code.
+
 Source declares groups with `group(spec)` and connects objects using `groupId`. A group's `position` has three inch values, with Z = 0 in a 2D sketch. Use `parentId` to nest groups. IDs must be unique across groups and objects.
 
 ```js

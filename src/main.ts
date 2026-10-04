@@ -2,6 +2,8 @@ import './style.css';
 import Picker from 'vanilla-picker';
 import { Box, createIcons, Eye, EyeOff, Group, MousePointer2, RectangleHorizontal, Slash, Square } from 'lucide';
 import { groupDescendants, groupOffset, reparentPosition, validateGroups, worldPosition, type GroupSpec, type Vector3 } from './groups';
+import { normalizeTreeOrder, planTreeMove, type TreeDrop } from './component-tree';
+import { bindComponentTreeDrag } from './component-tree-drag';
 import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, formatInches, generateSource, parseInches, removeVariable, resolveModel, validateBoxes, type BoxSpec, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
@@ -110,6 +112,8 @@ const viewportHost = $('#viewport');
 const listEl = $('#component-list');
 let groups: GroupSpec[] = [];
 let collapsedGroupIds = new Set<string>();
+let treeOrder: string[] = [];
+let treeDragCleanup = () => {};
 let boxes: BoxSpec[] = [];
 let rectangles: SketchShape[] = [];
 let documentKind: DocumentKind = 'model';
@@ -298,13 +302,14 @@ function reparentBox(box: BoxSpec, nextGroup?: string): BoxSpec {
 function detachCrossGroupLinks(next: BoxSpec[]): BoxSpec[] {
   return next.map((box) => box.relative && next.find((b) => b.id === box.relative!.boxId)?.groupId !== box.groupId ? clearPositionExpressions(box) : box);
 }
-function commitGroups(nextGroups: GroupSpec[], nextBoxes = boxes, nextRectangles = rectangles, message = 'Group updated') {
+function commitGroups(nextGroups: GroupSpec[], nextBoxes = boxes, nextRectangles = rectangles, message = 'Group updated', nextTreeOrder = treeOrder) {
   const valid = validateGroups(nextGroups, documentKind === 'sketch');
   const model = documentKind === 'model' ? resolveModel(nextBoxes, variables, valid) : null;
   const shapes = documentKind === 'sketch' ? validateSketchShapes(nextRectangles, valid) : [];
   const source = model ? generateSource(model.boxes, model.variables, valid) : generateSketchSource(shapes, valid);
   groups = valid;
   if (model) boxes = cloneBoxes(model.boxes); else rectangles = cloneRectangles(shapes);
+  treeOrder = normalizeTreeOrder(nextTreeOrder, groups, documentKind === 'sketch' ? rectangles : boxes);
   collapsedGroupIds = new Set([...collapsedGroupIds].filter((id) => groups.some((g) => g.id === id)));
   if (selectedId && !groups.some((g) => g.id === selectedId) && !(documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === selectedId)) selectedId = null;
   refreshGeometry(); setEditor(source); appliedSource = source;
@@ -369,26 +374,56 @@ function ungroup(group: GroupSpec) {
     commitGroups(nextGroups, nextBoxes, nextShapes, 'Ungrouped · items kept in place');
   } catch (error) { notify(error instanceof Error ? error.message : 'Could not ungroup', true); }
 }
+function moveTreeComponent(id: string, drop: TreeDrop) {
+  if (draftDirty) return;
+  try {
+    const items = documentKind === 'sketch' ? rectangles : boxes;
+    const move = planTreeMove(groups, items, treeOrder, id, drop);
+    if (!move.changed) return;
+    const group = groups.find((entry) => entry.id === id);
+    const previousParent = group ? group.parentId : items.find((entry) => entry.id === id)?.groupId;
+    const reparent = previousParent !== move.parentId;
+    const nextGroups = groups.map((entry) => entry.id === id && reparent ? { ...entry, parentId: move.parentId, position: reparentPosition(entry.position, groups, entry.parentId, move.parentId) } : entry);
+    const nextBoxes = documentKind === 'model' && reparent && !group ? detachCrossGroupLinks(boxes.map((entry) => entry.id === id ? reparentBox(entry, move.parentId) : entry)) : boxes;
+    const nextShapes = documentKind === 'sketch' && reparent && !group ? rectangles.map((entry) => entry.id === id ? { ...entry, groupId: move.parentId, position: reparentPosition(entry.position, groups, entry.groupId, move.parentId).slice(0, 2) as [number, number] } : entry) : rectangles;
+    if (drop.placement === 'inside' && move.parentId) collapsedGroupIds.delete(move.parentId);
+    commitGroups(nextGroups, nextBoxes, nextShapes, reparent ? 'Component moved · position preserved' : 'Components reordered', move.order);
+  } catch (error) { notify(error instanceof Error ? error.message : 'Could not move component', true); }
+}
 function renderList() {
+  treeDragCleanup();
   const items = documentKind === 'sketch' ? rectangles : boxes;
+  treeOrder = normalizeTreeOrder(treeOrder, groups, items);
+  const entries = new Map([...groups, ...items].map((entry) => [entry.id, entry]));
+  const groupIds = new Set(groups.map((group) => group.id));
+  const dragAttributes = (id: string) => `data-tree-id="${escapeAttr(id)}" draggable="${!draftDirty}" title="${draftDirty ? 'Run or discard the source draft to rearrange components' : 'Drag to reorder; drop onto a group to add to it'}"`;
   $('#box-count').textContent = String(items.length);
   $('#tree-empty').classList.toggle('hidden', items.length + variables.length + groups.length > 0);
   const itemRow = (item: BoxSpec | SketchShape, depth: number) => {
     const hidden = hiddenBoxIds.has(item.id), sketch = documentKind === 'sketch';
     const symbol = sketch ? (item as SketchShape).kind === 'line' ? 'row-line' : 'row-square' : 'row-cube';
     const size = sketch && (item as SketchShape).kind === 'line' ? `${formatInches(Math.hypot(...item.size))} in` : item.size.map(formatInches).join(' × ');
-    return `<div class="component-row box-row ${(documentKind === 'sketch' ? selectedSketchIds.has(item.id) : item.id === selectedId) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}"><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(item.name)}"><span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span><span class="row-name">${escapeHTML(item.name)}</span><span class="row-size">${size}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(item.id)}" aria-label="${hidden ? 'Show' : 'Hide'} ${escapeAttr(item.name)}" title="${hidden ? 'Show' : 'Hide'} ${escapeAttr(item.name)}"><i data-lucide="${hidden ? 'eye-off' : 'eye'}" aria-hidden="true"></i></button></div>`;
+    return `<div class="component-row box-row ${(documentKind === 'sketch' ? selectedSketchIds.has(item.id) : item.id === selectedId) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(item.id)}><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(item.name)}"><span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span><span class="row-name">${escapeHTML(item.name)}</span><span class="row-size">${size}</span></button><button type="button" class="visibility-toggle" data-visibility-id="${escapeAttr(item.id)}" aria-label="${hidden ? 'Show' : 'Hide'} ${escapeAttr(item.name)}" title="${hidden ? 'Show' : 'Hide'} ${escapeAttr(item.name)}"><i data-lucide="${hidden ? 'eye-off' : 'eye'}" aria-hidden="true"></i></button></div>`;
   };
-  const branch = (parentId: string | undefined, depth: number): string => groups.filter((g) => g.parentId === parentId).map((g) => {
+  const branch = (parentId: string | undefined, depth: number): string => treeOrder.map((id) => entries.get(id)!).filter((entry) => (groupIds.has(entry.id) ? (entry as GroupSpec).parentId : (entry as BoxSpec | SketchShape).groupId) === parentId).map((entry) => {
+    if (!groupIds.has(entry.id)) return itemRow(entry as BoxSpec | SketchShape, depth);
+    const g = entry as GroupSpec;
     const collapsed = collapsedGroupIds.has(g.id);
-    return `<div class="component-row group-row ${selectedId === g.id ? 'selected' : ''}" style="--tree-depth:${depth}"><button class="group-collapse" data-collapse-id="${escapeAttr(g.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeAttr(g.name)}">${collapsed ? '▸' : '▾'}</button><button class="component-select" data-id="${escapeAttr(g.id)}" aria-label="Select ${escapeAttr(g.name)}"><span class="group-symbol" aria-hidden="true">▱</span><span class="row-name">${escapeHTML(g.name)}</span><span class="row-size">${groupItems(g.id).length} items</span></button></div>${collapsed ? '' : branch(g.id, depth + 1)}`;
-  }).join('') + items.filter((item) => item.groupId === parentId).map((item) => itemRow(item, depth)).join('');
+    return `<div class="component-row group-row ${selectedId === g.id ? 'selected' : ''}" style="--tree-depth:${depth}" ${dragAttributes(g.id)}><button class="group-collapse" data-collapse-id="${escapeAttr(g.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeAttr(g.name)}">${collapsed ? '▸' : '▾'}</button><button class="component-select" data-id="${escapeAttr(g.id)}" aria-label="Select ${escapeAttr(g.name)}"><i class="group-symbol tree-group-icon" data-lucide="group" aria-hidden="true"></i><span class="row-name">${escapeHTML(g.name)}</span><span class="row-size">${groupItems(g.id).length} items</span></button></div>${collapsed ? '' : branch(g.id, depth + 1)}`;
+  }).join('');
   listEl.innerHTML = (documentKind === 'model' ? variables.map((variable) => `<button class="component-row variable-row ${variable.name === selectedVariable ? 'selected' : ''}" data-variable="${escapeAttr(variable.name)}"><span class="variable-symbol">ƒ</span><span class="row-name">${escapeHTML(variable.name)}</span><span class="row-size">${formatInches(variable.value)} in</span></button>`).join('') : '') + branch(undefined, 0);
   renderIcons(listEl);
+  listEl.insertAdjacentHTML('beforeend', '<div class="tree-root-drop" data-tree-root>Move to top level</div>');
   listEl.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((row) => row.addEventListener('click', (event) => { const id = row.dataset.id!; if (documentKind === 'sketch' && rectangles.some((shape) => shape.id === id)) { selectSketchShapes([id], event.shiftKey || event.ctrlKey || event.metaKey ? 'toggle' : 'replace'); return; } selectedSketchIds.clear(); selectedId = id; selectedVariable = null; selectedFace = null; renderAll(); }));
   listEl.querySelectorAll<HTMLButtonElement>('[data-collapse-id]').forEach((button) => button.addEventListener('click', () => { const id = button.dataset.collapseId!; if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id); renderList(); scheduleSave(); }));
   listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', () => toggleBoxVisibility(button.dataset.visibilityId!)));
   listEl.querySelectorAll<HTMLButtonElement>('[data-variable]').forEach((row) => row.addEventListener('click', () => { selectedVariable = row.dataset.variable!; selectedId = null; selectedFace = null; renderAll(); }));
+  treeDragCleanup = bindComponentTreeDrag({
+    element: listEl,
+    canEdit: () => !draftDirty,
+    canMove: (id, drop) => { try { planTreeMove(groups, documentKind === 'sketch' ? rectangles : boxes, treeOrder, id, drop); return true; } catch { return false; } },
+    onMove: moveTreeComponent,
+  });
 }
 function faceTitle(face: FaceName) { return face[0].toUpperCase() + face.slice(1); }
 const faceDirection: Record<FaceName, string> = {
@@ -618,7 +653,7 @@ function captureDocument() {
   const document = activeDocument();
   if (!document) return;
   Object.assign(document, structuredClone({
-    groups, collapsedGroupIds: [...collapsedGroupIds], boxes, rectangles, variables, source: editor.value, appliedSource, draftDirty, hiddenBoxIds: [...hiddenBoxIds],
+    groups, collapsedGroupIds: [...collapsedGroupIds], treeOrder, boxes, rectangles, variables, source: editor.value, appliedSource, draftDirty, hiddenBoxIds: [...hiddenBoxIds],
     viewMode, projectionMode, gridVisible, history, historyAt, selectedId, selectedSketchIds: [...selectedSketchIds], selectedVariable, selectedFace,
     error: $('#editor-error').hidden ? '' : $('#editor-error').textContent ?? '',
     scrollTop: editor.scrollTop, scrollLeft: editor.scrollLeft, selectionStart: editor.selectionStart, selectionEnd: editor.selectionEnd,
@@ -644,7 +679,7 @@ function loadDocument(document: ModelDocument) {
   $('#run-code').toggleAttribute('disabled', false);
   closeFaceMenu(); closeFaceColorPicker();
   activeDocumentId = document.id;
-  groups = structuredClone(document.groups); collapsedGroupIds = new Set(document.collapsedGroupIds);
+  groups = structuredClone(document.groups); collapsedGroupIds = new Set(document.collapsedGroupIds); treeOrder = [...document.treeOrder];
   documentKind = document.kind; boxes = cloneBoxes(document.boxes); rectangles = cloneRectangles(document.rectangles); variables = cloneVariables(document.variables);
   sketchTool = 'select';
   appliedSource = document.appliedSource; hiddenBoxIds = new Set(document.hiddenBoxIds);
@@ -666,7 +701,7 @@ function loadDocument(document: ModelDocument) {
   renderSketchToolUI();
   $('#add-box').setAttribute('title', documentKind === 'sketch' ? 'Add rectangle' : 'Add box');
   $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Draw a line or rectangle, or run sketch code.' : 'Add a box or run some model code.';
-  $('.tree-footer').querySelector('span:last-child')!.textContent = documentKind === 'sketch' ? 'Lines and rectangles on one plane.' : 'Groups move their items together.';
+  $('.tree-footer').querySelector('span:last-child')!.textContent = 'Drag to reorder or add to a group.';
   $('#reset-code').textContent = documentKind === 'sketch' ? 'Reset sketch' : 'Reset example';
   $('#source-editor').setAttribute('aria-label', documentKind === 'sketch' ? 'JavaScript sketch source' : 'JavaScript model source');
   setEditor(document.source, document.draftDirty);
@@ -742,7 +777,7 @@ function scheduleSave() {
   saveTimer = window.setTimeout(saveWorkspace, 350);
 }
 function cloneVariables(value: VariableSpec[]) { return value.map((item) => ({ ...item })); }
-function recordAfterChange(source = editor.value) { history = history.slice(0, historyAt + 1); history.push({ groups: structuredClone(groups), boxes: cloneBoxes(boxes), rectangles: cloneRectangles(rectangles), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } }
+function recordAfterChange(source = editor.value) { treeOrder = normalizeTreeOrder(treeOrder, groups, documentKind === 'sketch' ? rectangles : boxes); history = history.slice(0, historyAt + 1); history.push({ groups: structuredClone(groups), treeOrder: [...treeOrder], boxes: cloneBoxes(boxes), rectangles: cloneRectangles(rectangles), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } }
 function commitRectangles(next: SketchShape[], message: string, options?: { preserveView?: boolean }) {
   rectangles = cloneRectangles(validateSketchShapes(next, groups));
   hiddenBoxIds = new Set([...hiddenBoxIds].filter((id) => rectangles.some((rectangle) => rectangle.id === id)));
@@ -891,7 +926,7 @@ function undoRedo(delta: number) {
   if (draftDirty) return notify('Run or discard the source draft before undoing.', true);
   const next = historyAt + delta; if (next < 0 || next >= history.length) return;
   const snapshot = history[next], geometry = resolveSnapshot(snapshot, documentKind);
-  historyAt = next; groups = structuredClone(geometry.groups);
+  historyAt = next; groups = structuredClone(geometry.groups); treeOrder = [...geometry.treeOrder];
   collapsedGroupIds = new Set([...collapsedGroupIds].filter((id) => groups.some((g) => g.id === id)));
   variables = cloneVariables(geometry.variables); boxes = cloneBoxes(geometry.boxes); rectangles = cloneRectangles(geometry.rectangles);
   hiddenBoxIds = new Set((snapshot.hiddenIds ?? []).filter((id) => (documentKind === 'sketch' ? rectangles : boxes).some((item) => item.id === id)));
