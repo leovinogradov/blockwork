@@ -5,9 +5,9 @@ import type { SketchShape } from './sketch';
 
 /** Coordinates are fractions of the referenced geometry, never frozen world points. */
 export type MeasurementAnchor = { objectId: string; shapeId?: string; coordinates: number[] };
-export type MeasurementPlane = 'xy' | 'xz' | 'yz';
-export type MeasurementPlaneChoice = 'auto' | MeasurementPlane;
-export type Measurement = { id: string; name?: string; groupId?: string; start: MeasurementAnchor; end: MeasurementAnchor; offset?: number; lineHeight?: number; plane?: MeasurementPlane };
+export type MeasurementAxis = 'x' | 'y' | 'z';
+export type MeasurementAxisChoice = 'auto' | MeasurementAxis;
+export type Measurement = { id: string; name?: string; groupId?: string; start: MeasurementAnchor; end: MeasurementAnchor; offset?: number; lineHeight?: number; axis?: MeasurementAxis };
 export type MeasurementGeometry = { boxes?: BoxSpec[]; rectangles?: SketchShape[]; sketches?: ModelSketch[]; groups?: GroupSpec[] };
 export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnchor; a: Vector3; b: Vector3 };
 
@@ -18,9 +18,9 @@ export function defaultMeasurementLineHeight(distance: number): number {
   return Math.min(3, Math.max(1, Math.ceil(Math.sqrt(Math.max(0, distance)) / 4.5)));
 }
 
-/** Signed model-space distance along the fixed plane's canonical perpendicular. */
-export function measurementOffsetAtPointer(start: Vector3, end: Vector3, cursor: Vector3, plane: MeasurementPlane = 'xy'): number {
-  const frame = measurementPlaneLayout(start, end, plane);
+/** Signed model-space distance perpendicular to the measured line. */
+export function measurementOffsetAtPointer(start: Vector3, end: Vector3, cursor: Vector3, axis: MeasurementAxis = 'z'): number {
+  const frame = measurementAxisLayout(start, end, axis);
   return cursor.reduce((offset, n, i) => offset + (n - frame.midpoint[i]) * frame.perpendicular[i], 0);
 }
 
@@ -45,31 +45,39 @@ export function resolveMeasurementAnchor(anchor: MeasurementAnchor, geometry: Me
   return local;
 }
 
-/** Choose once, at the first endpoint, using only the creation view. */
-export function autoMeasurementPlane(viewDirection: Vector3): MeasurementPlane {
-  const candidates = [{ plane: 'xy' as const, normal: 2 }, { plane: 'xz' as const, normal: 1 }, { plane: 'yz' as const, normal: 0 }];
-  return candidates.reduce((best, p) => Math.abs(viewDirection[p.normal]) > Math.abs(viewDirection[best.normal]) + 1e-8 ? p : best).plane;
+/** Choose a preferred facing axis once, from the creation view. Ties favor Z. */
+export function autoMeasurementAxis(viewDirection: Vector3): MeasurementAxis {
+  const candidates = [{ axis: 'z' as const, index: 2 }, { axis: 'y' as const, index: 1 }, { axis: 'x' as const, index: 0 }];
+  return candidates.reduce((best, candidate) => Math.abs(viewDirection[candidate.index]) > Math.abs(viewDirection[best.index]) + 1e-8 ? candidate : best).axis;
 }
 
-/** Annotation geometry lies on a principal plane through the endpoints' midpoint. */
-export function measurementPlaneLayout(start: Vector3, end: Vector3, plane: MeasurementPlane) {
-  const [u, v, normalAxis] = plane === 'xy' ? [0, 1, 2] : plane === 'xz' ? [0, 2, 1] : [1, 2, 0];
+/** Follow the full 3D line, with the closest possible normal to the preferred axis. */
+export function measurementAxisLayout(start: Vector3, end: Vector3, axis: MeasurementAxis = 'z') {
   const midpoint = start.map((n, i) => (n + end[i]) / 2) as Vector3;
-  const a = [...start] as Vector3, b = [...end] as Vector3;
-  a[normalAxis] = b[normalAxis] = midpoint[normalAxis];
-  const du = end[u] - start[u], dv = end[v] - start[v], length = Math.hypot(du, dv);
-  const sign = (Math.abs(du) > 1e-8 ? du < 0 : dv < 0) ? -1 : 1;
-  const direction: Vector3 = [0, 0, 0], perpendicular: Vector3 = [0, 0, 0], normal: Vector3 = [0, 0, 0];
-  direction[u] = length > 1e-8 ? du / length * sign : 1;
-  direction[v] = length > 1e-8 ? dv / length * sign : 0;
-  perpendicular[u] = -direction[v]; perpendicular[v] = direction[u];
-  normal[normalAxis] = 1;
-  return { plane, midpoint, start: a, end: b, direction, perpendicular, normal };
+  const delta = end.map((n, i) => n - start[i]), length = Math.hypot(...delta);
+  let direction: Vector3 = length > 1e-12 ? delta.map((n) => n / length) as Vector3 : [1, 0, 0];
+  // Reversing endpoints must not reverse the side of a saved label offset.
+  if ((direction.find((n) => Math.abs(n) > 1e-8) ?? 1) < 0) direction = direction.map((n) => -n) as Vector3;
+  const preferredIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+  const projectAxis = (index: number) => direction.map((n, i) => (i === index ? 1 : 0) - n * direction[index]) as Vector3;
+  let projected = projectAxis(preferredIndex);
+  let normalLength = Math.hypot(...projected);
+  let fallbackAxis: MeasurementAxis | undefined;
+  if (normalLength <= 1e-6) {
+    // At parallel (or nearly parallel) lines use the least-aligned world axis.
+    // Ties choose X, then Y, then Z; this is independent of camera and endpoint order.
+    const index = [0, 1, 2].reduce((best, i) => Math.abs(direction[i]) < Math.abs(direction[best]) - 1e-8 ? i : best);
+    projected = projectAxis(index); normalLength = Math.hypot(...projected);
+    fallbackAxis = (['x', 'y', 'z'] as const)[index];
+  }
+  const normal = projected.map((n) => n / normalLength) as Vector3;
+  const perpendicular: Vector3 = [normal[1] * direction[2] - normal[2] * direction[1], normal[2] * direction[0] - normal[0] * direction[2], normal[0] * direction[1] - normal[1] * direction[0]];
+  return { axis, fallbackAxis, midpoint, start: [...start] as Vector3, end: [...end] as Vector3, direction, perpendicular, normal };
 }
 
-/** Derive world-space annotation geometry; sketches ignore the persisted plane. */
-export function measurementAnnotationLayout(start: Vector3, end: Vector3, measurement: Pick<Measurement, 'offset' | 'lineHeight' | 'plane'>, sketch = false) {
-  const frame = measurementPlaneLayout(start, end, sketch ? 'xy' : measurement.plane ?? 'xy');
+/** Sketch annotations stay on their drawing surface with a Z-facing normal. */
+export function measurementAnnotationLayout(start: Vector3, end: Vector3, measurement: Pick<Measurement, 'offset' | 'lineHeight' | 'axis'>, sketch = false) {
+  const frame = measurementAxisLayout(start, end, sketch ? 'z' : measurement.axis ?? 'z');
   const offset = measurement.offset ?? DEFAULT_MEASUREMENT_OFFSET;
   const shifted = (point: Vector3) => point.map((n, i) => n + frame.perpendicular[i] * offset) as Vector3;
   const distance = Math.hypot(...start.map((n, i) => end[i] - n));
@@ -100,11 +108,10 @@ export function validateMeasurements(input: unknown = [], geometry: MeasurementG
     };
     if (raw.offset !== undefined && (typeof raw.offset !== 'number' || !Number.isFinite(raw.offset))) throw new Error('Measurement offset must be a finite inch distance.');
     if (raw.lineHeight !== undefined && (typeof raw.lineHeight !== 'number' || !Number.isFinite(raw.lineHeight) || raw.lineHeight <= 0)) throw new Error('Measurement label line height must be a positive inch distance.');
-    // Legacy auto records become a fixed XY plane; never derive persisted planes from the live camera.
-    if (raw.plane !== undefined && !['auto', 'xy', 'xz', 'yz'].includes(raw.plane)) throw new Error('Measurement plane must be xy, xz, or yz.');
+    if (raw.axis !== undefined && !['x', 'y', 'z'].includes(raw.axis)) throw new Error('Measurement label axis must be x, y, or z.');
     if (raw.name !== undefined && (typeof raw.name !== 'string' || !raw.name.trim())) throw new Error('Measurement name must be a nonempty string.');
     if (raw.groupId !== undefined && (typeof raw.groupId !== 'string' || !geometry.groups?.some((g) => g.id === raw.groupId))) throw new Error('Measurement references a missing group.');
-    return { id: raw.id, ...(raw.name !== undefined ? { name: raw.name } : {}), ...(raw.groupId !== undefined ? { groupId: raw.groupId } : {}), start: anchor(raw.start), end: anchor(raw.end), ...(raw.offset !== undefined ? { offset: raw.offset } : {}), ...(raw.lineHeight !== undefined ? { lineHeight: raw.lineHeight } : {}), ...(raw.plane !== undefined ? { plane: raw.plane === 'auto' ? 'xy' : raw.plane as MeasurementPlane } : {}) };
+    return { id: raw.id, ...(raw.name !== undefined ? { name: raw.name } : {}), ...(raw.groupId !== undefined ? { groupId: raw.groupId } : {}), start: anchor(raw.start), end: anchor(raw.end), ...(raw.offset !== undefined ? { offset: raw.offset } : {}), ...(raw.lineHeight !== undefined ? { lineHeight: raw.lineHeight } : {}), ...(raw.axis !== undefined ? { axis: raw.axis as MeasurementAxis } : {}) };
   });
 }
 

@@ -44,7 +44,7 @@ function makeAnnotation(preview = false) {
 }
 const annotation = makeAnnotation();
 scene.add(annotation.group);
-const measurement = { id: 'width', plane: 'xy', offset: 2, lineHeight: 1 };
+const measurement = { id: 'width', axis: 'z', offset: 2, lineHeight: 1 };
 let checks = 0;
 const errors = [];
 let previewCamera;
@@ -112,12 +112,12 @@ for (const distance of [8, 12, 3, 3.125, 0, 120, 8]) {
 }
 preview.dispose();
 // Camera motion only changes projection; text remains readable from either side.
-for (const plane of ['xy', 'xz', 'yz']) for (const side of [1, -1]) {
+for (const axis of ['x', 'y', 'z']) for (const side of [1, -1]) {
   previewCamera.position.set(20 * side, -25 * side, 30 * side); previewCamera.lookAt(0, 0, 0); previewCamera.updateMatrixWorld();
-  annotation.update([-4, -2, 0], [4, 2, 3], 9, { ...measurement, plane }, false, false, true, previewCamera);
+  annotation.update([-4, -2, 0], [4, 2, 3], 9, { ...measurement, axis }, false, false, true, previewCamera);
   const matrix = annotation.label.getAttribute('transform').slice(7, -1).split(' ').map(Number);
-  check(matrix.every(Number.isFinite) && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, `${plane}/${side}: readable finite SVG projection`);
-  check(annotation.containsPoint(matrix[4], matrix[5]), `${plane}/${side}: transformed label center remains selectable`);
+  check(matrix.every(Number.isFinite) && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, `${axis}/${side}: readable finite SVG projection`);
+  check(annotation.containsPoint(matrix[4], matrix[5]), `${axis}/${side}: transformed label center remains selectable`);
 }
 annotation.hide(); check(annotation.label.getAttribute('display') === 'none' && !annotation.containsPoint(200, 200), 'hidden annotations remove SVG visibility and picking');
 annotation.dispose(); target.dispose(); box.geometry.dispose(); box.material.dispose(); renderer.dispose();
@@ -127,9 +127,12 @@ check(overlay.children.length === 0, 'disposing annotations removes SVG labels')
 // pointer capture is stubbed because synthetic test pointers are not hardware.
 const host = document.querySelector('#viewport');
 let selected = null;
-const viewport = createViewport(host, (id) => { selected = id; });
+let draftAxis = null, createdAxis = null;
+const viewport = createViewport(host, (id) => { selected = id; }, undefined, undefined, undefined, undefined,
+  (_start, _end, _offset, axis) => { createdAxis = axis; },
+  (stage, axis) => { if (stage === 'second') draftAxis = axis; });
 const testBox = { id: 'box', name: 'Box', size: [12, 8, 4], position: [0, 0, 0], color: '#86a9a3' };
-const dimension = { id: 'measurement', start: { objectId: 'box', coordinates: [0, 0, 0] }, end: { objectId: 'box', coordinates: [1, 0, 0] }, plane: 'xy', offset: 4, lineHeight: 1 };
+const dimension = { id: 'measurement', start: { objectId: 'box', coordinates: [0, 0, 0] }, end: { objectId: 'box', coordinates: [1, 0, 0] }, axis: 'z', offset: 4, lineHeight: 1 };
 viewport.setBoxes([testBox]); viewport.setMeasurements([dimension]); viewport.setView('top');
 const canvas = host.querySelector('canvas');
 canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {}; canvas.hasPointerCapture = () => false;
@@ -164,6 +167,31 @@ await framePixels(); click();
 check(selected === 'measurement', 'sketch: label click selects measurement');
 const sketchBeforeMove = await framePixels(); pointer('pointermove', 50, 30);
 check(differences(sketchBeforeMove, await framePixels()) === 0, 'sketch: released label click must not leave pan active');
+
+// Real creation clicks select Auto from the first endpoint's view, then retain
+// the concrete axis through the offset click even if the camera rotates.
+viewport.setMode('model'); viewport.setBoxes([testBox]); viewport.setProjection('orthographic'); viewport.setMeasurementsThroughObjects(true);
+for (const fixture of [
+  { view: 'top', axis: 'z', start: [0, 0, 1], end: [1, 0, 1], length: 12 },
+  { view: 'front', axis: 'y', start: [0, 0, 0], end: [1, 0, 0], length: 12 },
+  { view: 'right', axis: 'x', start: [1, 0, 0], end: [1, 1, 0], length: 8 },
+]) {
+  viewport.setView(fixture.view);
+  viewport.setMeasurements([{ ...dimension, axis: fixture.axis, offset: 0, start: { objectId: 'box', coordinates: fixture.start }, end: { objectId: 'box', coordinates: fixture.end } }]);
+  viewport.setMeasurementAxis('auto'); viewport.setMeasurementTool(true);
+  await framePixels();
+  const matrix = host.querySelector('.measurement-label:not(.preview)').getAttribute('transform').slice(7, -1).split(' ').map(Number);
+  function clickAlongLine(sign) {
+    const dx = matrix[4] + sign * matrix[0] * fixture.length / 2 - 200;
+    const dy = matrix[5] + sign * matrix[1] * fixture.length / 2 - 200;
+    pointer('pointerdown', dx, dy, 1); pointer('pointerup', dx, dy);
+  }
+  draftAxis = createdAxis = null;
+  clickAlongLine(-1); check(draftAxis === fixture.axis, `${fixture.view}: Auto selects ${fixture.axis} at first endpoint`);
+  clickAlongLine(1); viewport.setView('iso'); await framePixels(); click();
+  check(createdAxis === fixture.axis, `${fixture.view}: creation retains ${fixture.axis} after rotating the camera`);
+  viewport.setMeasurementTool(false);
+}
 document.querySelector('#result').textContent = errors.length ? `${errors.length} failed / ${checks} checks` : `Passed ${checks} GPU and interaction checks`;
 document.querySelector('#failures').textContent = errors.join('\n');
 viewport.dispose();

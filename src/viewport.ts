@@ -8,7 +8,7 @@ import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
 import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
-import { autoMeasurementPlane, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementPlaneLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementPlane, type MeasurementPlaneChoice, type MeasurementSegment } from './measurements';
+import { autoMeasurementAxis, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementAxisLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementAxis, type MeasurementAxisChoice, type MeasurementSegment } from './measurements';
 
 export type ViewName = 'iso' | 'front' | 'right' | 'top';
 export type ProjectionMode = 'perspective' | 'orthographic';
@@ -20,7 +20,7 @@ export interface Viewport {
   setMode(mode: 'model' | 'sketch'): void;
   setSketchTool(tool: SketchTool): void;
   setMeasurementTool(active: boolean): void;
-  setMeasurementPlane(plane: MeasurementPlaneChoice): void;
+  setMeasurementAxis(axis: MeasurementAxisChoice): void;
   setMeasurements(measurements: Measurement[]): void;
   setMeasurementsThroughObjects(through: boolean): void;
   select(id: string | null, face?: FaceName | null): void;
@@ -60,8 +60,8 @@ export function createViewport(
   onSketchDraw?: (first: [number, number], opposite: [number, number], tool: SketchTool) => void,
   onSketchStage?: (stage: 'idle' | 'first' | 'opposite') => void,
   onSketchSelect?: (ids: string[], action: SelectionAction) => void,
-  onMeasure?: (start: MeasurementAnchor, end: MeasurementAnchor, offset: number, plane: MeasurementPlane) => void,
-  onMeasureStage?: (stage: 'first' | 'second' | 'placement' | 'invalid' | 'same', plane?: MeasurementPlane) => void,
+  onMeasure?: (start: MeasurementAnchor, end: MeasurementAnchor, offset: number, axis: MeasurementAxis) => void,
+  onMeasureStage?: (stage: 'first' | 'second' | 'placement' | 'invalid' | 'same', axis?: MeasurementAxis) => void,
 ): Viewport {
   let disposed = false;
   let selectedId: string | null = null;
@@ -76,8 +76,8 @@ export function createViewport(
   let sketchRectangles: SketchShape[] = [];
   let measurementTool = false;
   let measurementsThroughObjects = true;
-  let measurementPlane: MeasurementPlaneChoice = 'auto';
-  let measurementDraftPlane: MeasurementPlane | null = null;
+  let measurementAxis: MeasurementAxisChoice = 'auto';
+  let measurementDraftAxis: MeasurementAxis | null = null;
   let measurementFirst: MeasurementAnchor | null = null;
   let measurementSecond: MeasurementAnchor | null = null;
   let measurementPlacementCursor: [number, number] | null = null;
@@ -280,7 +280,7 @@ export function createViewport(
     return { x: (clip.x / clip.w + 1) * host.clientWidth / 2, y: (1 - clip.y / clip.w) * host.clientHeight / 2, w: clip.w, visible: clip.w > 0 && Math.abs(clip.z / clip.w) <= 1 };
   };
   const planeRaycaster = new THREE.Raycaster();
-  const pointOnMeasurementPlane = (frame: ReturnType<typeof measurementPlaneLayout>, point: [number, number]) => {
+  const pointOnAnnotationPlane = (frame: ReturnType<typeof measurementAxisLayout>, point: [number, number]) => {
     planeRaycaster.setFromCamera(new THREE.Vector2(point[0] / host.clientWidth * 2 - 1, 1 - point[1] / host.clientHeight * 2), camera);
     if (Math.abs(planeRaycaster.ray.direction.dot(new THREE.Vector3(...frame.normal))) < 1e-6) return null;
     const hit = planeRaycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...frame.normal), new THREE.Vector3(...frame.midpoint)), new THREE.Vector3());
@@ -309,10 +309,10 @@ export function createViewport(
     measurementMarker.setAttribute('display', 'none');
     if (!measurementTool) { previewAnnotation.hide(); return; }
     if (measurementFirst && measurementSecond) {
-      drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), plane: measurementDraftPlane ?? 'xy' });
+      drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), axis: measurementDraftAxis ?? 'z' });
       return;
     }
-    if (measurementFirst && measurementHover) drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementHover.anchor, plane: measurementDraftPlane ?? 'xy' });
+    if (measurementFirst && measurementHover) drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementHover.anchor, axis: measurementDraftAxis ?? 'z' });
     else previewAnnotation.hide();
     const point = measurementHover?.point ?? (measurementFirst ? resolveMeasurementAnchor(measurementFirst, measurementGeometry) : null);
     if (point) {
@@ -326,16 +326,16 @@ export function createViewport(
     if (renderer) renderer.domElement.style.cursor = active ? 'crosshair' : sketchMode && sketchTool !== 'select' ? 'crosshair' : '';
   };
   const clearMeasurementDraft = () => {
-    measurementDraftPlane = null; measurementFirst = null; measurementSecond = null; measurementPlacementCursor = null; measurementHover = null;
+    measurementDraftAxis = null; measurementFirst = null; measurementSecond = null; measurementPlacementCursor = null; measurementHover = null;
   };
   const placementOffset = () => {
     if (!measurementFirst || !measurementSecond || !measurementPlacementCursor) return 0;
     const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry), end = resolveMeasurementAnchor(measurementSecond, measurementGeometry);
     if (!start || !end) return 0;
-    const plane = sketchMode ? 'xy' : measurementDraftPlane ?? 'xy';
-    const frame = measurementPlaneLayout(start, end, plane);
-    const cursor = pointOnMeasurementPlane(frame, measurementPlacementCursor);
-    return cursor ? measurementOffsetAtPointer(start, end, cursor, plane) : DEFAULT_MEASUREMENT_OFFSET;
+    const axis = sketchMode ? 'z' : measurementDraftAxis ?? 'z';
+    const frame = measurementAxisLayout(start, end, axis);
+    const cursor = pointOnAnnotationPlane(frame, measurementPlacementCursor);
+    return cursor ? measurementOffsetAtPointer(start, end, cursor, axis) : DEFAULT_MEASUREMENT_OFFSET;
   };
   const updatePlacementCursor = (event: PointerEvent) => {
     if (!renderer) return;
@@ -939,16 +939,16 @@ export function createViewport(
       if (!down || down.pointerId !== event.pointerId || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
       if (measurementFirst && measurementSecond) {
         updatePlacementCursor(event); camera.updateMatrixWorld();
-        const first = measurementFirst, second = measurementSecond, offset = parseInches(placementOffset()), plane = measurementDraftPlane ?? 'xy';
-        clearMeasurementDraft(); onMeasure?.(first, second, offset, plane); onMeasureStage?.('first'); return;
+        const first = measurementFirst, second = measurementSecond, offset = parseInches(placementOffset()), axis = measurementDraftAxis ?? 'z';
+        clearMeasurementDraft(); onMeasure?.(first, second, offset, axis); onMeasureStage?.('first'); return;
       }
       const snap = measurementAtPointer(event); measurementHover = snap;
       if (!snap) { onMeasureStage?.('invalid'); return; }
       if (!measurementFirst) {
         measurementFirst = structuredClone(snap.anchor);
         const view = camera.getWorldDirection(new THREE.Vector3());
-        measurementDraftPlane = sketchMode ? 'xy' : measurementPlane === 'auto' ? autoMeasurementPlane([view.x, view.y, view.z]) : measurementPlane;
-        onMeasureStage?.('second', measurementDraftPlane); return;
+        measurementDraftAxis = sketchMode ? 'z' : measurementAxis === 'auto' ? autoMeasurementAxis([view.x, view.y, view.z]) : measurementAxis;
+        onMeasureStage?.('second', measurementDraftAxis); return;
       }
       const distance = resolveMeasurement({ id: 'preview', start: measurementFirst, end: snap.anchor }, measurementGeometry)?.distance ?? 0;
       if (distance < 1 / 128) { onMeasureStage?.('same'); return; }
@@ -1091,7 +1091,7 @@ export function createViewport(
     setMode,
     setSketchTool,
     setMeasurementTool,
-    setMeasurementPlane: (plane) => { measurementPlane = plane; if (measurementFirst && plane !== 'auto') measurementDraftPlane = plane; },
+    setMeasurementAxis: (axis) => { measurementAxis = axis; if (measurementFirst && axis !== 'auto') measurementDraftAxis = sketchMode ? 'z' : axis; },
     setMeasurements,
     setMeasurementsThroughObjects: (through) => { measurementsThroughObjects = through; },
     select,

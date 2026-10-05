@@ -43,7 +43,7 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
   hide();
   const update = (start: Vector3, end: Vector3, distance: number, measurement: Measurement, sketchMode: boolean, selected: boolean, through: boolean, camera: THREE.Camera, size: [number, number], isOccluded: (point: Vector3) => boolean = () => false) => {
     lines.material.depthTest = !(preview || through);
-    const nextSignature = JSON.stringify([start, end, distance, measurement.offset, measurement.lineHeight, measurement.plane, sketchMode, selected]);
+    const nextSignature = JSON.stringify([start, end, distance, measurement.offset, measurement.lineHeight, measurement.axis, sketchMode, selected]);
     if (signature !== nextSignature) {
       signature = nextSignature;
       frame = measurementAnnotationLayout(start, end, measurement, sketchMode);
@@ -83,8 +83,8 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
     const clip = new THREE.Vector4(...layout.labelPosition, 1).applyMatrix4(camera.matrixWorldInverse).applyMatrix4(camera.projectionMatrix);
     if (clip.w <= 0 || Math.abs(clip.z / clip.w) > 1) { setLabelVisible(false); return; }
     const center = labelPosition.clone().project(camera);
-    const u = new THREE.Vector3(...(sketchMode ? [1, 0, 0] as const : layout.direction));
-    const v = new THREE.Vector3(...(sketchMode ? [0, 1, 0] as const : layout.perpendicular));
+    const u = new THREE.Vector3(...layout.direction);
+    const v = new THREE.Vector3(...layout.perpendicular);
     const step = .001;
     const px = labelPosition.clone().addScaledVector(u, step).project(camera).sub(center);
     const py = labelPosition.clone().addScaledVector(v, step).project(camera).sub(center);

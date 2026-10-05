@@ -13,7 +13,7 @@ import { createBlankDocument, createDocument, restoreWorkspace, resolveSnapshot,
 import { generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
 import { sketchReference, sketchReferenceOrigin, type ModelSketch, type SketchAxis } from './model-sketch';
 import { findSketchEditor, linkSketchEditor, openSketchEditor, resolveLinkedSketches, synchronizeSketchReferences } from './sketch-editor';
-import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementPlane, type MeasurementPlaneChoice } from './measurements';
+import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementAxis, type MeasurementAxisChoice } from './measurements';
 import { saveDocumentFile, type SaveFilePicker } from './save-document';
 
 const STORAGE_KEY = 'blockwork.workspace.v2';
@@ -63,7 +63,7 @@ root.innerHTML = `
             <button id="add-box" class="add-button" title="Add box" aria-label="Add box">＋</button>
           </div>
         </section>
-        <section id="measurement-plane-tool" class="measurement-plane-tool hidden"><label class="field-label" for="new-measurement-plane">MEASUREMENT PLANE</label><select id="new-measurement-plane" class="text-field" aria-label="New measurement plane"><option value="auto">Auto · on first click</option><option value="xy">XY</option><option value="xz">XZ</option><option value="yz">YZ</option></select></section>
+        <section id="measurement-axis-tool" class="measurement-axis-tool hidden"><label class="field-label" for="new-measurement-axis">LABEL FACING AXIS</label><select id="new-measurement-axis" class="text-field" aria-label="New measurement facing axis"><option value="auto">Auto · from view</option><option value="x">X</option><option value="y">Y</option><option value="z">Z · Up</option></select></section>
         <div class="panel-heading"><div><div class="eyebrow">MODEL TREE</div><div class="heading-title">Components <span class="count-pill" id="box-count">0</span></div></div><button id="add-sketch-group" class="add-variable" title="Create group" aria-label="Create group"><i data-lucide="group" aria-hidden="true"></i></button></div>
         <div class="tree-caption"><span>OBJECT</span><span>SIZE · IN</span></div>
         <div id="component-list" class="component-list"></div>
@@ -130,7 +130,7 @@ let sketches: ModelSketch[] = [];
 let measurements: Measurement[] = [];
 let measuring = false;
 let measurementsThroughObjects = true;
-let measurementPlane: MeasurementPlaneChoice = 'auto';
+let measurementAxis: MeasurementAxisChoice = 'auto';
 let documentKind: DocumentKind = 'model';
 let sketchTool: SketchTool = 'select';
 let variables: VariableSpec[] = [];
@@ -178,20 +178,20 @@ const viewport = createViewport(
     else setStatus('Select shapes · Shift-click to add · drag to select');
   },
   (ids, action) => selectSketchShapes(ids, action),
-  (start, end, offset, plane) => {
+  (start, end, offset, axis) => {
     if (draftDirty) return;
     try {
-      const measurement: Measurement = { id: crypto.randomUUID(), start, end, offset, plane, ...(selectedGroup() ? { groupId: selectedGroup()!.id } : {}) };
+      const measurement: Measurement = { id: crypto.randomUUID(), start, end, offset, axis, ...(selectedGroup() ? { groupId: selectedGroup()!.id } : {}) };
       commitMeasurements([...measurements, measurement], 'Measurement added');
       selectedId = measurement.id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll();
     }
     catch (error) { notify(error instanceof Error ? error.message : 'Could not add measurement', true); }
   },
-  (stage, plane) => {
+  (stage, axis) => {
     if (!measuring) return;
-    const field = $('#new-measurement-plane') as HTMLSelectElement;
-    if (stage === 'second' && plane) { field.value = plane; field.querySelector<HTMLOptionElement>('[value=auto]')!.disabled = true; }
-    else if (stage === 'first') { field.value = measurementPlane; field.querySelector<HTMLOptionElement>('[value=auto]')!.disabled = false; }
+    const field = $('#new-measurement-axis') as HTMLSelectElement;
+    if (stage === 'second' && axis) { field.value = axis; field.querySelector<HTMLOptionElement>('[value=auto]')!.disabled = true; }
+    else if (stage === 'first') { field.value = measurementAxis; field.querySelector<HTMLOptionElement>('[value=auto]')!.disabled = false; }
     setStatus(stage === 'placement' ? 'Measure · move the mouse to offset the label, then click to place it' : stage === 'second' ? 'Measure · click a second corner or edge' : stage === 'invalid' ? 'Choose a corner or edge of existing geometry' : stage === 'same' ? 'Choose a different point to measure' : 'Measure · click a corner or edge · Escape to finish');
   },
 );
@@ -263,7 +263,7 @@ function renderSketchToolUI() {
     button.classList.toggle('active', !measuring && sketchTool === tool);
     button.setAttribute('aria-pressed', String(!measuring && sketchTool === tool));
   }
-  $('#measurement-plane-tool').classList.toggle('hidden', !measuring || documentKind === 'sketch');
+  $('#measurement-axis-tool').classList.toggle('hidden', !measuring || documentKind === 'sketch');
   root.querySelectorAll('[data-measure-tool]').forEach((button) => {
     button.classList.toggle('active', measuring);
     button.setAttribute('aria-pressed', String(measuring));
@@ -284,7 +284,7 @@ function activateMeasurementTool(active: boolean) {
   measuring = active;
   if (active) sketchTool = 'select';
   viewport.setMeasurementTool(active);
-  viewport.setMeasurementPlane(measurementPlane);
+  viewport.setMeasurementAxis(measurementAxis);
   renderSketchToolUI();
   if (!active) setStatus('Ready');
 }
@@ -550,7 +550,7 @@ function renderMeasurementInspector(measurement: Measurement) {
   host.innerHTML = `<div class="object-heading"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><div><div class="object-name">${escapeHTML(measurementName(measurement))}</div><div class="object-id">DISTANCE MEASUREMENT</div></div></div>
     <label class="field-label" for="measurement-name">NAME</label><input id="measurement-name" class="text-field" value="${escapeAttr(measurementName(measurement))}" ${disabled}/>
     <div class="section-label"><span>DISTANCE</span><span>INCHES</span></div><div class="measurement-value">${resolved ? formatInches(resolved.distance) + ' in' : 'Missing geometry'}</div>
-    ${documentKind === 'model' ? '<label class="field-label" for="measurement-plane">LABEL PLANE</label><select id="measurement-plane" class="text-field" aria-label="Measurement plane" ' + disabled + '>' + ['xy', 'xz', 'yz'].map((plane) => '<option value="' + plane + '" ' + (plane === (measurement.plane ?? 'xy') ? 'selected' : '') + '>' + plane.toUpperCase() + '</option>').join('') + '</select><div class="inspector-tip">The plane is fixed when the first point is selected. Change it here manually. The value is the full distance between the points.</div>' : ''}
+    ${documentKind === 'model' ? '<label class="field-label" for="measurement-axis">LABEL FACING AXIS</label><select id="measurement-axis" class="text-field" aria-label="Measurement facing axis" ' + disabled + '>' + ['x', 'y', 'z'].map((axis) => '<option value="' + axis + '" ' + (axis === (measurement.axis ?? 'z') ? 'selected' : '') + '>' + (axis === 'z' ? 'Z · Up' : axis.toUpperCase()) + '</option>').join('') + '</select><div class="inspector-tip">The label normal faces this axis as closely as possible while staying perpendicular to the measured line. Parallel lines use the least-aligned world axis.</div>' : ''}
     <label class="field-label group-membership-label" for="measurement-offset">LABEL OFFSET · INCHES</label><input id="measurement-offset" class="text-field" inputmode="decimal" value="${formatInches(measurement.offset ?? DEFAULT_MEASUREMENT_OFFSET)}" ${disabled}/>
     <label class="field-label" for="measurement-line-height">LABEL LINE HEIGHT · INCHES</label><input id="measurement-line-height" class="text-field" inputmode="decimal" value="${formatInches(measurement.lineHeight ?? defaultMeasurementLineHeight(resolved?.distance ?? 0))}" ${disabled}/>
     <div class="section-label"><span>REFERENCED GEOMETRY</span></div><div class="inspector-tip measurement-references">Start · ${escapeHTML(endpointName(measurement.start))}<br/>End · ${escapeHTML(endpointName(measurement.end))}</div>`;
@@ -560,7 +560,7 @@ function renderMeasurementInspector(measurement: Measurement) {
     catch (error) { notify(error instanceof Error ? error.message : 'Could not update measurement', true); renderInspector(); }
   };
   host.querySelector<HTMLInputElement>('#measurement-name')!.addEventListener('change', (event) => update({ name: (event.currentTarget as HTMLInputElement).value.trim() || measurementName(measurement) }));
-  host.querySelector<HTMLSelectElement>('#measurement-plane')?.addEventListener('change', (event) => update({ plane: (event.currentTarget as HTMLSelectElement).value as MeasurementPlane }));
+  host.querySelector<HTMLSelectElement>('#measurement-axis')?.addEventListener('change', (event) => update({ axis: (event.currentTarget as HTMLSelectElement).value as MeasurementAxis }));
   for (const key of ['offset', 'lineHeight'] as const) {
     const input = host.querySelector<HTMLInputElement>(key === 'offset' ? '#measurement-offset' : '#measurement-line-height')!;
     input.addEventListener('keydown', (event) => { if (event.key === 'Enter') input.blur(); });
@@ -1194,7 +1194,7 @@ $('#measurement-through-toggle').addEventListener('click', () => {
   button.innerHTML = `<i data-lucide="ruler" aria-hidden="true"></i> ${measurementsThroughObjects ? 'THROUGH' : 'OCCLUDED'}`;
   renderIcons(button);
 });
-$('#new-measurement-plane').addEventListener('change', (event) => { measurementPlane = (event.currentTarget as HTMLSelectElement).value as MeasurementPlaneChoice; viewport.setMeasurementPlane(measurementPlane); });
+$('#new-measurement-axis').addEventListener('change', (event) => { measurementAxis = (event.currentTarget as HTMLSelectElement).value as MeasurementAxisChoice; viewport.setMeasurementAxis(measurementAxis); });
 $('#add-group').addEventListener('click', addGroup);
 $('#add-sketch-group').addEventListener('click', addGroup);
 $('#add-box').addEventListener('click', () => addBox());

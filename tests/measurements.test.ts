@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autoMeasurementPlane, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementPlaneLayout, measurementOffsetAtPointer, measurementSegments, pruneMeasurements, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, validateMeasurements, type Measurement } from '../src/measurements';
+import { autoMeasurementAxis, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementAxisLayout, measurementOffsetAtPointer, measurementSegments, pruneMeasurements, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, validateMeasurements, type Measurement } from '../src/measurements';
 import { generateSource, reparentBox, resolveModel, type BoxSpec, type ModelSpec } from '../src/model';
 import { generateSketchSource, type SketchShape } from '../src/sketch';
 import { createDocument, resolveSnapshot, restoreWorkspace, serializeWorkspace } from '../src/documents';
@@ -20,20 +20,20 @@ test('mouse placement stores a signed inch distance independent of endpoint orde
   assert.equal(measurementOffsetAtPointer(a, b, [6, -1.5, 0]), -1.5);
   assert.equal(measurementOffsetAtPointer(a, b, [1000, 2, 0]), 2);
   assert.equal(measurementOffsetAtPointer(a, b, [6, 2, 20]), 2);
-  assert.equal(measurementOffsetAtPointer(a, b, [6, 20, 2], 'xz'), 2);
+  assert.equal(measurementOffsetAtPointer(a, b, [6, 20, 2], 'y'), -2);
   assert.equal(measurementOffsetAtPointer([0, 0, 0], [0, 12, 0], [-2, 6, 0]), 2);
 });
 
 test('annotation positions and label height use model units in the same schema for both views', () => {
   const a: [number, number, number] = [0, 0, 3], b: [number, number, number] = [12, 0, 3];
-  const model = measurementAnnotationLayout(a, b, { plane: 'xz', offset: 2, lineHeight: 4 });
+  const model = measurementAnnotationLayout(a, b, { axis: 'y', offset: -2, lineHeight: 4 });
   assert.deepEqual(model.dimensionStart, [0, 0, 5]);
   assert.deepEqual(model.dimensionEnd, [12, 0, 5]);
   assert.deepEqual(model.labelPosition, [6, 0, 5]);
   assert.equal(model.lineHeight, 4);
-  const sketch = measurementAnnotationLayout(a, b, { plane: 'xz', offset: -1.5, lineHeight: 2 }, true);
+  const sketch = measurementAnnotationLayout(a, b, { axis: 'y', offset: -1.5, lineHeight: 2 }, true);
   assert.deepEqual(sketch.labelPosition, [6, -1.5, 3]);
-  assert.equal(sketch.plane, 'xy'); assert.equal(sketch.lineHeight, 2);
+  assert.equal(sketch.axis, 'z'); assert.equal(sketch.lineHeight, 2);
   const defaults = measurementAnnotationLayout(a, b, {});
   assert.equal(defaults.offset, DEFAULT_MEASUREMENT_OFFSET);
   assert.equal(defaults.lineHeight, 1);
@@ -120,8 +120,8 @@ await import('../src/compiler.worker');
 function compile(source: string, kind: 'model' | 'sketch') { receive({ data: { source, kind } }); return compiled; }
 
 test('model and sketch measurements round-trip through editable source and the compiler worker', () => {
-  const placedModel: Measurement = { ...dimension, offset: 2.25, lineHeight: 4, plane: 'xz' };
-  const placedSketch: Measurement = { ...sketchDimension, offset: -1.5, lineHeight: .5, plane: 'yz' };
+  const placedModel: Measurement = { ...dimension, offset: 2.25, lineHeight: 4, axis: 'y' };
+  const placedSketch: Measurement = { ...sketchDimension, offset: -1.5, lineHeight: .5, axis: 'x' };
   const modelSource = generateSource([box], [], [], [], [], [placedModel]);
   const model = compile(modelSource, 'model');
   assert.equal(model.error, undefined); assert.deepEqual(model.measurements, [placedModel]);
@@ -137,7 +137,7 @@ test('workspace recovery and undo snapshots retain attached measurements in both
     const doc = createDocument(kind, '', kind);
     doc.boxes = kind === 'model' ? [box] : []; doc.rectangles = kind === 'sketch' ? [rectangle] : [];
     doc.groups = [{ id: 'annotations', name: 'Annotations', position: [10, 20, 0] }];
-    doc.measurements = [{ ...(kind === 'model' ? dimension : sketchDimension), offset: -1.75, lineHeight: 4, plane: 'xz', groupId: 'annotations' }];
+    doc.measurements = [{ ...(kind === 'model' ? dimension : sketchDimension), offset: -1.75, lineHeight: 4, axis: 'y', groupId: 'annotations' }];
     doc.treeOrder = [doc.measurements[0].id, 'annotations', ...(kind === 'model' ? doc.boxes : doc.rectangles).map((s) => s.id)];
     doc.hiddenBoxIds = [doc.measurements[0].id]; doc.draftDirty = false;
     doc.source = doc.appliedSource = kind === 'model' ? generateSource(doc.boxes, [], doc.groups, doc.treeOrder, [], doc.measurements) : generateSketchSource(doc.rectangles, doc.groups, doc.treeOrder, doc.measurements);
@@ -152,37 +152,69 @@ test('workspace recovery and undo snapshots retain attached measurements in both
 });
 
 
-test('creation plane is chosen from the first-click view without knowing the second endpoint', () => {
-  assert.equal(autoMeasurementPlane([0, -1, 0]), 'xz');
-  assert.equal(autoMeasurementPlane([0, 0, -1]), 'xy');
-  assert.equal(autoMeasurementPlane([-1, 0, 0]), 'yz');
-  assert.equal(autoMeasurementPlane([.2, -.9, .3]), 'xz');
-});
+const dot = (a: number[], b: number[]) => a.reduce((sum, n, i) => sum + n * b[i], 0);
+const close = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-10, `Expected ${a} ≈ ${b}`);
 
-test('saved planes are concrete and legacy auto planes migrate to a fixed plane', () => {
-  const migrated = validateMeasurements([{ ...dimension, plane: 'auto' }], { boxes: [box] })[0];
-  assert.equal(migrated.plane, 'xy');
-  const saved: Measurement = { ...dimension, plane: autoMeasurementPlane([0, -1, 0]) };
-  const topViewPlane = autoMeasurementPlane([0, 0, -1]);
-  assert.equal(topViewPlane, 'xy');
-  const compiled = compile(generateSource([box], [], [], [], [], [saved]), 'model');
-  assert.equal(compiled.measurements![0].plane, 'xz');
-  assert.equal(validateMeasurements(compiled.measurements, { boxes: [box] })[0].plane, 'xz');
-});
-
-test('plane layout projects annotation geometry while retaining the true 3D distance', () => {
-  const start: [number, number, number] = [1, 2, 3], end: [number, number, number] = [4, 6, 15];
-  for (const [plane, normalAxis] of [['xy', 2], ['xz', 1], ['yz', 0]] as const) {
-    const layout = measurementPlaneLayout(start, end, plane);
-    assert.equal(layout.start[normalAxis], layout.midpoint[normalAxis]);
-    assert.equal(layout.end[normalAxis], layout.midpoint[normalAxis]);
-    assert.equal(layout.direction[normalAxis], 0); assert.equal(layout.perpendicular[normalAxis], 0);
-    assert.ok(Math.abs(layout.direction.reduce((dot, n, i) => dot + n * layout.perpendicular[i], 0)) < 1e-10);
-    assert.deepEqual(layout.direction, measurementPlaneLayout(end, start, plane).direction);
-    const diagonal = { ...dimension, plane, start: { objectId: 'a', coordinates: [0, 0, 0] }, end: { objectId: 'b', coordinates: [0, 0, 0] } };
-    assert.equal(resolveMeasurement(diagonal, { boxes: [{ ...box, id: 'a', position: start }, { ...box, id: 'b', position: end }] })!.distance, 13);
+test('auto chooses the facing axis from either side of each principal view', () => {
+  for (const sign of [-1, 1]) {
+    assert.equal(autoMeasurementAxis([sign, 0, 0]), 'x');
+    assert.equal(autoMeasurementAxis([0, sign, 0]), 'y');
+    assert.equal(autoMeasurementAxis([0, 0, sign]), 'z');
   }
-  assert.throws(() => validateMeasurements([{ ...dimension, plane: 'x' }], { boxes: [box] }), /plane/);
+  assert.equal(autoMeasurementAxis([.2, -.9, .3]), 'y');
+  assert.equal(autoMeasurementAxis([1, 1, 1]), 'z');
+});
+
+test('saved facing axes survive source round trips without depending on the view', () => {
+  for (const axis of ['x', 'y', 'z'] as const) {
+    const saved: Measurement = { ...dimension, axis };
+    const source = generateSource([box], [], [], [], [], [saved]);
+    assert.doesNotMatch(source, /"plane"/);
+    assert.equal(compile(source, 'model').measurements![0].axis, axis);
+    assert.equal(validateMeasurements([saved], { boxes: [box] })[0].axis, axis);
+  }
+  for (const axis of ['xy', 'auto', 'q', null, 1]) {
+    assert.throws(() => validateMeasurements([{ ...dimension, axis }], { boxes: [box] }), /axis/);
+  }
+});
+
+test('3D annotation follows the full line and optimally aligns its perpendicular normal', () => {
+  const start: [number, number, number] = [1, 2, 3], end: [number, number, number] = [4, 6, 15];
+  for (const [axis, index] of [['x', 0], ['y', 1], ['z', 2]] as const) {
+    const frame = measurementAxisLayout(start, end, axis);
+    assert.deepEqual(frame.start, start); assert.deepEqual(frame.end, end);
+    close(Math.hypot(...frame.direction), 1); close(Math.hypot(...frame.normal), 1); close(Math.hypot(...frame.perpendicular), 1);
+    close(dot(frame.direction, frame.normal), 0); close(dot(frame.direction, frame.perpendicular), 0); close(dot(frame.normal, frame.perpendicular), 0);
+    close(frame.normal[index], Math.sqrt(1 - frame.direction[index] ** 2));
+    assert.equal(frame.fallbackAxis, undefined);
+    const reversed = measurementAxisLayout(end, start, axis);
+    for (const field of ['direction', 'normal', 'perpendicular'] as const) frame[field].forEach((n, i) => close(n, reversed[field][i]));
+    const layout = measurementAnnotationLayout(start, end, { axis, offset: 2 });
+    const dimensionDelta = layout.dimensionEnd.map((n, i) => n - layout.dimensionStart[i]);
+    dimensionDelta.forEach((n, i) => close(n, end[i] - start[i]));
+    close(Math.hypot(...dimensionDelta), 13);
+    const shift = layout.labelPosition.map((n, i) => n - frame.midpoint[i]);
+    close(Math.hypot(...shift), 2); close(dot(shift, frame.direction), 0);
+    close(measurementOffsetAtPointer(start, end, layout.labelPosition, axis), 2);
+    close(measurementOffsetAtPointer(end, start, layout.labelPosition, axis), 2);
+  }
+});
+
+test('parallel and nearly parallel lines have deterministic finite fallback frames', () => {
+  const start: [number, number, number] = [0, 0, 0];
+  for (const [axis, index, fallback] of [['x', 0, 'y'], ['y', 1, 'x'], ['z', 2, 'x']] as const) {
+    for (const sign of [-1, 1]) {
+      const end: [number, number, number] = [0, 0, 0]; end[index] = 12 * sign;
+      const frame = measurementAxisLayout(start, end, axis);
+      assert.equal(frame.fallbackAxis, fallback);
+      assert.equal(frame.normal[index], 0);
+      close(Math.hypot(...frame.normal), 1); close(dot(frame.normal, frame.direction), 0);
+    }
+  }
+  const near = measurementAxisLayout(start, [1e-8, 0, 12], 'z');
+  assert.ok(near.fallbackAxis); close(dot(near.normal, near.direction), 0);
+  const zero = measurementAxisLayout(start, start, 'x');
+  assert.ok([...zero.normal, ...zero.direction, ...zero.perpendicular].every(Number.isFinite));
 });
 
 test('measurement group membership organizes annotations without applying group transforms in either view', () => {
@@ -207,7 +239,7 @@ test('measurement group membership organizes annotations without applying group 
 test('nested source groups accept measurements and retain their placement without double transformations', () => {
   for (const kind of ['model', 'sketch'] as const) {
     const geometrySource = kind === 'model' ? 'box({id:"box",size:[12,8,6],position:[1,2,3]})' : 'rectangle({id:"rect",size:[12,8],position:[1,2]})';
-    const m = { ...(kind === 'model' ? dimension : sketchDimension), name: 'Width', offset: 66, plane: 'xz' };
+    const m = { ...(kind === 'model' ? dimension : sketchDimension), name: 'Width', offset: 66, axis: 'y' };
     const source = 'group({id:"root",position:[10,20,0]},[group({id:"notes",position:[400,500,0]},[measurement(' + JSON.stringify(m) + ')]),' + geometrySource + ']);';
     const result = compile(source, kind);
     assert.equal(result.error, undefined);
@@ -225,13 +257,13 @@ test('old local pixel measurements migrate to default inch distances while draft
   for (const kind of ['model', 'sketch'] as const) {
     const doc = createDocument(kind, '// pending custom source', kind);
     doc.boxes = kind === 'model' ? [box] : []; doc.rectangles = kind === 'sketch' ? [rectangle] : [];
-    doc.measurements = [{ ...(kind === 'model' ? dimension : sketchDimension), offset: -80, plane: 'xz' }];
+    doc.measurements = [{ ...(kind === 'model' ? dimension : sketchDimension), offset: -80, axis: 'y' }];
     doc.appliedSource = '// last applied source';
     const legacy = JSON.parse(serializeWorkspace([doc], doc.id)); delete legacy.measurementUnits;
     const restored = restoreWorkspace(JSON.stringify(legacy)).documents[0];
     assert.equal(restored.source, doc.source); assert.equal(restored.draftDirty, true);
     assert.equal(restored.measurements[0].offset, -DEFAULT_MEASUREMENT_OFFSET);
-    assert.equal(restored.measurements[0].plane, 'xz');
+    assert.equal(restored.measurements[0].axis, 'y');
     assert.deepEqual(restored.measurements[0].start, doc.measurements[0].start);
     assert.equal(compile(restored.appliedSource, kind).measurements![0].offset, -DEFAULT_MEASUREMENT_OFFSET);
     assert.deepEqual(restoreWorkspace(serializeWorkspace([restored], restored.id)).documents[0].measurements, restored.measurements);

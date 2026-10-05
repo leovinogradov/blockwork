@@ -192,7 +192,7 @@
 #measurement-through-toggle svg { width: 15px; height: 15px; flex-shrink: 0; }
 .measurement-symbol { width: 14px; height: 14px; flex-shrink: 0; color: #8dd9d0; }
 .measurement-value { color: #c8f4ed; font: 16px var(--mono); padding: 12px 0 18px; }
-.measurement-plane-tool { padding: 12px; border-bottom: 1px solid var(--line-soft); }
-.measurement-plane-tool .text-field { margin-bottom: 0; }
+.measurement-axis-tool { padding: 12px; border-bottom: 1px solid var(--line-soft); }
+.measurement-axis-tool .text-field { margin-bottom: 0; }
 .model-mode #add-sketch-group { display: none; }
 #add-sketch-group svg { width: 14px; height: 14px; display: block; }
