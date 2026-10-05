@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Viewport resize rendering checks</title>
+<style>
+  body{font:16px system-ui;background:#10171e;color:#ddd;padding:24px}
+  #viewport{width:600px;height:400px;position:relative;overflow:hidden}
+  #viewport canvas{display:block;width:100%;height:100%}
+</style>
+<h1>Viewport resize rendering checks</h1>
+<p id="result">Running WebGL resize checks…</p>
+<pre id="failures"></pre>
+<div id="viewport"></div>
+<script type="module">
+// Run pnpm dev and open /tests/viewport-resize.html for real-browser checks.
+import { createViewport } from '/src/viewport.ts';
+
+const host = document.querySelector('#viewport');
+const errors = [];
+let checks = 0;
+function check(condition, message) { checks++; if (!condition) errors.push(message); }
+
+// Drawing-buffer changes outside the render frame can clear a canvas after
+// rendering but before paint, causing a flash while a divider is dragged.
+const originalRAF = window.requestAnimationFrame;
+let inFrame = false;
+let currentFrame = 0;
+window.requestAnimationFrame = (callback) => originalRAF.call(window, (time) => {
+  const previous = inFrame;
+  inFrame = true;
+  currentFrame = time;
+  try { callback(time); } finally { inFrame = previous; }
+});
+let canvas;
+let changes = [];
+const descriptors = new Map();
+for (const property of ['width', 'height']) {
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, property);
+  descriptors.set(property, descriptor);
+  Object.defineProperty(HTMLCanvasElement.prototype, property, {
+    ...descriptor,
+    set(value) {
+      if (this === canvas) changes.push({ property, value, inFrame, frame: currentFrame });
+      descriptor.set.call(this, value);
+    },
+  });
+}
+
+const viewport = createViewport(host, () => {});
+canvas = host.querySelector('canvas');
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+try {
+  check(!!canvas, 'WebGL must be available for these checks');
+  if (canvas) {
+    viewport.setBoxes([{ id:'box',name:'Box',size:[12,8,3],position:[0,0,0],color:'#d9a76e' }]);
+    await nextFrame(); await nextFrame();
+    for (const mode of ['perspective', 'orthographic', 'sketch']) {
+      viewport.setMode(mode === 'sketch' ? 'sketch' : 'model');
+      viewport.setProjection(mode === 'perspective' ? 'perspective' : 'orthographic');
+      changes = [];
+      for (let step = 0; step < 40; step++) {
+        host.style.width = `${350 + step * 7}px`;
+        host.style.height = `${300 + step % 5 * 11}px`;
+        await nextFrame();
+      }
+      await nextFrame(); await nextFrame();
+      const scale = Math.min(devicePixelRatio || 1, 2);
+      check(changes.length > 0, `${mode}: resizing changes the drawing buffer`);
+      check(changes.every(change => change.inFrame), `${mode}: every drawing-buffer change occurs in an animation frame`);
+      for (const property of ['width', 'height']) {
+        const writes = changes.filter(change => change.property === property);
+        check(new Set(writes.map(write => write.frame)).size === writes.length, `${mode}: ${property} changes at most once per frame`);
+      }
+      check(canvas.width === Math.floor(host.clientWidth * scale), `${mode}: final buffer width matches the viewport`);
+      check(canvas.height === Math.floor(host.clientHeight * scale), `${mode}: final buffer height matches the viewport`);
+      changes = [];
+      for (let step = 0; step < 5; step++) await nextFrame();
+      check(changes.length === 0, `${mode}: unchanged dimensions do not clear the drawing buffer`);
+    }
+  }
+} catch (error) {
+  errors.push(String(error));
+} finally {
+  window.requestAnimationFrame = originalRAF;
+  for (const [property, descriptor] of descriptors) Object.defineProperty(HTMLCanvasElement.prototype, property, descriptor);
+}
+document.querySelector('#result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `${checks} checks passed`;
+document.querySelector('#failures').textContent = errors.join('\n');
+</script>

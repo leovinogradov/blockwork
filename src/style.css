@@ -196,3 +196,14 @@
 .measurement-axis-tool .text-field { margin-bottom: 0; }
 .model-mode #add-sketch-group { display: none; }
 #add-sketch-group svg { width: 14px; height: 14px; display: block; }
+
+/* Draggable dividers share the existing space between desktop panels. */
+.workspace{--sidebar-default-width:220px;--inspector-default-width:265px;--stage-min-width:300px;--panel-divider-width:5px;grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) var(--panel-divider-width) minmax(var(--stage-min-width),1fr) var(--panel-divider-width) var(--inspector-width,var(--inspector-default-width));column-gap:0}
+.sidebar{grid-column:1;grid-row:1}.stage{grid-column:3;grid-row:1}.inspector{grid-column:5;grid-row:1}.code-panel{grid-row:2}
+.panel-resizer{grid-row:1;position:relative;cursor:col-resize;touch-action:none;user-select:none;outline:none;background:var(--bg)}
+.sidebar-resizer{grid-column:2}.inspector-resizer{grid-column:4}
+.panel-resizer:focus-visible{outline:1px solid var(--amber);outline-offset:-1px}
+body.is-resizing-panels,body.is-resizing-panels *{cursor:col-resize!important;user-select:none!important}
+.stage-toolbar{height:auto;min-height:43px;flex-wrap:wrap;padding:8px 10px;row-gap:5px}.stage-actions{margin-left:auto}
+@media(max-width:980px){.workspace{--sidebar-default-width:190px;--inspector-default-width:235px;--stage-min-width:250px}}
+@media(max-width:760px){.workspace{grid-template-columns:minmax(150px,34%) minmax(0,1fr);column-gap:6px}.panel-resizer{display:none}.stage{grid-column:2}.inspector{grid-column:1 / -1;grid-row:2}.code-panel{grid-row:3}.stage-toolbar{padding:5px;row-gap:3px}}

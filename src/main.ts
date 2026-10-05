@@ -4,6 +4,7 @@ import { Box, createIcons, Eye, EyeOff, Group, MousePointer2, RectangleHorizonta
 import { groupDescendants, groupOffset, reparentPosition, validateGroups, worldPosition, type GroupSpec, type Vector3 } from './groups';
 import { normalizeTreeOrder, planTreeMove, type TreeDrop } from './component-tree';
 import { bindComponentTreeDrag } from './component-tree-drag';
+import { bindPanelResize } from './panel-resize';
 import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, formatInches, generateSource, parseInches, removeVariable, reparentBox, resolveModel, validateBoxes, type BoxSpec, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
@@ -43,7 +44,7 @@ root.innerHTML = `
       </div>
     </header>
     <div class="workspace">
-      <aside class="sidebar panel">
+      <aside id="tools-panel" class="sidebar panel">
         <section class="sketch-tools-section" aria-labelledby="sketch-tools-title">
           <h2 id="sketch-tools-title" class="eyebrow">DRAWING TOOLS</h2>
           <div class="sketch-tool-group" role="group" aria-label="Sketch tools">
@@ -70,6 +71,7 @@ root.innerHTML = `
         <div class="tree-empty" id="tree-empty"><div class="empty-cube"><i data-lucide="box" aria-hidden="true"></i></div><div>No components yet</div><small>Add a box or run some model code.</small></div>
         <div class="tree-footer"><span class="key-chip">⌘</span><span>Boxes and sketches build your model.</span></div>
       </aside>
+      <div class="panel-resizer sidebar-resizer" data-resize-panel="sidebar" role="separator" tabindex="0" aria-label="Resize tools and component tree" aria-orientation="vertical" aria-controls="tools-panel" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div>
       <section class="stage panel">
         <div class="stage-toolbar">
           <div class="view-group" aria-label="Standard views">
@@ -88,7 +90,8 @@ root.innerHTML = `
         <div class="navigation-help"><span>MIDDLE DRAG</span> orbit <i>·</i> <span>SHIFT + MIDDLE</span> / right drag pan <i>·</i> wheel zoom</div><div id="viewport" class="viewport" tabindex="0" aria-label="3D model viewport"></div>
         <div class="stage-footer"><span class="status-indicator"></span><span id="status-text">Ready</span><span class="footer-spacer"></span><span>INCHES</span><span class="footer-separator">/</span><span>SNAP 1/64</span><span class="footer-separator">/</span><span id="selection-status">NO SELECTION</span></div>
       </section>
-      <aside class="inspector panel">
+      <div class="panel-resizer inspector-resizer" data-resize-panel="inspector" role="separator" tabindex="0" aria-label="Resize inspector" aria-orientation="vertical" aria-controls="inspector-panel" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div>
+      <aside id="inspector-panel" class="inspector panel">
         <div class="panel-heading inspector-heading"><div><div class="eyebrow">PROPERTIES</div><div class="heading-title">Inspector</div></div><div class="inspector-buttons"><button id="duplicate-box" class="icon-button" title="Duplicate selected">⧉</button><button id="delete-box" class="icon-button danger-button" title="Delete selected (Delete)" aria-label="Delete selected">⌫</button></div></div>
         <div id="inspector-content" class="inspector-content"><div class="inspector-empty"><div class="empty-target">⊙</div><div>Select a box</div><small>Choose a component from the tree or viewport to inspect its dimensions.</small></div></div>
         <div class="inspector-foot"><span class="snap-icon">⌁</span><span>Values snap to <b>1/64 in</b></span></div>
@@ -117,6 +120,7 @@ function renderIcons(scope: HTMLElement) { createIcons({ icons: lucideIcons, roo
 renderIcons(root);
 
 const $ = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
+bindPanelResize($('.workspace'));
 const editor = $('#source-editor') as HTMLTextAreaElement;
 const viewportHost = $('#viewport');
 const listEl = $('#component-list');

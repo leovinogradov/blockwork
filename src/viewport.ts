@@ -209,6 +209,9 @@ export function createViewport(
   let renderer: THREE.WebGLRenderer | null = null;
   let controls: OrbitControls | null = null;
   let observer: ResizeObserver | null = null;
+  let resizePending = true;
+  let renderedWidth = 0;
+  let renderedHeight = 0;
 
   const showFallback = () => {
     const message = document.createElement('div');
@@ -527,6 +530,10 @@ export function createViewport(
     if (!renderer || disposed) return;
     const width = Math.max(host.clientWidth, 1);
     const height = Math.max(host.clientHeight, 1);
+    resizePending = false;
+    if (width === renderedWidth && height === renderedHeight) return;
+    renderedWidth = width;
+    renderedHeight = height;
     renderer.setSize(width, height, false);
     perspectiveCamera.aspect = width / height;
     perspectiveCamera.updateProjectionMatrix();
@@ -1054,6 +1061,9 @@ export function createViewport(
   const render = () => {
     if (disposed || !renderer) return;
     animationFrame = requestAnimationFrame(render);
+    // Changing the drawing buffer clears it. Resize and redraw in the same
+    // frame so a ResizeObserver callback cannot leave a blank canvas at paint.
+    if (resizePending) resize();
     controls?.update();
     const { inchBlend, fillOpacity } = gridAppearanceForCamera(camera, camera.position.distanceTo(controls?.target ?? grid.position), host.clientHeight);
     inchGrid.visible = inchBlend > 0;
@@ -1072,8 +1082,7 @@ export function createViewport(
   if (renderer) {
     makeControls();
     setView(currentView);
-    resize();
-    observer = new ResizeObserver(resize);
+    observer = new ResizeObserver(() => { resizePending = true; });
     observer.observe(host);
     renderer.domElement.addEventListener('pointerdown', onPointerDown, true);
     renderer.domElement.addEventListener('pointermove', onPointerMove, true);
