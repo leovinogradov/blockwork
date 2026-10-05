@@ -22,7 +22,27 @@ scene.background = new THREE.Color('#101923');
 const box = new THREE.Mesh(new THREE.BoxGeometry(16, 16, 2), new THREE.MeshBasicMaterial({ color: '#244eaa' }));
 box.position.z = -1;
 scene.add(box);
-const annotation = createMeasurementAnnotation();
+const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+overlay.setAttribute('width', '400'); overlay.setAttribute('height', '400');
+document.body.append(overlay);
+const occlusionRay = new THREE.Raycaster();
+function makeAnnotation(preview = false) {
+  const annotation = createMeasurementAnnotation(overlay, preview);
+  const update = annotation.update;
+  return { ...annotation, update(...args) {
+    const camera = args[7];
+    update(...args, [400, 400], (point) => {
+      if (!box.visible) return false;
+      box.updateMatrixWorld();
+      const position = new THREE.Vector3(...point), projected = position.clone().project(camera);
+      occlusionRay.setFromCamera(new THREE.Vector2(projected.x, projected.y), camera);
+      const hit = occlusionRay.intersectObject(box, false)[0];
+      const distance = position.sub(occlusionRay.ray.origin).dot(occlusionRay.ray.direction);
+      return !!hit && hit.distance < distance - .001;
+    });
+  } };
+}
+const annotation = makeAnnotation();
 scene.add(annotation.group);
 const measurement = { id: 'width', plane: 'xy', offset: 2, lineHeight: 1 };
 let checks = 0;
@@ -48,6 +68,7 @@ for (const projection of ['perspective', 'orthographic']) {
     annotation.update([-4, -2, z], [4, -2, z], 8, measurement, false, false, through, camera);
     const count = differences(base, render(camera));
     check((count > 0) === (through || z >= 0), `${projection}: through=${through}, z=${z}, changed pixels=${count}`);
+    check((annotation.label.getAttribute('display') !== 'none') === (through || z >= 0), `${projection}: SVG label center visibility through=${through}, z=${z}`);
   }
   // An occluding box hides the label and the middle of the dimension, while
   // exposed portions remain visible instead of hiding the entire annotation.
@@ -58,8 +79,7 @@ for (const projection of ['perspective', 'orthographic']) {
   annotation.update([-4, -2, -1], [4, -2, -1], 8, measurement, false, false, false, camera);
   const partialCount = differences(partialBase, render(camera));
   check(partialCount > 0 && partialCount < throughCount, `${projection}: partial occlusion ${partialCount}/${throughCount}`);
-  const center = (200 * 400 + 200) * 4;
-  check(pixels[center] === partialBase[center] && pixels[center + 1] === partialBase[center + 1], `${projection}: covered label stays hidden`);
+  check(annotation.label.getAttribute('display') === 'none', `${projection}: covered label center hides entire SVG label`);
   annotation.update([-4, -2, 0], [4, -2, 0], 8, measurement, false, true, false, camera);
   render(camera);
   let amberPixels = 0;
@@ -69,27 +89,39 @@ for (const projection of ['perspective', 'orthographic']) {
 renderer.setRenderTarget(null);
 renderer.render(scene, previewCamera);
 
-// The live preview reuses one label while distances change its canvas width.
-// Its GPU output must match a freshly created annotation at every distance.
+// Live values update SVG text synchronously, with no font texture to resize.
 box.visible = false; annotation.group.visible = false;
-const preview = createMeasurementAnnotation(true);
+const preview = makeAnnotation(true);
 scene.add(preview.group);
+box.visible = true; box.scale.x = 1;
 preview.update([-4, -2, -2], [4, -2, -2], 8, measurement, false, false, false, previewCamera);
-check(!preview.label.material.depthTest && !preview.group.children[0].material.depthTest, 'preview: labels and lines always show through objects');
+check(preview.label.getAttribute('display') !== 'none' && !preview.group.children[0].material.depthTest, 'preview: labels and lines always show through objects');
+box.visible = false;
 for (const distance of [8, 12, 3, 3.125, 0, 120, 8]) {
   const start = [-distance / 2, -2, 0], end = [distance / 2, -2, 0];
   preview.update(start, end, distance, measurement, false, false, true, previewCamera);
   const reused = render(previewCamera);
   preview.group.visible = false;
-  const fresh = createMeasurementAnnotation(true);
+  const fresh = makeAnnotation(true);
   scene.add(fresh.group);
   fresh.update(start, end, distance, measurement, false, false, true, previewCamera);
   const expected = render(previewCamera);
   check(differences(reused, expected) === 0, `preview: updated ${distance} in label matches a fresh label`);
+  check(preview.label.textContent === fresh.label.textContent && preview.label.getAttribute('transform') === fresh.label.getAttribute('transform'), `preview: updated ${distance} in SVG text and projection match a fresh label`);
   fresh.dispose();
 }
 preview.dispose();
+// Camera motion only changes projection; text remains readable from either side.
+for (const plane of ['xy', 'xz', 'yz']) for (const side of [1, -1]) {
+  previewCamera.position.set(20 * side, -25 * side, 30 * side); previewCamera.lookAt(0, 0, 0); previewCamera.updateMatrixWorld();
+  annotation.update([-4, -2, 0], [4, 2, 3], 9, { ...measurement, plane }, false, false, true, previewCamera);
+  const matrix = annotation.label.getAttribute('transform').slice(7, -1).split(' ').map(Number);
+  check(matrix.every(Number.isFinite) && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, `${plane}/${side}: readable finite SVG projection`);
+  check(annotation.containsPoint(matrix[4], matrix[5]), `${plane}/${side}: transformed label center remains selectable`);
+}
+annotation.hide(); check(annotation.label.getAttribute('display') === 'none' && !annotation.containsPoint(200, 200), 'hidden annotations remove SVG visibility and picking');
 annotation.dispose(); target.dispose(); box.geometry.dispose(); box.material.dispose(); renderer.dispose();
+check(overlay.children.length === 0, 'disposing annotations removes SVG labels');
 
 // Exercise real viewport selection and OrbitControls together. Only native
 // pointer capture is stubbed because synthetic test pointers are not hardware.
@@ -116,12 +148,14 @@ for (const projection of ['perspective', 'orthographic']) {
   viewport.setProjection(projection); viewport.setView('top'); viewport.setMeasurementsThroughObjects(true);
   await framePixels(); click();
   check(selected === 'measurement', `${projection}: label click selects measurement`);
+  check(host.querySelector('.measurement-label:not(.preview) text')?.textContent === '12 in', `${projection}: viewport uses SVG label text`);
   const beforeMove = await framePixels();
   pointer('pointermove', 50, 30);
   const afterMove = await framePixels();
   check(differences(beforeMove, afterMove) === 0, `${projection}: released label click must not leave orbit active`);
   viewport.setMeasurementsThroughObjects(false); await framePixels(); click();
   check(selected === 'box', `${projection}: an occluded label cannot be selected`);
+  check(host.querySelector('.measurement-label:not(.preview)')?.getAttribute('display') === 'none', `${projection}: viewport hides label behind box`);
 }
 viewport.setMode('sketch');
 viewport.setRectangles([{ id: 'box', name: 'Rectangle', size: [12, 8], position: [0, 0], color: '#ffffff' }]);

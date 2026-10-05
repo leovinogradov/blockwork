@@ -59,9 +59,9 @@ root.innerHTML = `
             <button id="add-group" class="add-variable" title="Create group" aria-label="Create group"><i data-lucide="group" aria-hidden="true"></i></button>
             <button id="add-variable" class="add-variable" title="Add variable" aria-label="Add variable">ƒ</button>
             <button id="add-model-sketch" class="add-variable" title="Add sketch" aria-label="Add sketch"><i data-lucide="square" aria-hidden="true"></i></button>
+            <button data-measure-tool class="add-variable" type="button" aria-pressed="false" title="Measure between corners or edges (M)" aria-label="Measurement"><i data-lucide="ruler" aria-hidden="true"></i></button>
             <button id="add-box" class="add-button" title="Add box" aria-label="Add box">＋</button>
           </div>
-          <button data-measure-tool class="sketch-tool-button" type="button" aria-pressed="false" title="Measure between corners or edges (M)"><i data-lucide="ruler" aria-hidden="true"></i><span>Measurement</span><kbd>M</kbd></button>
         </section>
         <section id="measurement-plane-tool" class="measurement-plane-tool hidden"><label class="field-label" for="new-measurement-plane">MEASUREMENT PLANE</label><select id="new-measurement-plane" class="text-field" aria-label="New measurement plane"><option value="auto">Auto · on first click</option><option value="xy">XY</option><option value="xz">XZ</option><option value="yz">YZ</option></select></section>
         <div class="panel-heading"><div><div class="eyebrow">MODEL TREE</div><div class="heading-title">Components <span class="count-pill" id="box-count">0</span></div></div><button id="add-sketch-group" class="add-variable" title="Create group" aria-label="Create group"><i data-lucide="group" aria-hidden="true"></i></button></div>

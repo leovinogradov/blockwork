@@ -261,7 +261,7 @@ export function createViewport(
   measurementOverlay.classList.add('measurement-overlay');
   measurementOverlay.setAttribute('aria-label', 'Distance measurements');
   if (renderer) host.append(measurementOverlay);
-  const previewAnnotation = createMeasurementAnnotation(true);
+  const previewAnnotation = createMeasurementAnnotation(measurementOverlay, true);
   root.add(previewAnnotation.group);
   const measurementMarker = document.createElementNS(measurementOverlay.namespaceURI, 'circle');
   measurementMarker.setAttribute('class', 'measurement-marker'); measurementMarker.setAttribute('r', '5');
@@ -270,7 +270,7 @@ export function createViewport(
   const setMeasurements = (measurements: Measurement[]) => {
     annotations.forEach(({ elements }) => elements.dispose());
     annotations = measurements.map((measurement) => {
-      const elements = createMeasurementAnnotation();
+      const elements = createMeasurementAnnotation(measurementOverlay);
       root.add(elements.group);
       return { measurement, elements };
     });
@@ -286,21 +286,34 @@ export function createViewport(
     const hit = planeRaycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...frame.normal), new THREE.Vector3(...frame.midpoint)), new THREE.Vector3());
     return hit ? hit.toArray() as [number, number, number] : null;
   };
+  const labelRaycaster = new THREE.Raycaster();
+  let labelOccluders: THREE.Object3D[] = [];
+  let labelOcclusionTolerance = .001;
+  const labelIsOccluded = (point: [number, number, number]) => {
+    const position = new THREE.Vector3(...point), projected = position.clone().project(camera);
+    labelRaycaster.setFromCamera(new THREE.Vector2(projected.x, projected.y), camera);
+    const hit = labelRaycaster.intersectObjects(labelOccluders, false)[0];
+    const distance = position.sub(labelRaycaster.ray.origin).dot(labelRaycaster.ray.direction);
+    return !!hit && hit.distance < distance - labelOcclusionTolerance;
+  };
   const drawAnnotation = (elements: ReturnType<typeof createMeasurementAnnotation>, measurement: Measurement) => {
     const resolved = resolveMeasurement(measurement, measurementGeometry);
-    if (!resolved || [measurement.id, measurement.start.objectId, measurement.end.objectId].some((id) => hiddenIds.has(id))) { elements.group.visible = false; return; }
-    elements.update(resolved.start, resolved.end, resolved.distance, measurement, sketchMode, selectedIds.has(measurement.id), measurementsThroughObjects, camera);
+    if (!resolved || [measurement.id, measurement.start.objectId, measurement.end.objectId].some((id) => hiddenIds.has(id))) { elements.hide(); return; }
+    elements.update(resolved.start, resolved.end, resolved.distance, measurement, sketchMode, selectedIds.has(measurement.id), measurementsThroughObjects, camera, [host.clientWidth, host.clientHeight], labelIsOccluded);
   };
   const updateMeasurements = () => {
     camera.updateMatrixWorld();
+    labelOccluders = measurementsThroughObjects ? [] : [...objects.values()].filter((object) => !hiddenIds.has(object.id) && object.mesh.material.depthWrite).map((object) => object.mesh);
+    if (labelOccluders.length) labelOcclusionTolerance = Math.max(.001, boundsRadius() * 1e-5);
     for (const { elements, measurement } of annotations) drawAnnotation(elements, measurement);
-    previewAnnotation.group.visible = false; measurementMarker.setAttribute('display', 'none');
-    if (!measurementTool) return;
+    measurementMarker.setAttribute('display', 'none');
+    if (!measurementTool) { previewAnnotation.hide(); return; }
     if (measurementFirst && measurementSecond) {
       drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), plane: measurementDraftPlane ?? 'xy' });
       return;
     }
     if (measurementFirst && measurementHover) drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementHover.anchor, plane: measurementDraftPlane ?? 'xy' });
+    else previewAnnotation.hide();
     const point = measurementHover?.point ?? (measurementFirst ? resolveMeasurementAnchor(measurementFirst, measurementGeometry) : null);
     if (point) {
       const p = projectMeasurementPoint(point);
@@ -859,13 +872,10 @@ export function createViewport(
     updateMeasurements();
     pointerToNdc(event);
     raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObjects(annotations.filter(({ elements }) => elements.group.visible).map(({ elements }) => elements.label), false);
-    const occluder = measurementsThroughObjects ? undefined : raycaster.intersectObjects(
-      [...objects.values()].filter((object) => !hiddenIds.has(object.id) && object.mesh.material.depthWrite).map((object) => object.mesh), false,
-    )[0];
-    const hit = hits.find((candidate) => Math.abs(candidate.point.clone().project(camera).z) <= 1
-      && (!occluder || occluder.distance >= candidate.distance - .001));
-    return hit?.object.userData.measurementId as string | undefined;
+    const bounds = renderer!.domElement.getBoundingClientRect();
+    const hits = annotations.filter(({ elements }) => elements.containsPoint(event.clientX - bounds.left, event.clientY - bounds.top));
+    hits.sort((a, b) => a.elements.labelPosition.clone().sub(raycaster.ray.origin).dot(raycaster.ray.direction) - b.elements.labelPosition.clone().sub(raycaster.ray.origin).dot(raycaster.ray.direction));
+    return hits[0]?.measurement.id;
   };
 
   const onPointerDown = (event: PointerEvent) => {
