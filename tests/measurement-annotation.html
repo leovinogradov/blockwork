@@ -1,0 +1,136 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Measurement depth checks</title>
+<style>body{font:16px system-ui;background:#101923;color:#ddd;padding:24px}canvas{width:400px;height:400px}</style>
+<h1>Measurement depth checks</h1>
+<p id="result">Running GPU checks…</p>
+<pre id="failures"></pre>
+<div id="viewport" style="width:400px;height:400px;position:relative"></div>
+<script type="module">
+// Run npm run dev and open /tests/measurement-annotation.html for real GPU checks.
+import * as THREE from 'three';
+import { createMeasurementAnnotation } from '/src/measurement-annotation.ts';
+import { createViewport } from '/src/viewport.ts';
+
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(400, 400);
+document.body.append(renderer.domElement);
+const target = new THREE.WebGLRenderTarget(400, 400);
+const pixels = new Uint8Array(400 * 400 * 4);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#101923');
+const box = new THREE.Mesh(new THREE.BoxGeometry(16, 16, 2), new THREE.MeshBasicMaterial({ color: '#244eaa' }));
+box.position.z = -1;
+scene.add(box);
+const annotation = createMeasurementAnnotation();
+scene.add(annotation.group);
+const measurement = { id: 'width', plane: 'xy', offset: 2, lineHeight: 1 };
+let checks = 0;
+const errors = [];
+let previewCamera;
+function check(condition, message) { checks++; if (!condition) errors.push(message); }
+function render(camera) {
+  renderer.setRenderTarget(target);
+  renderer.render(scene, camera);
+  renderer.readRenderTargetPixels(target, 0, 0, 400, 400, pixels);
+  return pixels.slice();
+}
+function differences(a, b) { let count = 0; for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) count++; return count; }
+for (const projection of ['perspective', 'orthographic']) {
+  const camera = projection === 'perspective'
+    ? new THREE.PerspectiveCamera(28, 1, .1, 100)
+    : new THREE.OrthographicCamera(-8, 8, 8, -8, .1, 100);
+  camera.position.set(0, 0, 40); camera.lookAt(0, 0, 0); camera.updateMatrixWorld();
+  previewCamera = camera;
+  annotation.group.visible = false; box.scale.x = 1;
+  const base = render(camera);
+  for (const through of [true, false]) for (const z of [-2, -1 / 64, 0, 1 / 64]) {
+    annotation.update([-4, -2, z], [4, -2, z], 8, measurement, false, false, through, camera);
+    const count = differences(base, render(camera));
+    check((count > 0) === (through || z >= 0), `${projection}: through=${through}, z=${z}, changed pixels=${count}`);
+  }
+  // An occluding box hides the label and the middle of the dimension, while
+  // exposed portions remain visible instead of hiding the entire annotation.
+  box.scale.x = .375; annotation.group.visible = false;
+  const partialBase = render(camera);
+  annotation.update([-4, -2, -1], [4, -2, -1], 8, measurement, false, false, true, camera);
+  const throughCount = differences(partialBase, render(camera));
+  annotation.update([-4, -2, -1], [4, -2, -1], 8, measurement, false, false, false, camera);
+  const partialCount = differences(partialBase, render(camera));
+  check(partialCount > 0 && partialCount < throughCount, `${projection}: partial occlusion ${partialCount}/${throughCount}`);
+  const center = (200 * 400 + 200) * 4;
+  check(pixels[center] === partialBase[center] && pixels[center + 1] === partialBase[center + 1], `${projection}: covered label stays hidden`);
+  annotation.update([-4, -2, 0], [4, -2, 0], 8, measurement, false, true, false, camera);
+  render(camera);
+  let amberPixels = 0;
+  for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 150 && pixels[i + 1] > 90 && pixels[i + 2] < 130) amberPixels++;
+  check(amberPixels > 0, `${projection}: selected annotation is highlighted`);
+}
+renderer.setRenderTarget(null);
+renderer.render(scene, previewCamera);
+
+// The live preview reuses one label while distances change its canvas width.
+// Its GPU output must match a freshly created annotation at every distance.
+box.visible = false; annotation.group.visible = false;
+const preview = createMeasurementAnnotation(true);
+scene.add(preview.group);
+preview.update([-4, -2, -2], [4, -2, -2], 8, measurement, false, false, false, previewCamera);
+check(!preview.label.material.depthTest && !preview.group.children[0].material.depthTest, 'preview: labels and lines always show through objects');
+for (const distance of [8, 12, 3, 3.125, 0, 120, 8]) {
+  const start = [-distance / 2, -2, 0], end = [distance / 2, -2, 0];
+  preview.update(start, end, distance, measurement, false, false, true, previewCamera);
+  const reused = render(previewCamera);
+  preview.group.visible = false;
+  const fresh = createMeasurementAnnotation(true);
+  scene.add(fresh.group);
+  fresh.update(start, end, distance, measurement, false, false, true, previewCamera);
+  const expected = render(previewCamera);
+  check(differences(reused, expected) === 0, `preview: updated ${distance} in label matches a fresh label`);
+  fresh.dispose();
+}
+preview.dispose();
+annotation.dispose(); target.dispose(); box.geometry.dispose(); box.material.dispose(); renderer.dispose();
+
+// Exercise real viewport selection and OrbitControls together. Only native
+// pointer capture is stubbed because synthetic test pointers are not hardware.
+const host = document.querySelector('#viewport');
+let selected = null;
+const viewport = createViewport(host, (id) => { selected = id; });
+const testBox = { id: 'box', name: 'Box', size: [12, 8, 4], position: [0, 0, 0], color: '#86a9a3' };
+const dimension = { id: 'measurement', start: { objectId: 'box', coordinates: [0, 0, 0] }, end: { objectId: 'box', coordinates: [1, 0, 0] }, plane: 'xy', offset: 4, lineHeight: 1 };
+viewport.setBoxes([testBox]); viewport.setMeasurements([dimension]); viewport.setView('top');
+const canvas = host.querySelector('canvas');
+canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {}; canvas.hasPointerCapture = () => false;
+const gl = canvas.getContext('webgl2');
+function framePixels() { return new Promise((resolve) => requestAnimationFrame(() => {
+  const image = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+  gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  resolve(image);
+})); }
+function pointer(type, dx = 0, dy = 0, buttons = 0) {
+  const bounds = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'mouse', pointerId: 1, button: 0, buttons, clientX: bounds.left + bounds.width / 2 + dx, clientY: bounds.top + bounds.height / 2 + dy }));
+}
+function click() { pointer('pointerdown', 0, 0, 1); pointer('pointerup'); }
+for (const projection of ['perspective', 'orthographic']) {
+  viewport.setProjection(projection); viewport.setView('top'); viewport.setMeasurementsThroughObjects(true);
+  await framePixels(); click();
+  check(selected === 'measurement', `${projection}: label click selects measurement`);
+  const beforeMove = await framePixels();
+  pointer('pointermove', 50, 30);
+  const afterMove = await framePixels();
+  check(differences(beforeMove, afterMove) === 0, `${projection}: released label click must not leave orbit active`);
+  viewport.setMeasurementsThroughObjects(false); await framePixels(); click();
+  check(selected === 'box', `${projection}: an occluded label cannot be selected`);
+}
+viewport.setMode('sketch');
+viewport.setRectangles([{ id: 'box', name: 'Rectangle', size: [12, 8], position: [0, 0], color: '#ffffff' }]);
+viewport.setMeasurements([{ ...dimension, start: { objectId: 'box', coordinates: [0, 0] }, end: { objectId: 'box', coordinates: [1, 0] } }]);
+await framePixels(); click();
+check(selected === 'measurement', 'sketch: label click selects measurement');
+const sketchBeforeMove = await framePixels(); pointer('pointermove', 50, 30);
+check(differences(sketchBeforeMove, await framePixels()) === 0, 'sketch: released label click must not leave pan active');
+document.querySelector('#result').textContent = errors.length ? `${errors.length} failed / ${checks} checks` : `Passed ${checks} GPU and interaction checks`;
+document.querySelector('#failures').textContent = errors.join('\n');
+viewport.dispose();
+</script>

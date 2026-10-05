@@ -13,7 +13,10 @@ export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnc
 
 /** Shared defaults and all annotation sizes use inches, just like geometry. */
 export const DEFAULT_MEASUREMENT_OFFSET = 2;
-export const DEFAULT_MEASUREMENT_LINE_HEIGHT = 4;
+/** Default label line height in inches, derived from the live point distance. */
+export function defaultMeasurementLineHeight(distance: number): number {
+  return Math.min(3, Math.max(1, Math.ceil(Math.sqrt(Math.max(0, distance)) / 4.5)));
+}
 
 /** Signed model-space distance along the fixed plane's canonical perpendicular. */
 export function measurementOffsetAtPointer(start: Vector3, end: Vector3, cursor: Vector3, plane: MeasurementPlane = 'xy'): number {
@@ -69,7 +72,8 @@ export function measurementAnnotationLayout(start: Vector3, end: Vector3, measur
   const frame = measurementPlaneLayout(start, end, sketch ? 'xy' : measurement.plane ?? 'xy');
   const offset = measurement.offset ?? DEFAULT_MEASUREMENT_OFFSET;
   const shifted = (point: Vector3) => point.map((n, i) => n + frame.perpendicular[i] * offset) as Vector3;
-  return { ...frame, dimensionStart: shifted(frame.start), dimensionEnd: shifted(frame.end), labelPosition: shifted(frame.midpoint), offset, lineHeight: measurement.lineHeight ?? DEFAULT_MEASUREMENT_LINE_HEIGHT };
+  const distance = Math.hypot(...start.map((n, i) => end[i] - n));
+  return { ...frame, dimensionStart: shifted(frame.start), dimensionEnd: shifted(frame.end), labelPosition: shifted(frame.midpoint), offset, lineHeight: measurement.lineHeight ?? defaultMeasurementLineHeight(distance) };
 }
 
 export function resolveMeasurement(measurement: Measurement, geometry: MeasurementGeometry) {

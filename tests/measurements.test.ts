@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autoMeasurementPlane, DEFAULT_MEASUREMENT_LINE_HEIGHT, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementPlaneLayout, measurementOffsetAtPointer, measurementSegments, pruneMeasurements, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, validateMeasurements, type Measurement } from '../src/measurements';
+import { autoMeasurementPlane, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementPlaneLayout, measurementOffsetAtPointer, measurementSegments, pruneMeasurements, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, validateMeasurements, type Measurement } from '../src/measurements';
 import { generateSource, reparentBox, resolveModel, type BoxSpec, type ModelSpec } from '../src/model';
 import { generateSketchSource, type SketchShape } from '../src/sketch';
 import { createDocument, resolveSnapshot, restoreWorkspace, serializeWorkspace } from '../src/documents';
@@ -36,7 +36,7 @@ test('annotation positions and label height use model units in the same schema f
   assert.equal(sketch.plane, 'xy'); assert.equal(sketch.lineHeight, 2);
   const defaults = measurementAnnotationLayout(a, b, {});
   assert.equal(defaults.offset, DEFAULT_MEASUREMENT_OFFSET);
-  assert.equal(defaults.lineHeight, 4); assert.equal(DEFAULT_MEASUREMENT_LINE_HEIGHT, 4);
+  assert.equal(defaults.lineHeight, 1);
 });
 
 test('corner and fractional edge anchors follow resizing and translation without freezing points', () => {
@@ -231,7 +231,7 @@ test('old local pixel measurements migrate to default inch distances while draft
     const restored = restoreWorkspace(JSON.stringify(legacy)).documents[0];
     assert.equal(restored.source, doc.source); assert.equal(restored.draftDirty, true);
     assert.equal(restored.measurements[0].offset, -DEFAULT_MEASUREMENT_OFFSET);
-    assert.equal(restored.measurements[0].lineHeight, 4); assert.equal(restored.measurements[0].plane, 'xz');
+    assert.equal(restored.measurements[0].plane, 'xz');
     assert.deepEqual(restored.measurements[0].start, doc.measurements[0].start);
     assert.equal(compile(restored.appliedSource, kind).measurements![0].offset, -DEFAULT_MEASUREMENT_OFFSET);
     assert.deepEqual(restoreWorkspace(serializeWorkspace([restored], restored.id)).documents[0].measurements, restored.measurements);

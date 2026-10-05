@@ -2,12 +2,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
+import { createMeasurementAnnotation } from './measurement-annotation';
 import { getFaceFrame, parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
 import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
-import { autoMeasurementPlane, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementOffsetAtPointer, measurementPlaneLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementPlane, type MeasurementPlaneChoice, type MeasurementSegment } from './measurements';
+import { autoMeasurementPlane, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementPlaneLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementPlane, type MeasurementPlaneChoice, type MeasurementSegment } from './measurements';
 
 export type ViewName = 'iso' | 'front' | 'right' | 'top';
 export type ProjectionMode = 'perspective' | 'orthographic';
@@ -21,6 +22,7 @@ export interface Viewport {
   setMeasurementTool(active: boolean): void;
   setMeasurementPlane(plane: MeasurementPlaneChoice): void;
   setMeasurements(measurements: Measurement[]): void;
+  setMeasurementsThroughObjects(through: boolean): void;
   select(id: string | null, face?: FaceName | null): void;
   selectMany(ids: Iterable<string>): void;
   setVisibility(id: string, visible: boolean): void;
@@ -73,6 +75,7 @@ export function createViewport(
   let lineInputMode: 'cartesian' | 'polar' = 'cartesian';
   let sketchRectangles: SketchShape[] = [];
   let measurementTool = false;
+  let measurementsThroughObjects = true;
   let measurementPlane: MeasurementPlaneChoice = 'auto';
   let measurementDraftPlane: MeasurementPlane | null = null;
   let measurementFirst: MeasurementAnchor | null = null;
@@ -258,24 +261,19 @@ export function createViewport(
   measurementOverlay.classList.add('measurement-overlay');
   measurementOverlay.setAttribute('aria-label', 'Distance measurements');
   if (renderer) host.append(measurementOverlay);
-  const makeAnnotation = (preview = false) => {
-    const group = document.createElementNS(measurementOverlay.namespaceURI, 'g');
-    group.setAttribute('class', preview ? 'measurement-annotation preview' : 'measurement-annotation');
-    const path = document.createElementNS(measurementOverlay.namespaceURI, 'path');
-    const background = document.createElementNS(measurementOverlay.namespaceURI, 'rect');
-    const text = document.createElementNS(measurementOverlay.namespaceURI, 'text');
-    text.setAttribute('text-anchor', 'middle'); text.setAttribute('dominant-baseline', 'central');
-    group.append(path, background, text); measurementOverlay.append(group);
-    return { group, path, background, text };
-  };
-  const previewAnnotation = makeAnnotation(true);
+  const previewAnnotation = createMeasurementAnnotation(true);
+  root.add(previewAnnotation.group);
   const measurementMarker = document.createElementNS(measurementOverlay.namespaceURI, 'circle');
   measurementMarker.setAttribute('class', 'measurement-marker'); measurementMarker.setAttribute('r', '5');
   measurementOverlay.append(measurementMarker);
-  let annotations: { measurement: Measurement; elements: ReturnType<typeof makeAnnotation> }[] = [];
+  let annotations: { measurement: Measurement; elements: ReturnType<typeof createMeasurementAnnotation> }[] = [];
   const setMeasurements = (measurements: Measurement[]) => {
-    annotations.forEach(({ elements }) => elements.group.remove());
-    annotations = measurements.map((measurement) => ({ measurement, elements: makeAnnotation() }));
+    annotations.forEach(({ elements }) => elements.dispose());
+    annotations = measurements.map((measurement) => {
+      const elements = createMeasurementAnnotation();
+      root.add(elements.group);
+      return { measurement, elements };
+    });
   };
   const projectMeasurementPoint = (p: [number, number, number]) => {
     const clip = new THREE.Vector4(...p, 1).applyMatrix4(camera.matrixWorldInverse).applyMatrix4(camera.projectionMatrix);
@@ -288,53 +286,15 @@ export function createViewport(
     const hit = planeRaycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...frame.normal), new THREE.Vector3(...frame.midpoint)), new THREE.Vector3());
     return hit ? hit.toArray() as [number, number, number] : null;
   };
-  const drawAnnotation = (elements: ReturnType<typeof makeAnnotation>, measurement: Measurement) => {
-    const hide = () => { elements.group.setAttribute('display', 'none'); elements.group.setAttribute('aria-hidden', 'true'); };
+  const drawAnnotation = (elements: ReturnType<typeof createMeasurementAnnotation>, measurement: Measurement) => {
     const resolved = resolveMeasurement(measurement, measurementGeometry);
-    if (!resolved || hiddenIds.has(measurement.id) || hiddenIds.has(measurement.start.objectId) || hiddenIds.has(measurement.end.objectId)) { hide(); return; }
-    const frame = measurementAnnotationLayout(resolved.start, resolved.end, measurement, sketchMode);
-    const view = camera.getWorldDirection(new THREE.Vector3());
-    if (Math.abs(view.dot(new THREE.Vector3(...frame.normal))) < 1e-5) { hide(); return; }
-    const a = projectMeasurementPoint(resolved.start), b = projectMeasurementPoint(resolved.end);
-    const pa = projectMeasurementPoint(frame.dimensionStart), pb = projectMeasurementPoint(frame.dimensionEnd), center = projectMeasurementPoint(frame.labelPosition);
-    if ([a, b, pa, pb, center].some((p) => !p.visible)) { hide(); return; }
-    const overhang = frame.lineHeight * .2;
-    const extend = (point: [number, number, number], dimension: [number, number, number]) => {
-      const delta = new THREE.Vector3(...dimension).sub(new THREE.Vector3(...point));
-      if (delta.lengthSq() < 1e-12) delta.set(...frame.perpendicular).multiplyScalar(Math.sign(frame.offset) || 1);
-      return projectMeasurementPoint(new THREE.Vector3(...dimension).addScaledVector(delta.normalize(), overhang).toArray() as [number, number, number]);
-    };
-    const tick = (point: [number, number, number], sign: number) => projectMeasurementPoint(point.map((n, i) => n + frame.perpendicular[i] * overhang * sign) as [number, number, number]);
-    const ea = extend(resolved.start, frame.dimensionStart), eb = extend(resolved.end, frame.dimensionEnd);
-    const ta = tick(frame.dimensionStart, -1), tb = tick(frame.dimensionStart, 1), tc = tick(frame.dimensionEnd, -1), td = tick(frame.dimensionEnd, 1);
-    elements.path.setAttribute('d', `M ${a.x} ${a.y} L ${ea.x} ${ea.y} M ${b.x} ${b.y} L ${eb.x} ${eb.y} M ${pa.x} ${pa.y} L ${pb.x} ${pb.y} M ${ta.x} ${ta.y} L ${tb.x} ${tb.y} M ${tc.x} ${tc.y} L ${td.x} ${td.y}`);
-    // SVG local coordinates are inches. Project a small world-space step to
-    // derive pixels per inch at the label, preserving its size as the view changes.
-    const u: [number, number, number] = sketchMode ? [1, 0, 0] : frame.direction;
-    const v: [number, number, number] = sketchMode ? [0, 1, 0] : frame.perpendicular;
-    const step = .001;
-    const px = projectMeasurementPoint(frame.labelPosition.map((n, i) => n + u[i] * step) as [number, number, number]);
-    const py = projectMeasurementPoint(frame.labelPosition.map((n, i) => n + v[i] * step) as [number, number, number]);
-    let ux = (px.x - center.x) / step, uy = (px.y - center.y) / step, vx = (py.x - center.x) / step, vy = (py.y - center.y) / step;
-    if (Math.hypot(ux, uy) < 1e-6 || Math.abs(ux * vy - uy * vx) < 1e-6) { hide(); return; }
-    if (ux < 0 || Math.abs(ux) < 1e-6 && uy > 0) { ux = -ux; uy = -uy; }
-    if (ux * vy - uy * vx < 0) { vx = -vx; vy = -vy; }
-    const transform = `matrix(${ux} ${uy} ${vx} ${vy} ${center.x} ${center.y})`;
-    const label = `${formatInches(resolved.distance)} in`, fontSize = frame.lineHeight / 1.2, padding = frame.lineHeight * .2;
-    const width = label.length * fontSize * .6 + padding * 2, height = frame.lineHeight + padding;
-    elements.text.textContent = label; elements.text.setAttribute('x', '0'); elements.text.setAttribute('y', '0');
-    const textNode = elements.text as SVGTextElement;
-    textNode.style.fontSize = `${fontSize}px`; textNode.style.lineHeight = `${frame.lineHeight}px`;
-    elements.background.setAttribute('x', String(-width / 2)); elements.background.setAttribute('y', String(-height / 2)); elements.background.setAttribute('width', String(width)); elements.background.setAttribute('height', String(height)); elements.background.setAttribute('rx', String(padding));
-    for (const node of [elements.text, elements.background]) node.setAttribute('transform', transform);
-    elements.background.setAttribute('vector-effect', 'non-scaling-stroke');
-    elements.group.classList.toggle('selected', selectedIds.has(measurement.id));
-    elements.group.removeAttribute('display'); elements.group.removeAttribute('aria-hidden');
-    elements.group.setAttribute('aria-label', `Distance ${label}${sketchMode ? '' : ' · ' + frame.plane.toUpperCase() + ' plane'}`);
+    if (!resolved || [measurement.id, measurement.start.objectId, measurement.end.objectId].some((id) => hiddenIds.has(id))) { elements.group.visible = false; return; }
+    elements.update(resolved.start, resolved.end, resolved.distance, measurement, sketchMode, selectedIds.has(measurement.id), measurementsThroughObjects, camera);
   };
   const updateMeasurements = () => {
+    camera.updateMatrixWorld();
     for (const { elements, measurement } of annotations) drawAnnotation(elements, measurement);
-    previewAnnotation.group.setAttribute('display', 'none'); previewAnnotation.group.setAttribute('aria-hidden', 'true'); measurementMarker.setAttribute('display', 'none');
+    previewAnnotation.group.visible = false; measurementMarker.setAttribute('display', 'none');
     if (!measurementTool) return;
     if (measurementFirst && measurementSecond) {
       drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), plane: measurementDraftPlane ?? 'xy' });
@@ -895,6 +855,19 @@ export function createViewport(
     });
   };
 
+  const measurementLabelAtPointer = (event: PointerEvent) => {
+    updateMeasurements();
+    pointerToNdc(event);
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects(annotations.filter(({ elements }) => elements.group.visible).map(({ elements }) => elements.label), false);
+    const occluder = measurementsThroughObjects ? undefined : raycaster.intersectObjects(
+      [...objects.values()].filter((object) => !hiddenIds.has(object.id) && object.mesh.material.depthWrite).map((object) => object.mesh), false,
+    )[0];
+    const hit = hits.find((candidate) => Math.abs(candidate.point.clone().project(camera).z) <= 1
+      && (!occluder || occluder.distance >= candidate.distance - .001));
+    return hit?.object.userData.measurementId as string | undefined;
+  };
+
   const onPointerDown = (event: PointerEvent) => {
     if (measurementTool && event.button === 0) {
       event.preventDefault(); event.stopImmediatePropagation(); renderer?.domElement.focus({ preventScroll: true });
@@ -990,6 +963,19 @@ export function createViewport(
     }
     if (!down || down.pointerId !== event.pointerId || down.button !== event.button) return;
     pointerDown = null;
+    if (event.button === 0 && !down.dragged && Math.hypot(event.clientX - down.x, event.clientY - down.y) <= 4) {
+      const measurementId = measurementLabelAtPointer(event);
+      if (measurementId) {
+        selectionBox.hidden = true;
+        // Model clicks also reach OrbitControls on pointer-down. Let its
+        // pointer-up handler finish the gesture, as for every other object.
+        if (sketchMode) {
+          event.preventDefault(); event.stopImmediatePropagation();
+          if (renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+        }
+        select(measurementId); onSelect(measurementId); return;
+      }
+    }
     if (sketchMode && sketchTool === 'select' && event.button === 0) {
       event.preventDefault(); event.stopImmediatePropagation(); selectionBox.hidden = true;
       if (renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
@@ -1097,6 +1083,7 @@ export function createViewport(
     setMeasurementTool,
     setMeasurementPlane: (plane) => { measurementPlane = plane; if (measurementFirst && plane !== 'auto') measurementDraftPlane = plane; },
     setMeasurements,
+    setMeasurementsThroughObjects: (through) => { measurementsThroughObjects = through; },
     select,
     selectMany,
     setVisibility,
@@ -1126,6 +1113,8 @@ export function createViewport(
       angleGuide.material.dispose();
       sketchPreview.geometry.dispose();
       sketchPreview.material.dispose();
+      previewAnnotation.dispose();
+      annotations.forEach(({ elements }) => elements.dispose());
       for (const object of objects.values()) {
         disposeObject(object);
       }

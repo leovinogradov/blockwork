@@ -13,7 +13,7 @@ import { createBlankDocument, createDocument, restoreWorkspace, resolveSnapshot,
 import { generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
 import { sketchReference, sketchReferenceOrigin, type ModelSketch, type SketchAxis } from './model-sketch';
 import { findSketchEditor, linkSketchEditor, openSketchEditor, resolveLinkedSketches, synchronizeSketchReferences } from './sketch-editor';
-import { DEFAULT_MEASUREMENT_OFFSET, DEFAULT_MEASUREMENT_LINE_HEIGHT, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementPlane, type MeasurementPlaneChoice } from './measurements';
+import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementPlane, type MeasurementPlaneChoice } from './measurements';
 import { saveDocumentFile, type SaveFilePicker } from './save-document';
 
 const STORAGE_KEY = 'blockwork.workspace.v2';
@@ -50,6 +50,7 @@ root.innerHTML = `
             <button id="select-sketch-tool" class="sketch-tool-button active" type="button" aria-pressed="true" title="Select sketch shapes (Escape)"><i data-lucide="mouse-pointer-2" aria-hidden="true"></i><span>Select</span><kbd>Esc</kbd></button>
             <button id="rectangle-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw rectangle (R)"><i data-lucide="rectangle-horizontal" aria-hidden="true"></i><span>Rectangle</span><kbd>R</kbd></button>
             <button id="line-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw line (L)"><i data-lucide="slash" aria-hidden="true"></i><span>Line</span><kbd>L</kbd></button>
+            <button data-measure-tool class="sketch-tool-button" type="button" aria-pressed="false" title="Measure between corners or edges (M)"><i data-lucide="ruler" aria-hidden="true"></i><span>Measurement</span><kbd>M</kbd></button>
           </div>
         </section>
         <section class="model-tools-section" aria-labelledby="model-tools-title">
@@ -60,6 +61,7 @@ root.innerHTML = `
             <button id="add-model-sketch" class="add-variable" title="Add sketch" aria-label="Add sketch"><i data-lucide="square" aria-hidden="true"></i></button>
             <button id="add-box" class="add-button" title="Add box" aria-label="Add box">＋</button>
           </div>
+          <button data-measure-tool class="sketch-tool-button" type="button" aria-pressed="false" title="Measure between corners or edges (M)"><i data-lucide="ruler" aria-hidden="true"></i><span>Measurement</span><kbd>M</kbd></button>
         </section>
         <section id="measurement-plane-tool" class="measurement-plane-tool hidden"><label class="field-label" for="new-measurement-plane">MEASUREMENT PLANE</label><select id="new-measurement-plane" class="text-field" aria-label="New measurement plane"><option value="auto">Auto · on first click</option><option value="xy">XY</option><option value="xz">XZ</option><option value="yz">YZ</option></select></section>
         <div class="panel-heading"><div><div class="eyebrow">MODEL TREE</div><div class="heading-title">Components <span class="count-pill" id="box-count">0</span></div></div><button id="add-sketch-group" class="add-variable" title="Create group" aria-label="Create group"><i data-lucide="group" aria-hidden="true"></i></button></div>
@@ -77,7 +79,7 @@ root.innerHTML = `
             <button data-view="top" class="view-button" title="Top view (7)">TOP <kbd>7</kbd></button>
           </div>
           <div class="stage-actions">
-            <button id="measure-tool" class="tool-button" type="button" aria-pressed="false" title="Measure between corners or edges (M)"><i data-lucide="ruler" aria-hidden="true"></i> MEASURE <kbd>M</kbd></button>
+            <button id="measurement-through-toggle" class="tool-button active" type="button" aria-pressed="true" title="Toggle measurements through objects" aria-label="Show measurements through objects"><i data-lucide="ruler" aria-hidden="true"></i> THROUGH</button>
             <button id="projection" class="tool-button" title="Toggle perspective / orthographic">PERSPECTIVE</button>
             <button id="grid-toggle" class="tool-button active" title="Toggle grid">▦ <span>GRID</span></button>
             <button id="fit" class="tool-button" title="Fit model (F)">FIT <kbd>F</kbd></button>
@@ -107,6 +109,7 @@ root.innerHTML = `
     <dialog id="delete-variable-dialog" class="variable-dialog"><form method="dialog"><div class="eyebrow">VARIABLE IN USE</div><h2>Replace references?</h2><p id="delete-variable-message" class="delete-variable-message"></p><div class="dialog-actions"><button value="cancel" class="button button-quiet">Cancel</button><button value="delete" class="button button-run">Delete and replace</button></div></form></dialog>
     <dialog id="close-document-dialog" class="variable-dialog close-document-dialog" aria-labelledby="close-document-title" aria-describedby="close-document-message"><form method="dialog"><div class="eyebrow">CLOSE FILE</div><h2 id="close-document-title">Close <span id="close-document-name"></span>?</h2><p id="close-document-message">Closing removes this tab and its local recovery copy. Save and close saves the current source as a .js file.</p><p id="close-document-draft" class="close-document-draft" hidden>This tab has an unrun source draft. Close without saving will discard it.</p><div class="dialog-actions close-document-actions"><button id="close-document-cancel" value="cancel" class="button button-quiet">Cancel</button><button id="close-document-save" type="button" class="button button-run">Save and close</button><button value="close" class="button button-danger">Close without saving</button></div></form></dialog>
     <div id="face-menu" class="face-menu" role="menu" aria-label="Box actions" hidden><div class="face-menu-caption" id="face-menu-caption"></div><div class="face-menu-actions"><button id="new-from-face" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">＋</span><span>New box from face</span></button><button id="duplicate-from-menu" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">⧉</span><span>Duplicate</span></button></div><div class="face-menu-reason" id="face-menu-reason"></div></div>
+    <div id="group-member-menu" class="face-menu" role="menu" aria-label="Group member actions" hidden><div class="face-menu-caption" id="group-member-menu-caption"></div><div class="face-menu-actions"><button id="remove-group-member" class="face-menu-action" role="menuitem" type="button">Remove from group</button></div><div class="face-menu-reason">Removes this item from all groups and keeps it in place.</div></div>
   </main>`;
 
 const lucideIcons = { Box, Group, Square, Eye, EyeOff, MousePointer2, RectangleHorizontal, Ruler, Slash };
@@ -126,6 +129,7 @@ let rectangles: SketchShape[] = [];
 let sketches: ModelSketch[] = [];
 let measurements: Measurement[] = [];
 let measuring = false;
+let measurementsThroughObjects = true;
 let measurementPlane: MeasurementPlaneChoice = 'auto';
 let documentKind: DocumentKind = 'model';
 let sketchTool: SketchTool = 'select';
@@ -135,6 +139,7 @@ let selectedSketchIds = new Set<string>();
 let selectedVariable: string | null = null;
 let selectedFace: FaceName | null = null;
 let contextFace: { boxId: string; face: FaceName; clientX: number; clientY: number } | null = null;
+let contextGroupMemberId: string | null = null;
 let draftDirty = false;
 let appliedSource = '';
 let runEpoch = 0;
@@ -154,7 +159,7 @@ let offsetsOpen = false;
 let faceColorPicker: Picker | null = null;
 const viewport = createViewport(
   viewportHost,
-  (id, face) => { if (documentKind === 'sketch') { selectSketchShapes(id ? [id] : [], 'replace'); return; } selectedId = id; selectedVariable = null; selectedFace = face ?? null; renderAll(); },
+  (id, face) => { if (documentKind === 'sketch' && !measurements.some((measurement) => measurement.id === id)) { selectSketchShapes(id ? [id] : [], 'replace'); return; } selectedId = id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = face ?? null; renderAll(); },
   (hit) => openFaceMenu(hit),
   (first, opposite, tool) => {
     if (documentKind !== 'sketch' || draftDirty) return;
@@ -176,7 +181,7 @@ const viewport = createViewport(
   (start, end, offset, plane) => {
     if (draftDirty) return;
     try {
-      const measurement: Measurement = { id: crypto.randomUUID(), start, end, offset, lineHeight: DEFAULT_MEASUREMENT_LINE_HEIGHT, plane, ...(selectedGroup() ? { groupId: selectedGroup()!.id } : {}) };
+      const measurement: Measurement = { id: crypto.randomUUID(), start, end, offset, plane, ...(selectedGroup() ? { groupId: selectedGroup()!.id } : {}) };
       commitMeasurements([...measurements, measurement], 'Measurement added');
       selectedId = measurement.id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll();
     }
@@ -237,7 +242,7 @@ function syncDraftUI() {
   $('#add-model-sketch').toggleAttribute('disabled', draftDirty);
   $('#rectangle-sketch-tool').toggleAttribute('disabled', draftDirty); $('#line-sketch-tool').toggleAttribute('disabled', draftDirty);
   $('#add-variable').toggleAttribute('disabled', draftDirty || documentKind === 'sketch');
-  $('#measure-tool').toggleAttribute('disabled', draftDirty);
+  root.querySelectorAll('[data-measure-tool]').forEach((button) => button.toggleAttribute('disabled', draftDirty));
   $('#delete-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedModelSketch() || selectedRectangle() || selectedMeasurement() || selectedVariable || selectedGroup()));
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !(selectedBox() || selectedModelSketch() || selectedRectangle() || selectedMeasurement()));
   renderList(); renderInspector();
@@ -255,12 +260,14 @@ function selectSketchShapes(ids: string[], action: SelectionAction) {
 function renderSketchToolUI() {
   for (const tool of ['select', 'rectangle', 'line'] as const) {
     const button = $(`#${tool}-sketch-tool`);
-    button.classList.toggle('active', sketchTool === tool);
-    button.setAttribute('aria-pressed', String(sketchTool === tool));
+    button.classList.toggle('active', !measuring && sketchTool === tool);
+    button.setAttribute('aria-pressed', String(!measuring && sketchTool === tool));
   }
   $('#measurement-plane-tool').classList.toggle('hidden', !measuring || documentKind === 'sketch');
-  $('#measure-tool').classList.toggle('active', measuring);
-  $('#measure-tool').setAttribute('aria-pressed', String(measuring));
+  root.querySelectorAll('[data-measure-tool]').forEach((button) => {
+    button.classList.toggle('active', measuring);
+    button.setAttribute('aria-pressed', String(measuring));
+  });
   $('.navigation-help').innerHTML = measuring ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish' : documentKind === 'sketch'
     ? sketchTool !== 'select' ? sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>SHIFT + CLICK</span> multi-select <i>·</i> <span>DRAG</span> select <i>·</i> <span>MIDDLE / RIGHT DRAG</span> pan <i>·</i> wheel zoom'
     : '<span>MIDDLE DRAG</span> orbit <i>·</i> <span>SHIFT + MIDDLE</span> / right drag pan <i>·</i> wheel zoom';
@@ -377,7 +384,7 @@ function addGroup() {
   const ids = new Set(selected.map((item) => item.id));
   const nextBoxes = documentKind === 'model' ? boxes.map((b) => ids.has(b.id) ? { ...reparentBox(b, groups, parentId), groupId: group.id } : b) : boxes;
   const nextShapes = documentKind === 'sketch' ? rectangles.map((r) => ids.has(r.id) ? { ...r, groupId: group.id, position: reparentPosition(r.position, groups, r.groupId, parentId).slice(0, 2) as [number, number] } : r) : rectangles;
-  try { commitGroups([...groups, group], nextBoxes, nextShapes, 'Group created · add members in the inspector', treeOrder, sketches.map((sketch) => ids.has(sketch.id) ? { ...reparentSketch(sketch, parentId), groupId: group.id } : sketch), measurements.map((m) => ids.has(m.id) ? { ...m, groupId: group.id } : m)); selectedId = group.id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll(); }
+  try { commitGroups([...groups, group], nextBoxes, nextShapes, 'Group created · drag items into it in the tree', treeOrder, sketches.map((sketch) => ids.has(sketch.id) ? { ...reparentSketch(sketch, parentId), groupId: group.id } : sketch), measurements.map((m) => ids.has(m.id) ? { ...m, groupId: group.id } : m)); selectedId = group.id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll(); }
   catch (error) { notify(error instanceof Error ? error.message : 'Could not create group', true); }
 }
 function changeItemGroup(id: string, groupId?: string) {
@@ -400,14 +407,14 @@ function membershipControl(item: BoxSpec | SketchShape | ModelSketch | Measureme
 function renderGroupInspector(group: GroupSpec) {
   const host = $('#inspector-content'), disabled = draftDirty ? 'disabled' : '';
   const descendants = groupDescendants(groups, group.id);
-  const members = objectItems();
+  const members = groupItems(group.id);
   const world = groupOffset(groups, group.id);
   host.innerHTML = `<div class="object-heading"><span class="group-symbol">▱</span><div><div class="object-name">${escapeHTML(group.name)}</div><div class="object-id">GROUP · ${groupItems(group.id).length} ITEMS</div></div></div>
     <label class="field-label" for="group-name">NAME</label><input id="group-name" class="text-field" value="${escapeAttr(group.name)}" ${disabled}/>
     <label class="field-label group-membership-label" for="group-parent">PARENT GROUP</label><select id="group-parent" class="text-field" ${disabled}><option value="">No parent</option>${groups.filter((g) => !descendants.has(g.id)).map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === group.parentId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>
     <div class="section-label position-label"><span>GROUP POSITION${group.parentId ? ' · IN PARENT' : ''}</span><span>INCHES</span></div><div class="${documentKind === 'sketch' ? 'sketch-fields' : 'triple-fields'}">${(documentKind === 'sketch' ? ['X', 'Y'] : ['X', 'Y', 'Z']).map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Group position ${axis}" data-group-axis="${i}" value="${formatInches(group.position[i])}" ${disabled}/><small>in</small></span></label>`).join('')}</div>
     <div class="inspector-tip">Moving this origin moves geometry and nested groups; measurements follow only their referenced geometry; relative box placements continue to follow their reference boxes. World origin: ${world.slice(0, documentKind === 'sketch' ? 2 : 3).map(formatInches).join(', ')} in.</div>
-    <div class="section-label"><span>MEMBERS</span></div><div class="group-member-list">${members.map((item) => `<label class="group-member"><input type="checkbox" data-member-id="${escapeAttr(item.id)}" ${item.groupId === group.id ? 'checked' : ''} ${disabled}/><span>${escapeHTML(itemName(item))}</span>${item.groupId && item.groupId !== group.id ? `<small>${escapeHTML(groups.find((g) => g.id === item.groupId)?.name ?? '')}</small>` : ''}</label>`).join('') || '<div class="inspector-tip">Add objects, then include them here.</div>'}</div>
+    <div class="section-label position-label"><span>MEMBERS</span><span>${members.length}</span></div><div class="group-member-list" aria-label="Group members">${members.map((item) => `<button type="button" class="group-member" data-member-id="${escapeAttr(item.id)}" title="${escapeAttr(itemName(item))}" aria-haspopup="menu"><span>${escapeHTML(itemName(item))}</span>${item.groupId !== group.id ? `<small>${escapeHTML(groups.find((g) => g.id === item.groupId)?.name ?? '')}</small>` : ''}</button>`).join('') || '<div class="group-member-empty">No members. Drag items into this group in the tree.</div>'}</div>
     <button id="ungroup" class="button button-quiet ungroup-button" ${disabled}>Ungroup · keep items</button>`;
   const update = (patch: Partial<GroupSpec>) => { if (draftDirty) return; try { commitGroups(groups.map((g) => g.id === group.id ? { ...g, ...patch } : g)); } catch (error) { notify(error instanceof Error ? error.message : 'Could not update group', true); renderInspector(); } };
   host.querySelector<HTMLInputElement>('#group-name')!.addEventListener('change', (event) => update({ name: (event.currentTarget as HTMLInputElement).value.trim() || group.name }));
@@ -416,7 +423,19 @@ function renderGroupInspector(group: GroupSpec) {
     input.addEventListener('keydown', (event) => { if (event.key === 'Enter') input.blur(); });
     input.addEventListener('change', () => { try { const position: Vector3 = [...group.position]; position[Number(input.dataset.groupAxis)] = parseInches(input.value); update({ position }); } catch (error) { notify(error instanceof Error ? error.message : 'Invalid position', true); renderInspector(); } });
   });
-  host.querySelectorAll<HTMLInputElement>('[data-member-id]').forEach((input) => input.addEventListener('change', () => changeItemGroup(input.dataset.memberId!, input.checked ? group.id : group.parentId)));
+  host.querySelectorAll<HTMLButtonElement>('[data-member-id]').forEach((row) => {
+    row.addEventListener('click', () => {
+      const id = row.dataset.memberId!;
+      if (documentKind === 'sketch' && rectangles.some((shape) => shape.id === id)) { selectSketchShapes([id], 'replace'); return; }
+      selectedId = id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll();
+    });
+    row.addEventListener('contextmenu', (event) => { event.preventDefault(); openGroupMemberMenu(row.dataset.memberId!, event.clientX, event.clientY); });
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
+        event.preventDefault(); const bounds = row.getBoundingClientRect(); openGroupMemberMenu(row.dataset.memberId!, bounds.left, bounds.bottom);
+      }
+    });
+  });
   host.querySelector('#ungroup')!.addEventListener('click', () => ungroup(group));
 }
 function ungroup(group: GroupSpec) {
@@ -490,6 +509,7 @@ const faceDirection: Record<FaceName, string> = {
 };
 function referenceFaceTitle(face: FaceName) { return `${faceTitle(face)} ${faceDirection[face]}`; }
 function openFaceMenu(hit: { boxId: string; face: FaceName; clientX: number; clientY: number }) {
+  closeGroupMemberMenu();
   contextFace = hit;
   const menu = $('#face-menu'); menu.hidden = false;
   const parent = boxes.find((box) => box.id === hit.boxId);
@@ -504,6 +524,21 @@ function openFaceMenu(hit: { boxId: string; face: FaceName; clientX: number; cli
   newFromFace.focus();
 }
 function closeFaceMenu() { $('#face-menu').hidden = true; contextFace = null; }
+function closeGroupMemberMenu(restoreFocus = false) {
+  if (restoreFocus) Array.from($('#inspector-content').querySelectorAll<HTMLButtonElement>('[data-member-id]')).find((row) => row.dataset.memberId === contextGroupMemberId)?.focus();
+  $('#group-member-menu').hidden = true; contextGroupMemberId = null;
+}
+function openGroupMemberMenu(id: string, clientX: number, clientY: number) {
+  const item = objectItems().find((item) => item.id === id);
+  if (!item?.groupId) return;
+  closeFaceMenu(); contextGroupMemberId = id;
+  const menu = $('#group-member-menu'); menu.hidden = false;
+  $('#group-member-menu-caption').textContent = itemName(item);
+  const remove = $<HTMLButtonElement>('#remove-group-member'); remove.disabled = draftDirty;
+  menu.style.left = `${Math.max(8, Math.min(clientX, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(clientY, innerHeight - menu.offsetHeight - 8))}px`;
+  remove.focus();
+}
 function renderMeasurementInspector(measurement: Measurement) {
   const host = $('#inspector-content'), disabled = draftDirty ? 'disabled' : '';
   const resolved = resolveMeasurement(measurement, currentMeasurementGeometry());
@@ -517,7 +552,7 @@ function renderMeasurementInspector(measurement: Measurement) {
     <div class="section-label"><span>DISTANCE</span><span>INCHES</span></div><div class="measurement-value">${resolved ? formatInches(resolved.distance) + ' in' : 'Missing geometry'}</div>
     ${documentKind === 'model' ? '<label class="field-label" for="measurement-plane">LABEL PLANE</label><select id="measurement-plane" class="text-field" aria-label="Measurement plane" ' + disabled + '>' + ['xy', 'xz', 'yz'].map((plane) => '<option value="' + plane + '" ' + (plane === (measurement.plane ?? 'xy') ? 'selected' : '') + '>' + plane.toUpperCase() + '</option>').join('') + '</select><div class="inspector-tip">The plane is fixed when the first point is selected. Change it here manually. The value is the full distance between the points.</div>' : ''}
     <label class="field-label group-membership-label" for="measurement-offset">LABEL OFFSET · INCHES</label><input id="measurement-offset" class="text-field" inputmode="decimal" value="${formatInches(measurement.offset ?? DEFAULT_MEASUREMENT_OFFSET)}" ${disabled}/>
-    <label class="field-label" for="measurement-line-height">LABEL LINE HEIGHT · INCHES</label><input id="measurement-line-height" class="text-field" inputmode="decimal" value="${formatInches(measurement.lineHeight ?? DEFAULT_MEASUREMENT_LINE_HEIGHT)}" ${disabled}/>
+    <label class="field-label" for="measurement-line-height">LABEL LINE HEIGHT · INCHES</label><input id="measurement-line-height" class="text-field" inputmode="decimal" value="${formatInches(measurement.lineHeight ?? defaultMeasurementLineHeight(resolved?.distance ?? 0))}" ${disabled}/>
     <div class="section-label"><span>REFERENCED GEOMETRY</span></div><div class="inspector-tip measurement-references">Start · ${escapeHTML(endpointName(measurement.start))}<br/>End · ${escapeHTML(endpointName(measurement.end))}</div>`;
   const update = (patch: Partial<Measurement>) => {
     if (draftDirty) return;
@@ -537,6 +572,7 @@ function renderMeasurementInspector(measurement: Measurement) {
   membershipControl(measurement); renderIcons(host);
 }
 function renderInspector() {
+  closeGroupMemberMenu();
   faceColorPicker?.hide();
   faceColorPicker?.destroy();
   faceColorPicker = null;
@@ -1148,7 +1184,16 @@ function undoRedo(delta: number) {
   refreshGeometry(); setEditor(snapshot.source); syncLinkedSketches(); renderAll(); setStatus(delta < 0 ? 'Undo' : 'Redo'); scheduleSave();
 }
 
-$('#measure-tool').addEventListener('click', () => activateMeasurementTool(!measuring));
+root.querySelectorAll('[data-measure-tool]').forEach((button) => button.addEventListener('click', () => activateMeasurementTool(!measuring)));
+$('#measurement-through-toggle').addEventListener('click', () => {
+  measurementsThroughObjects = !measurementsThroughObjects;
+  viewport.setMeasurementsThroughObjects(measurementsThroughObjects);
+  const button = $('#measurement-through-toggle');
+  button.classList.toggle('active', measurementsThroughObjects);
+  button.setAttribute('aria-pressed', String(measurementsThroughObjects));
+  button.innerHTML = `<i data-lucide="ruler" aria-hidden="true"></i> ${measurementsThroughObjects ? 'THROUGH' : 'OCCLUDED'}`;
+  renderIcons(button);
+});
 $('#new-measurement-plane').addEventListener('change', (event) => { measurementPlane = (event.currentTarget as HTMLSelectElement).value as MeasurementPlaneChoice; viewport.setMeasurementPlane(measurementPlane); });
 $('#add-group').addEventListener('click', addGroup);
 $('#add-sketch-group').addEventListener('click', addGroup);
@@ -1166,11 +1211,18 @@ $('#delete-box').addEventListener('click', deleteBox);
 $('#duplicate-box').addEventListener('click', () => addBox(true));
 $('#duplicate-from-menu').addEventListener('click', duplicateFromMenu);
 $('#new-from-face').addEventListener('click', createFromFace);
+$('#remove-group-member').addEventListener('click', () => {
+  const id = contextGroupMemberId;
+  closeGroupMemberMenu(true);
+  if (id) changeItemGroup(id, undefined);
+});
 document.addEventListener('pointerdown', (event) => {
   const target = event.target as Node;
   if (!$('#face-menu').hidden && !$('#face-menu').contains(target)) closeFaceMenu();
+  if (!$('#group-member-menu').hidden && !$('#group-member-menu').contains(target)) closeGroupMemberMenu();
 });
-window.addEventListener('resize', () => { closeFaceMenu(); closeFaceColorPicker(); });
+document.addEventListener('scroll', () => closeGroupMemberMenu(), true);
+window.addEventListener('resize', () => { closeFaceMenu(); closeGroupMemberMenu(); closeFaceColorPicker(); });
 $('#run-code').addEventListener('click', runSource);
 $('#reset-code').addEventListener('click', () => { if (draftDirty && !window.confirm('Discard this unrun source draft and reset?')) return; setEditor(documentKind === 'sketch' ? generateSketchSource([]) : DEFAULT_SOURCE, true); void runSource(); });
 function chooseDocumentKind(title: string): Promise<DocumentKind | null> {
@@ -1215,6 +1267,7 @@ $('#fit').addEventListener('click', () => viewport.fit());
 $('#projection').addEventListener('click', () => { if (documentKind === 'sketch') return; projectionMode = projectionMode === 'perspective' ? 'orthographic' : 'perspective'; viewport.setProjection(projectionMode); $('#projection').textContent = projectionMode === 'perspective' ? 'PERSPECTIVE' : 'ORTHOGRAPHIC'; scheduleSave(); });
 $('#grid-toggle').addEventListener('click', () => { gridVisible = !gridVisible; viewport.setGrid(gridVisible); $('#grid-toggle').classList.toggle('active', gridVisible); scheduleSave(); });
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('#group-member-menu').hidden) { event.preventDefault(); event.stopPropagation(); closeGroupMemberMenu(true); return; }
   if (event.key === 'Escape' && !$('#face-menu').hidden) { event.preventDefault(); event.stopPropagation(); closeFaceMenu(); return; }
   if (($('#document-kind-dialog') as HTMLDialogElement).open || ($('#variable-dialog') as HTMLDialogElement).open || ($('#delete-variable-dialog') as HTMLDialogElement).open || closeDocumentDialog.open) return;
   const target = event.target as HTMLElement; const textEditing = target instanceof HTMLTextAreaElement || target.isContentEditable; const editing = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || textEditing;

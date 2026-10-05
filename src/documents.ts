@@ -4,7 +4,7 @@ import { generateSketchSource, validateSketchShapes, type SketchShape } from './
 import { normalizeTreeOrder } from './component-tree';
 import type { ModelSketch } from './model-sketch';
 
-import { DEFAULT_MEASUREMENT_OFFSET, DEFAULT_MEASUREMENT_LINE_HEIGHT, validateMeasurements, type Measurement } from './measurements';
+import { DEFAULT_MEASUREMENT_OFFSET, validateMeasurements, type Measurement } from './measurements';
 
 export type DocumentKind = 'model' | 'sketch';
 /** Workspace-local links; model source continues to embed the last applied shapes. */
@@ -95,7 +95,7 @@ function restoreDocument(value: unknown, legacyPixelMeasurements = false): Model
   if (kind === 'sketch' && Array.isArray(data.sketchTargets)) {
     document.sketchTargets = data.sketchTargets.filter((target) => target && typeof target.documentId === 'string' && typeof target.sketchId === 'string' && Array.isArray(target.origin) && target.origin.length === 2 && target.origin.every((n) => typeof n === 'number' && Number.isFinite(n))).map((target) => structuredClone(target));
   }
-  const measurements = validateMeasurements(data.measurements, { boxes: model.boxes, sketches: model.sketches, rectangles, groups }).map((m) => legacyPixelMeasurements ? { ...m, offset: m.offset === 0 ? 0 : (Math.sign(m.offset ?? 1) || 1) * DEFAULT_MEASUREMENT_OFFSET, lineHeight: DEFAULT_MEASUREMENT_LINE_HEIGHT } : m);
+  const measurements = validateMeasurements(data.measurements, { boxes: model.boxes, sketches: model.sketches, rectangles, groups }).map((m) => legacyPixelMeasurements ? { ...m, offset: m.offset === 0 ? 0 : (Math.sign(m.offset ?? 1) || 1) * DEFAULT_MEASUREMENT_OFFSET } : m);
   document.groups = groups;
   document.treeOrder = normalizeTreeOrder(data.treeOrder, groups, [...(kind === 'sketch' ? rectangles : [...model.boxes, ...(model.sketches ?? [])]), ...measurements]);
   document.collapsedGroupIds = Array.isArray(data.collapsedGroupIds) ? data.collapsedGroupIds.filter((id) => groups.some((g) => g.id === id)) : [];
