@@ -7,7 +7,7 @@ import type { SketchShape } from './sketch';
 export type MeasurementAnchor = { objectId: string; shapeId?: string; coordinates: number[] };
 export type MeasurementAxis = 'x' | 'y' | 'z';
 export type MeasurementAxisChoice = 'auto' | MeasurementAxis;
-export type Measurement = { id: string; name?: string; groupId?: string; start: MeasurementAnchor; end: MeasurementAnchor; offset?: number; lineHeight?: number; axis?: MeasurementAxis };
+export type Measurement = { id: string; name?: string; groupId?: string; start: MeasurementAnchor; end: MeasurementAnchor; offset?: number; lineHeight?: number; axis?: MeasurementAxis; distanceAxis?: MeasurementAxis };
 export type MeasurementGeometry = { boxes?: BoxSpec[]; rectangles?: SketchShape[]; sketches?: ModelSketch[]; groups?: GroupSpec[] };
 export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnchor; a: Vector3; b: Vector3 };
 
@@ -51,6 +51,20 @@ export function autoMeasurementAxis(viewDirection: Vector3): MeasurementAxis {
   return candidates.reduce((best, candidate) => Math.abs(viewDirection[candidate.index]) > Math.abs(viewDirection[best.index]) + 1e-8 ? candidate : best).axis;
 }
 
+/** Largest absolute world-coordinate difference; ties choose X, then Y, then Z. */
+export function dominantMeasurementAxis(start: Vector3, end: Vector3): MeasurementAxis {
+  const delta = end.map((n, i) => Math.abs(n - start[i]));
+  const index = [0, 1, 2].reduce((best, i) => delta[i] > delta[best] ? i : best);
+  return (['x', 'y', 'z'] as const)[index];
+}
+
+/** Keep the real anchors while projecting only the dimension's endpoint. */
+export function measurementLine(start: Vector3, end: Vector3, distanceAxis?: MeasurementAxis) {
+  const index = distanceAxis === 'x' ? 0 : distanceAxis === 'y' ? 1 : 2;
+  const projectedEnd = distanceAxis ? start.map((n, i) => i === index ? end[i] : n) as Vector3 : [...end] as Vector3;
+  return { start: [...start] as Vector3, end: projectedEnd, distance: Math.hypot(...projectedEnd.map((n, i) => n - start[i])) };
+}
+
 /** Follow the full 3D line, with the closest possible normal to the preferred axis. */
 export function measurementAxisLayout(start: Vector3, end: Vector3, axis: MeasurementAxis = 'z') {
   const midpoint = start.map((n, i) => (n + end[i]) / 2) as Vector3;
@@ -76,18 +90,18 @@ export function measurementAxisLayout(start: Vector3, end: Vector3, axis: Measur
 }
 
 /** Sketch annotations stay on their drawing surface with a Z-facing normal. */
-export function measurementAnnotationLayout(start: Vector3, end: Vector3, measurement: Pick<Measurement, 'offset' | 'lineHeight' | 'axis'>, sketch = false) {
-  const frame = measurementAxisLayout(start, end, sketch ? 'z' : measurement.axis ?? 'z');
+export function measurementAnnotationLayout(start: Vector3, end: Vector3, measurement: Pick<Measurement, 'offset' | 'lineHeight' | 'axis' | 'distanceAxis'>, sketch = false) {
+  const line = measurementLine(start, end, measurement.distanceAxis);
+  const frame = measurementAxisLayout(line.start, line.end, sketch ? 'z' : measurement.axis ?? 'z');
   const offset = measurement.offset ?? DEFAULT_MEASUREMENT_OFFSET;
   const shifted = (point: Vector3) => point.map((n, i) => n + frame.perpendicular[i] * offset) as Vector3;
-  const distance = Math.hypot(...start.map((n, i) => end[i] - n));
-  return { ...frame, dimensionStart: shifted(frame.start), dimensionEnd: shifted(frame.end), labelPosition: shifted(frame.midpoint), offset, lineHeight: measurement.lineHeight ?? defaultMeasurementLineHeight(distance) };
+  return { ...frame, dimensionStart: shifted(frame.start), dimensionEnd: shifted(frame.end), labelPosition: shifted(frame.midpoint), offset, lineHeight: measurement.lineHeight ?? defaultMeasurementLineHeight(line.distance) };
 }
 
 export function resolveMeasurement(measurement: Measurement, geometry: MeasurementGeometry) {
   const start = resolveMeasurementAnchor(measurement.start, geometry), end = resolveMeasurementAnchor(measurement.end, geometry);
   if (!start || !end) return null;
-  return { start, end, distance: Math.hypot(...start.map((n, i) => end[i] - n)) };
+  return { start, end, distance: measurementLine(start, end, measurement.distanceAxis).distance };
 }
 
 export function validateMeasurements(input: unknown = [], geometry: MeasurementGeometry): Measurement[] {
@@ -109,9 +123,10 @@ export function validateMeasurements(input: unknown = [], geometry: MeasurementG
     if (raw.offset !== undefined && (typeof raw.offset !== 'number' || !Number.isFinite(raw.offset))) throw new Error('Measurement offset must be a finite inch distance.');
     if (raw.lineHeight !== undefined && (typeof raw.lineHeight !== 'number' || !Number.isFinite(raw.lineHeight) || raw.lineHeight <= 0)) throw new Error('Measurement label line height must be a positive inch distance.');
     if (raw.axis !== undefined && !['x', 'y', 'z'].includes(raw.axis)) throw new Error('Measurement label axis must be x, y, or z.');
+    if (raw.distanceAxis !== undefined && !['x', 'y', 'z'].includes(raw.distanceAxis)) throw new Error('Measurement distance axis must be x, y, or z.');
     if (raw.name !== undefined && (typeof raw.name !== 'string' || !raw.name.trim())) throw new Error('Measurement name must be a nonempty string.');
     if (raw.groupId !== undefined && (typeof raw.groupId !== 'string' || !geometry.groups?.some((g) => g.id === raw.groupId))) throw new Error('Measurement references a missing group.');
-    return { id: raw.id, ...(raw.name !== undefined ? { name: raw.name } : {}), ...(raw.groupId !== undefined ? { groupId: raw.groupId } : {}), start: anchor(raw.start), end: anchor(raw.end), ...(raw.offset !== undefined ? { offset: raw.offset } : {}), ...(raw.lineHeight !== undefined ? { lineHeight: raw.lineHeight } : {}), ...(raw.axis !== undefined ? { axis: raw.axis as MeasurementAxis } : {}) };
+    return { id: raw.id, ...(raw.name !== undefined ? { name: raw.name } : {}), ...(raw.groupId !== undefined ? { groupId: raw.groupId } : {}), start: anchor(raw.start), end: anchor(raw.end), ...(raw.offset !== undefined ? { offset: raw.offset } : {}), ...(raw.lineHeight !== undefined ? { lineHeight: raw.lineHeight } : {}), ...(raw.axis !== undefined ? { axis: raw.axis as MeasurementAxis } : {}), ...(raw.distanceAxis !== undefined ? { distanceAxis: raw.distanceAxis as MeasurementAxis } : {}) };
   });
 }
 

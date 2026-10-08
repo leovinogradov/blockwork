@@ -30,7 +30,7 @@ export type BoxSpec = {
 };
 
 export type NumericField = "size.0" | "size.1" | "size.2" | "position.0" | "position.1" | "position.2" | "relative.offset" | "relative.u.offset" | "relative.v.offset";
-export type VariableSpec = { name: string; value: number; expression?: string };
+export type VariableSpec = { name: string; value: number; expression?: string; description?: string };
 export type ModelSpec = { boxes: BoxSpec[]; variables: VariableSpec[]; groups?: GroupSpec[]; sketches?: ModelSketch[]; measurements?: Measurement[] };
 
 export class MissingVariableError extends Error {
@@ -208,15 +208,16 @@ function variableResolver(variables: VariableSpec[]): (name: string) => number {
 export function resolveVariables(input: unknown): VariableSpec[] {
   if (input === undefined) return [];
   if (!Array.isArray(input)) throw new Error("Variables must be an array.");
-  const raw = new Map<string, { value: unknown; expression?: string }>();
+  const raw = new Map<string, { value: unknown; expression?: string; description?: string }>();
   for (const entry of input) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("A variable must be an object.");
     const spec = entry as Record<string, unknown>;
     if (typeof spec.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(spec.name)) throw new Error("Variable names must be identifiers.");
     if (raw.has(spec.name)) throw new Error(`Duplicate variable name: ${spec.name}`);
+    if (spec.description !== undefined && typeof spec.description !== "string") throw new Error(`Variable ${spec.name} description must be a string.`);
     if (spec.expression !== undefined && (typeof spec.expression !== "string" || !spec.expression.trim())) throw new Error(`Variable ${spec.name} expression must be a non-empty string.`);
     const inferred = typeof spec.value === "string" ? spec.value : undefined;
-    raw.set(spec.name, { value: spec.value, ...(typeof spec.expression === "string" ? { expression: spec.expression } : inferred ? { expression: inferred } : {}) });
+    raw.set(spec.name, { value: spec.value, ...(typeof spec.expression === "string" ? { expression: spec.expression } : inferred ? { expression: inferred } : {}), ...(typeof spec.description === "string" ? { description: spec.description } : {}) });
   }
   const resolved = new Map<string, number>();
   const visiting = new Set<string>();
@@ -230,7 +231,7 @@ export function resolveVariables(input: unknown): VariableSpec[] {
     const value = parseInches(source, get);
     visiting.delete(name); resolved.set(name, value); return value;
   };
-  return [...raw].map(([name, spec]) => ({ name, value: get(name), ...(spec.expression ? { expression: spec.expression } : {}) }));
+  return [...raw].map(([name, spec]) => ({ name, value: get(name), ...(spec.expression ? { expression: spec.expression } : {}), ...(spec.description !== undefined ? { description: spec.description } : {}) }));
 }
 
 function tuple(value: unknown, label: string, expressions: Partial<Record<NumericField, string>>, prefix: "size" | "position", resolver: (name: string) => number): [number, number, number] {
@@ -427,7 +428,7 @@ export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [],
   const lines = ["// Edit these components to build your model. Dimensions are in inches."];
   const model = resolveModel(boxes, variables, groups, sketches, measurements);
   for (const variable of model.variables) {
-    lines.push(`variable({ name: ${JSON.stringify(variable.name)}, value: inch(${JSON.stringify(formatInches(variable.value))})${variable.expression ? `, expression: ${JSON.stringify(variable.expression)}` : ""} });`);
+    lines.push(`variable({ name: ${JSON.stringify(variable.name)}, value: inch(${JSON.stringify(formatInches(variable.value))})${variable.expression ? `, expression: ${JSON.stringify(variable.expression)}` : ""}${variable.description !== undefined ? `, description: ${JSON.stringify(variable.description)}` : ""} });`);
   }
   if (model.variables.length) lines.push("");
   lines.push(...generateGroupedSource<BoxSpec | ModelSketch | Measurement>(model.groups ?? [], [...model.boxes, ...(model.sketches ?? []), ...(model.measurements ?? [])], (box) => {

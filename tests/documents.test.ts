@@ -75,6 +75,17 @@ test('migrates original single-model saves without discarding their draft or var
   assert.equal(saved.draftDirty, true);
 });
 
+test('variable descriptions survive workspace recovery and its initial undo snapshot', () => {
+  const document = createDocument('described.js', '');
+  document.variables = [{ name: 'width', value: 24, description: 'Finished width\nIncludes trim' }, { name: 'depth', value: 12 }];
+  document.source = document.appliedSource = generateSource([], document.variables);
+  document.draftDirty = false;
+  const saved = restoreWorkspace(serializeWorkspace([document], document.id)).documents[0];
+  assert.deepEqual(saved.variables, document.variables);
+  assert.deepEqual(saved.history[0].variables, document.variables);
+  assert.equal(saved.appliedSource, document.appliedSource);
+});
+
 test('falls back to the first tab for a missing active ID and rejects corrupt workspaces', () => {
   const document = createDocument('model.js', '');
   assert.equal(restoreWorkspace(serializeWorkspace([document], 'missing')).activeId, document.id);

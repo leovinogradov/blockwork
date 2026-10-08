@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autoMeasurementAxis, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementAxisLayout, measurementOffsetAtPointer, measurementSegments, pruneMeasurements, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, validateMeasurements, type Measurement } from '../src/measurements';
+import { autoMeasurementAxis, dominantMeasurementAxis, measurementLine, DEFAULT_MEASUREMENT_OFFSET, measurementAnnotationLayout, measurementAxisLayout, measurementOffsetAtPointer, measurementSegments, pruneMeasurements, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, validateMeasurements, type Measurement } from '../src/measurements';
+import type { Vector3 } from '../src/groups';
 import { generateSource, reparentBox, resolveModel, type BoxSpec, type ModelSpec } from '../src/model';
 import { generateSketchSource, type SketchShape } from '../src/sketch';
 import { createDocument, resolveSnapshot, restoreWorkspace, serializeWorkspace } from '../src/documents';
@@ -112,6 +113,50 @@ test('pixel snapping favors corners, rejects empty space and occluded geometry, 
   assert.equal(snapMeasurement([50, 0], segments, project, () => false), null);
 });
 
+test('Shift selects the largest absolute coordinate difference in world space with deterministic ties', () => {
+  const start: Vector3 = [10, 20, 30];
+  for (const sign of [-1, 1]) {
+    for (const [axis, delta] of [['x', [8, 3, 2]], ['y', [2, 8, 3]], ['z', [3, 2, 8]]] as const) {
+      const end = start.map((n, i) => n + sign * delta[i]) as Vector3;
+      assert.equal(dominantMeasurementAxis(start, end), axis);
+      assert.equal(dominantMeasurementAxis(end, start), axis);
+      const line = measurementLine(start, end, axis);
+      assert.equal(line.distance, 8);
+      assert.equal(line.end.filter((n, i) => n !== start[i]).length, 1);
+      const layout = measurementAnnotationLayout(start, end, { distanceAxis: axis, offset: 5 });
+      assert.equal(Math.hypot(...layout.dimensionEnd.map((n, i) => n - layout.dimensionStart[i])), 8);
+      const shifted = layout.dimensionStart.map((n, i) => n - start[i]);
+      assert.ok(Math.abs(Math.hypot(...shifted) - 5) < 1e-10);
+      assert.ok(Math.abs(shifted.reduce((sum, n, i) => sum + n * (line.end[i] - start[i]), 0)) < 1e-10);
+    }
+  }
+  assert.equal(dominantMeasurementAxis([0, 1, 0], [2, 0, 0]), 'x');
+  assert.equal(dominantMeasurementAxis(start, [18, 28, 38]), 'x');
+  assert.equal(dominantMeasurementAxis(start, [10, 28, 38]), 'y');
+  assert.equal(dominantMeasurementAxis(start, start), 'x');
+});
+
+test('axis measurements preserve the actual endpoints and offset the projected solid line', () => {
+  const shape: SketchShape = { ...rectangle, position: [0, 0], size: [2, 1] };
+  const m: Measurement = { id: 'axis', distanceAxis: 'x', start: { objectId: 'rect', coordinates: [0, 1] }, end: { objectId: 'rect', coordinates: [1, 0] } };
+  const resolved = resolveMeasurement(m, { rectangles: [shape] })!;
+  assert.deepEqual(resolved, { start: [0, 1, 0], end: [2, 0, 0], distance: 2 });
+  const baseline = measurementAnnotationLayout(resolved.start, resolved.end, { ...m, offset: 0 }, true);
+  assert.deepEqual(baseline.dimensionStart, [0, 1, 0]); assert.deepEqual(baseline.dimensionEnd, [2, 1, 0]);
+  for (const offset of [-3, 2, 5]) {
+    const layout = measurementAnnotationLayout(resolved.start, resolved.end, { ...m, offset }, true);
+    assert.deepEqual(layout.dimensionStart, [0, 1 + offset, 0]);
+    assert.deepEqual(layout.dimensionEnd, [2, 1 + offset, 0]);
+    assert.deepEqual(layout.labelPosition, [1, 1 + offset, 0]);
+    assert.equal(measurementOffsetAtPointer(layout.start, layout.end, layout.labelPosition), offset);
+  }
+  const edited = { ...shape, size: [1, 4] as [number, number], position: [10, 20] as [number, number] };
+  assert.deepEqual(resolveMeasurement(m, { rectangles: [edited] }), { start: [10, 24, 0], end: [11, 20, 0], distance: 1 });
+  assert.equal(resolveMeasurement({ ...m, distanceAxis: undefined }, { rectangles: [shape] })!.distance, Math.sqrt(5));
+  assert.equal(measurementAnnotationLayout(resolved.start, resolved.end, m).offset, DEFAULT_MEASUREMENT_OFFSET);
+  for (const invalid of ['auto', 'xy', null, 1]) assert.throws(() => validateMeasurements([{ ...m, distanceAxis: invalid }], { rectangles: [shape] }), /distance axis/);
+});
+
 type CompilerResult = Partial<ModelSpec & CompiledSketch> & { error?: string };
 let receive: (event: { data: { source: string; kind: 'model' | 'sketch' } }) => void;
 let compiled: CompilerResult;
@@ -120,8 +165,8 @@ await import('../src/compiler.worker');
 function compile(source: string, kind: 'model' | 'sketch') { receive({ data: { source, kind } }); return compiled; }
 
 test('model and sketch measurements round-trip through editable source and the compiler worker', () => {
-  const placedModel: Measurement = { ...dimension, offset: 2.25, lineHeight: 4, axis: 'y' };
-  const placedSketch: Measurement = { ...sketchDimension, offset: -1.5, lineHeight: .5, axis: 'x' };
+  const placedModel: Measurement = { ...dimension, offset: 2.25, lineHeight: 4, axis: 'y', distanceAxis: 'x' };
+  const placedSketch: Measurement = { ...sketchDimension, offset: -1.5, lineHeight: .5, axis: 'x', distanceAxis: 'x' };
   const modelSource = generateSource([box], [], [], [], [], [placedModel]);
   const model = compile(modelSource, 'model');
   assert.equal(model.error, undefined); assert.deepEqual(model.measurements, [placedModel]);
@@ -137,7 +182,7 @@ test('workspace recovery and undo snapshots retain attached measurements in both
     const doc = createDocument(kind, '', kind);
     doc.boxes = kind === 'model' ? [box] : []; doc.rectangles = kind === 'sketch' ? [rectangle] : [];
     doc.groups = [{ id: 'annotations', name: 'Annotations', position: [10, 20, 0] }];
-    doc.measurements = [{ ...(kind === 'model' ? dimension : sketchDimension), offset: -1.75, lineHeight: 4, axis: 'y', groupId: 'annotations' }];
+    doc.measurements = [{ ...(kind === 'model' ? dimension : sketchDimension), offset: -1.75, lineHeight: 4, axis: 'y', distanceAxis: 'x', groupId: 'annotations' }];
     doc.treeOrder = [doc.measurements[0].id, 'annotations', ...(kind === 'model' ? doc.boxes : doc.rectangles).map((s) => s.id)];
     doc.hiddenBoxIds = [doc.measurements[0].id]; doc.draftDirty = false;
     doc.source = doc.appliedSource = kind === 'model' ? generateSource(doc.boxes, [], doc.groups, doc.treeOrder, [], doc.measurements) : generateSketchSource(doc.rectangles, doc.groups, doc.treeOrder, doc.measurements);

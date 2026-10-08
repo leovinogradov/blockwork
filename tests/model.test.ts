@@ -189,6 +189,38 @@ test("generated variable source round-trips quoted variable references", () => {
   assert.deepEqual(resolveModel(rebuiltBoxes, rebuiltVariables), model);
 });
 
+test("optional variable descriptions survive resolution, source round-trips, and dependency edits", () => {
+  const description = 'Panel "width" <b>in inches</b>\nAllow \\ trim stock.';
+  const model = resolveModel([], [
+    { name: "width", value: 6, description },
+    { name: "doubleWidth", value: "var(width) * 2", description: "Derived width" },
+    { name: "plain", value: 1 },
+    { name: "empty", value: 2, description: "" },
+  ]);
+  assert.equal(model.variables[0].description, description);
+  assert.equal(model.variables[1].value, 12);
+  assert.equal(Object.hasOwn(model.variables[2], "description"), false);
+  assert.equal(model.variables[3].description, "");
+  const rebuilt: unknown[] = [];
+  new Function("variable", "inch", generateSource([], model.variables))((spec: unknown) => rebuilt.push(spec), parseInches);
+  assert.deepEqual(resolveVariables(rebuilt), model.variables);
+  const updated = resolveVariables(model.variables.map((item) => item.name === "width" ? { ...item, value: 10 } : item));
+  assert.equal(updated[1].value, 20);
+  assert.equal(updated[1].description, "Derived width");
+  const removed = removeVariable([], updated, "width");
+  assert.equal(removed.variables[0].value, 20);
+  assert.equal(removed.variables[0].description, "Derived width");
+  const cleared = resolveVariables(updated.map((item) => ({ ...item, description: undefined })));
+  assert.ok(cleared.every((item) => !Object.hasOwn(item, "description")));
+  assert.doesNotMatch(generateSource([], cleared), /description:/);
+});
+
+test("variable descriptions reject non-string values", () => {
+  for (const description of [null, 1, true, {}, []]) {
+    assert.throws(() => resolveVariables([{ name: "width", value: 6, description }]), /Variable width description must be a string/);
+  }
+});
+
 test("removing a variable replaces every exact reference while preserving geometry and remaining links", () => {
   const original = resolveModel([
     { id: "base", name: "Base", size: [0, 0, 0], position: [0, 0, 0], color: "red", expressions: {

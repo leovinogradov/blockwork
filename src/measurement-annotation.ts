@@ -13,6 +13,9 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
     : new THREE.LineBasicMaterial(lineProperties), 2));
   lines.renderOrder = 10;
   group.add(lines);
+  const connectors = new THREE.LineSegments(new THREE.BufferGeometry(), withDepthBias(new THREE.LineDashedMaterial(lineProperties), 2));
+  connectors.renderOrder = 10;
+  group.add(connectors);
   const namespace = 'http://www.w3.org/2000/svg';
   const label = document.createElementNS(namespace, 'g');
   label.setAttribute('class', `measurement-label${preview ? ' preview' : ''}`);
@@ -43,7 +46,8 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
   hide();
   const update = (start: Vector3, end: Vector3, distance: number, measurement: Measurement, sketchMode: boolean, selected: boolean, through: boolean, camera: THREE.Camera, size: [number, number], isOccluded: (point: Vector3) => boolean = () => false) => {
     lines.material.depthTest = !(preview || through);
-    const nextSignature = JSON.stringify([start, end, distance, measurement.offset, measurement.lineHeight, measurement.axis, sketchMode, selected]);
+    connectors.material.depthTest = !(preview || through);
+    const nextSignature = JSON.stringify([start, end, distance, measurement.offset, measurement.lineHeight, measurement.axis, measurement.distanceAxis, sketchMode, selected]);
     if (signature !== nextSignature) {
       signature = nextSignature;
       frame = measurementAnnotationLayout(start, end, measurement, sketchMode);
@@ -56,16 +60,24 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
       const tick = (point: Vector3, sign: number) => new THREE.Vector3(...point).addScaledVector(new THREE.Vector3(...frame!.perpendicular), overhang * sign);
       lines.geometry.dispose();
       lines.geometry = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(...start), extension(start, frame.dimensionStart),
-        new THREE.Vector3(...end), extension(end, frame.dimensionEnd),
+        ...(!measurement.distanceAxis ? [new THREE.Vector3(...start), extension(start, frame.dimensionStart), new THREE.Vector3(...end), extension(end, frame.dimensionEnd)] : []),
         new THREE.Vector3(...frame.dimensionStart), new THREE.Vector3(...frame.dimensionEnd),
         tick(frame.dimensionStart, -1), tick(frame.dimensionStart, 1),
         tick(frame.dimensionEnd, -1), tick(frame.dimensionEnd, 1),
       ]);
       if (lines.material instanceof THREE.LineDashedMaterial) {
-        lines.material.dashSize = frame.lineHeight * .2; lines.material.gapSize = frame.lineHeight * .15;
+        lines.material.dashSize = frame.lineHeight * .2; lines.material.gapSize = measurement.distanceAxis ? 0 : frame.lineHeight * .15;
         lines.computeLineDistances();
       }
+      connectors.visible = !!measurement.distanceAxis;
+      connectors.geometry.dispose();
+      connectors.geometry = new THREE.BufferGeometry().setFromPoints(measurement.distanceAxis ? [
+        new THREE.Vector3(...start), new THREE.Vector3(...frame.dimensionStart),
+        new THREE.Vector3(...end), new THREE.Vector3(...frame.dimensionEnd),
+      ] : []);
+      connectors.material.dashSize = frame.lineHeight * .2; connectors.material.gapSize = frame.lineHeight * .15;
+      connectors.computeLineDistances();
+      connectors.material.color.set(selected ? '#e7ad60' : '#8dd9d0');
       lines.material.color.set(selected ? '#e7ad60' : '#8dd9d0');
       const content = `${formatInches(distance)} in`, fontSize = frame.lineHeight / 1.2, padding = frame.lineHeight * .2;
       labelWidth = content.length * fontSize * .6 + padding * 2;
@@ -109,6 +121,6 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
     return Math.abs(localX) <= labelWidth / 2 && Math.abs(localY) <= labelHeight / 2;
   };
   return { group, label, labelPosition, containsPoint, hide, update, dispose: () => {
-    group.removeFromParent(); label.remove(); lines.geometry.dispose(); lines.material.dispose();
+    group.removeFromParent(); label.remove(); lines.geometry.dispose(); lines.material.dispose(); connectors.geometry.dispose(); connectors.material.dispose();
   } };
 }

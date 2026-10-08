@@ -108,7 +108,7 @@ root.innerHTML = `
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div id="face-color-picker-anchor" class="face-color-picker-anchor"></div>
     <dialog id="document-kind-dialog" class="variable-dialog document-kind-dialog"><form method="dialog"><div class="eyebrow">NEW WORKSPACE</div><h2 id="document-kind-title">What are you building?</h2><p>Choose the kind of file you want to work on.</p><div class="document-kind-options"><button type="submit" value="model" class="document-kind-option"><strong><i data-lucide="box" aria-hidden="true"></i>3D model</strong><span>Build with boxes in three dimensions.</span></button><button type="submit" value="sketch" class="document-kind-option"><strong><i data-lucide="square" aria-hidden="true"></i>2D sketch</strong><span>Draw lines and rectangles on a flat plane.</span></button></div><div class="dialog-actions"><button type="submit" value="cancel" class="button button-quiet">Cancel</button></div></form></dialog>
-    <dialog id="variable-dialog" class="variable-dialog"><form id="variable-form"><div class="eyebrow">MODEL VARIABLE</div><h2 id="variable-dialog-title">Add variable</h2><label class="field-label" for="variable-name">NAME</label><input id="variable-name" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-value">VALUE · INCHES</label><input id="variable-value" class="text-field" autocomplete="off" required/><div id="variable-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="variable-cancel">Cancel</button><button type="submit" class="button button-run" id="variable-submit">Create variable</button></div></form></dialog>
+    <dialog id="variable-dialog" class="variable-dialog"><form id="variable-form"><div class="eyebrow">MODEL VARIABLE</div><h2 id="variable-dialog-title">Add variable</h2><label class="field-label" for="variable-name">NAME</label><input id="variable-name" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-value">VALUE · INCHES</label><input id="variable-value" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-description">DESCRIPTION · OPTIONAL</label><textarea id="variable-description" class="text-field variable-description" rows="3"></textarea><div id="variable-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="variable-cancel">Cancel</button><button type="submit" class="button button-run" id="variable-submit">Create variable</button></div></form></dialog>
     <dialog id="delete-variable-dialog" class="variable-dialog"><form method="dialog"><div class="eyebrow">VARIABLE IN USE</div><h2>Replace references?</h2><p id="delete-variable-message" class="delete-variable-message"></p><div class="dialog-actions"><button value="cancel" class="button button-quiet">Cancel</button><button value="delete" class="button button-run">Delete and replace</button></div></form></dialog>
     <dialog id="close-document-dialog" class="variable-dialog close-document-dialog" aria-labelledby="close-document-title" aria-describedby="close-document-message"><form method="dialog"><div class="eyebrow">CLOSE FILE</div><h2 id="close-document-title">Close <span id="close-document-name"></span>?</h2><p id="close-document-message">Closing removes this tab and its local recovery copy. Save and close saves the current source as a .js file.</p><p id="close-document-draft" class="close-document-draft" hidden>This tab has an unrun source draft. Close without saving will discard it.</p><div class="dialog-actions close-document-actions"><button id="close-document-cancel" value="cancel" class="button button-quiet">Cancel</button><button id="close-document-save" type="button" class="button button-run">Save and close</button><button value="close" class="button button-danger">Close without saving</button></div></form></dialog>
     <div id="face-menu" class="face-menu" role="menu" aria-label="Box actions" hidden><div class="face-menu-caption" id="face-menu-caption"></div><div class="face-menu-actions"><button id="new-from-face" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">＋</span><span>New box from face</span></button><button id="duplicate-from-menu" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">⧉</span><span>Duplicate</span></button></div><div class="face-menu-reason" id="face-menu-reason"></div></div>
@@ -135,6 +135,7 @@ let measurements: Measurement[] = [];
 let measuring = false;
 let measurementsThroughObjects = true;
 let measurementAxis: MeasurementAxisChoice = 'auto';
+let measurementAxisMode = false;
 let documentKind: DocumentKind = 'model';
 let sketchTool: SketchTool = 'select';
 let variables: VariableSpec[] = [];
@@ -158,8 +159,8 @@ let viewMode: 'iso' | 'front' | 'right' | 'top' = 'iso';
 let projectionMode: 'perspective' | 'orthographic' = 'perspective';
 let gridVisible = true;
 let hiddenBoxIds = new Set<string>();
-let offsetsOpenBoxId: string | null = null;
-let offsetsOpen = false;
+let relativeOpenBoxId: string | null = null;
+let relativeOpen = true;
 let faceColorPicker: Picker | null = null;
 const viewport = createViewport(
   viewportHost,
@@ -182,10 +183,10 @@ const viewport = createViewport(
     else setStatus('Select shapes · Shift-click to add · drag to select');
   },
   (ids, action) => selectSketchShapes(ids, action),
-  (start, end, offset, axis) => {
+  (start, end, offset, axis, distanceAxis) => {
     if (draftDirty) return;
     try {
-      const measurement: Measurement = { id: crypto.randomUUID(), start, end, offset, axis, ...(selectedGroup() ? { groupId: selectedGroup()!.id } : {}) };
+      const measurement: Measurement = { id: crypto.randomUUID(), start, end, offset, axis, ...(distanceAxis ? { distanceAxis } : {}), ...(selectedGroup() ? { groupId: selectedGroup()!.id } : {}) };
       commitMeasurements([...measurements, measurement], 'Measurement added');
       selectedId = measurement.id; selectedSketchIds.clear(); selectedVariable = null; selectedFace = null; renderAll();
     }
@@ -196,8 +197,9 @@ const viewport = createViewport(
     const field = $('#new-measurement-axis') as HTMLSelectElement;
     if (stage === 'second' && axis) { field.value = axis; field.querySelector<HTMLOptionElement>('[value=auto]')!.disabled = true; }
     else if (stage === 'first') { field.value = measurementAxis; field.querySelector<HTMLOptionElement>('[value=auto]')!.disabled = false; }
-    setStatus(stage === 'placement' ? 'Measure · move the mouse to offset the label, then click to place it' : stage === 'second' ? 'Measure · click a second corner or edge' : stage === 'invalid' ? 'Choose a corner or edge of existing geometry' : stage === 'same' ? 'Choose a different point to measure' : 'Measure · click a corner or edge · Escape to finish');
+    setStatus(stage === 'placement' ? 'Measure · move the mouse to offset the label, then click to place it' : stage === 'second' ? 'Measure · click a second corner or edge · Shift toggles axis distance' : stage === 'invalid' ? 'Choose a corner or edge of existing geometry' : stage === 'same' ? 'Choose a different point to measure' : 'Measure · click a corner or edge · Escape to finish');
   },
+  (axisMode) => { measurementAxisMode = axisMode; renderSketchToolUI(); },
 );
 
 function closeFaceColorPicker() { faceColorPicker?.hide(); }
@@ -272,7 +274,7 @@ function renderSketchToolUI() {
     button.classList.toggle('active', measuring);
     button.setAttribute('aria-pressed', String(measuring));
   });
-  $('.navigation-help').innerHTML = measuring ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish' : documentKind === 'sketch'
+  $('.navigation-help').innerHTML = measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>SHIFT</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'
     ? sketchTool !== 'select' ? sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>SHIFT + CLICK</span> multi-select <i>·</i> <span>DRAG</span> select <i>·</i> <span>MIDDLE / RIGHT DRAG</span> pan <i>·</i> wheel zoom'
     : '<span>MIDDLE DRAG</span> orbit <i>·</i> <span>SHIFT + MIDDLE</span> / right drag pan <i>·</i> wheel zoom';
 }
@@ -305,10 +307,12 @@ function commitMeasurements(next: Measurement[], message: string) {
   recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
 
-type VariableDialogResult = { name: string; value: number; expression?: string } | null;
+type VariableDialogResult = VariableSpec | null;
 async function askVariable(name = '', title = 'Create missing variable'): Promise<VariableDialogResult> {
   const dialog = $('#variable-dialog') as HTMLDialogElement; const form = $('#variable-form') as HTMLFormElement;
   const nameInput = $('#variable-name') as HTMLInputElement; const valueInput = $('#variable-value') as HTMLInputElement;
+  const descriptionInput = $('#variable-description') as HTMLTextAreaElement;
+  descriptionInput.value = '';
   $('#variable-dialog-title').textContent = title; $('#variable-submit').textContent = title === 'Add variable' ? 'Add variable' : 'Create and apply';
   nameInput.value = name; nameInput.readOnly = !!name; valueInput.value = ''; $('#variable-error').textContent = '';
   const priorFocus = document.activeElement as HTMLElement | null;
@@ -318,7 +322,7 @@ async function askVariable(name = '', title = 'Create missing variable'): Promis
     const submit = (event: Event) => { event.preventDefault(); const variableName = nameInput.value.trim();
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variableName)) { $('#variable-error').textContent = 'Use letters, numbers, and underscores; start with a letter or underscore.'; nameInput.focus(); return; }
       if (variables.some((item) => item.name === variableName)) { $('#variable-error').textContent = `“${variableName}” already exists.`; nameInput.focus(); return; }
-      try { const value = parseInches(valueInput.value, resolverFor(variables)); finish({ name: variableName, value, expression: /\bvar\s*\(/.test(valueInput.value) ? valueInput.value : undefined }); }
+      try { const value = parseInches(valueInput.value, resolverFor(variables)); finish({ name: variableName, value, expression: /\bvar\s*\(/.test(valueInput.value) ? valueInput.value : undefined, ...(descriptionInput.value.trim() ? { description: descriptionInput.value.trim() } : {}) }); }
       catch (error) { $('#variable-error').textContent = error instanceof Error ? error.message : 'Enter a valid inch value.'; valueInput.focus(); }
     };
     form.addEventListener('submit', submit); $('#variable-cancel').addEventListener('click', cancel); dialog.addEventListener('cancel', cancelEvent); dialog.showModal(); (nameInput.readOnly ? valueInput : nameInput).focus();
@@ -553,7 +557,7 @@ function renderMeasurementInspector(measurement: Measurement) {
   };
   host.innerHTML = `<div class="object-heading"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><div><div class="object-name">${escapeHTML(measurementName(measurement))}</div><div class="object-id">DISTANCE MEASUREMENT</div></div></div>
     <label class="field-label" for="measurement-name">NAME</label><input id="measurement-name" class="text-field" value="${escapeAttr(measurementName(measurement))}" ${disabled}/>
-    <div class="section-label"><span>DISTANCE</span><span>INCHES</span></div><div class="measurement-value">${resolved ? formatInches(resolved.distance) + ' in' : 'Missing geometry'}</div>
+    <div class="section-label"><span>${measurement.distanceAxis ? measurement.distanceAxis.toUpperCase() + ' AXIS DISTANCE' : 'DISTANCE'}</span><span>INCHES</span></div><div class="measurement-value">${resolved ? formatInches(resolved.distance) + ' in' : 'Missing geometry'}</div>
     ${documentKind === 'model' ? '<label class="field-label" for="measurement-axis">LABEL FACING AXIS</label><select id="measurement-axis" class="text-field" aria-label="Measurement facing axis" ' + disabled + '>' + ['x', 'y', 'z'].map((axis) => '<option value="' + axis + '" ' + (axis === (measurement.axis ?? 'z') ? 'selected' : '') + '>' + (axis === 'z' ? 'Z · Up' : axis.toUpperCase()) + '</option>').join('') + '</select><div class="inspector-tip">The label normal faces this axis as closely as possible while staying perpendicular to the measured line. Parallel lines use the least-aligned world axis.</div>' : ''}
     <label class="field-label group-membership-label" for="measurement-offset">LABEL OFFSET · INCHES</label><input id="measurement-offset" class="text-field" inputmode="decimal" value="${formatInches(measurement.offset ?? DEFAULT_MEASUREMENT_OFFSET)}" ${disabled}/>
     <label class="field-label" for="measurement-line-height">LABEL LINE HEIGHT · INCHES</label><input id="measurement-line-height" class="text-field" inputmode="decimal" value="${formatInches(measurement.lineHeight ?? defaultMeasurementLineHeight(resolved?.distance ?? 0))}" ${disabled}/>
@@ -592,13 +596,19 @@ function renderInspector() {
   const variable = variables.find((item) => item.name === selectedVariable);
   $('#delete-box').toggleAttribute('disabled', draftDirty || (!box && !variable));
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !box);
-  if (offsetsOpenBoxId !== box?.id) {
-    offsetsOpenBoxId = box?.id ?? null;
-    offsetsOpen = false;
+  if (relativeOpenBoxId !== box?.id) {
+    relativeOpenBoxId = box?.id ?? null;
+    relativeOpen = true;
   }
   if (variable) {
     const usedBy = boxes.filter((item) => Object.values(item.expressions ?? {}).some((expr) => expr.includes(`var(${variable.name})`))).length;
-    host.innerHTML = `<div class="source-warning">Variables drive any numeric box dimension, position, or placement offset using <code>var(${escapeHTML(variable.name)})</code>.</div><div class="object-heading"><span class="variable-symbol large">ƒ</span><div><div class="object-name">${escapeHTML(variable.name)}</div><div class="object-id">VARIABLE · INCHES</div></div></div><label class="field-label" for="variable-inspector-value">VALUE</label><div class="measure-input variable-value-input"><input id="variable-inspector-value" value="${formatInches(variable.value)}" ${draftDirty ? 'disabled' : ''}/><small>in</small></div>${variable.expression ? `<label class="field-label expression-label" for="variable-inspector-expression">EXPRESSION</label><input id="variable-inspector-expression" class="text-field" value="${escapeAttr(variable.expression)}" ${draftDirty ? 'disabled' : ''}/>` : ''}<div class="inspector-tip">Used by ${usedBy} ${usedBy === 1 ? 'box' : 'boxes'}. Variable names stay fixed after creation.</div>`;
+    host.innerHTML = `<div class="source-warning">Variables drive any numeric box dimension, position, or placement offset using <code>var(${escapeHTML(variable.name)})</code>.</div><div class="object-heading"><span class="variable-symbol large">ƒ</span><div><div class="object-name">${escapeHTML(variable.name)}</div><div class="object-id">VARIABLE · INCHES</div></div></div><label class="field-label" for="variable-inspector-value">VALUE</label><div class="measure-input variable-value-input"><input id="variable-inspector-value" value="${formatInches(variable.value)}" ${draftDirty ? 'disabled' : ''}/><small>in</small></div>${variable.expression ? `<label class="field-label expression-label" for="variable-inspector-expression">EXPRESSION</label><input id="variable-inspector-expression" class="text-field" value="${escapeAttr(variable.expression)}" ${draftDirty ? 'disabled' : ''}/>` : ''}<label class="field-label expression-label" for="variable-inspector-description">DESCRIPTION · OPTIONAL</label><textarea id="variable-inspector-description" class="text-field variable-description" rows="3" ${draftDirty ? 'disabled' : ''}>${escapeHTML(variable.description ?? '')}</textarea><div class="inspector-tip">Used by ${usedBy} ${usedBy === 1 ? 'box' : 'boxes'}. Variable names stay fixed after creation.</div>`;
+    host.querySelector<HTMLTextAreaElement>('#variable-inspector-description')!.addEventListener('change', (event) => {
+      if (draftDirty) return;
+      const description = (event.currentTarget as HTMLTextAreaElement).value.trim() || undefined;
+      try { commitBoxes(boxes, 'Variable description updated', { preserveView: true }, variables.map((item) => item.name === variable.name ? { ...item, description } : item)); }
+      catch (error) { notify(error instanceof Error ? error.message : 'Could not update variable description', true); renderInspector(); }
+    });
     host.querySelector<HTMLInputElement>('#variable-inspector-value')?.addEventListener('change', (event) => { const input = event.currentTarget as HTMLInputElement; void changeVariableValue(variable.name, input.value, false, input); });
     host.querySelector<HTMLInputElement>('#variable-inspector-expression')?.addEventListener('change', (event) => { const input = event.currentTarget as HTMLInputElement; void changeVariableValue(variable.name, input.value, true, input); });
     return;
@@ -616,18 +626,18 @@ function renderInspector() {
     <label class="field-label" for="box-name">NAME</label><input id="box-name" class="text-field" value="${escapeAttr(box.name)}" ${draftDirty ? 'disabled' : ''} />
     <div class="section-label"><span>SIZE</span><span>INCHES</span></div><div class="triple-fields">${['Width · X', 'Depth · Y', 'Height · Z'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input data-kind="size" data-index="${i}" value="${escapeAttr(box.expressions?.[`size.${i}` as NumericField] ?? formatInches(box.size[i]))}" title="${box.expressions?.[`size.${i}` as NumericField] ? `Resolved: ${formatInches(box.size[i])} in` : ''}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.[`size.${i}` as NumericField], box.size[i])}</label>`).join('')}</div>
     <div class="section-label position-label"><span>${box.groupId ? 'POSITION IN GROUP' : 'ABSOLUTE POSITION'} <em>MIN CORNER</em></span><span>INCHES</span></div><div class="triple-fields">${['X', 'Y', 'Z'].map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Absolute position ${axis}" data-kind="position" data-index="${i}" value="${escapeAttr(box.expressions?.[`position.${i}` as NumericField] ?? formatInches(box.position[i]))}" title="${box.expressions?.[`position.${i}` as NumericField] ? `Resolved: ${formatInches(box.position[i])} in` : ''}" inputmode="decimal" ${draftDirty || relative ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.[`position.${i}` as NumericField], box.position[i])}</label>`).join('')}</div>
-    <section class="relative-card" aria-label="Relative placement"><div class="relative-heading"><div><div class="section-label"><span>RELATIVE PLACEMENT</span></div><div class="relative-summary">${relative ? `Linked to ${escapeHTML(boxes.find((candidate) => candidate.id === relative.boxId)?.name ?? relative.boxId)} · ${referenceFaceTitle(relative.face)}` : 'Anchor this box to another box face.'}</div></div>${relative ? '<button class="small-action" id="detach-relative" type="button">Detach</button>' : ''}</div>
+    <details class="relative-card" aria-label="Relative placement" ${relativeOpen ? 'open' : ''}><summary class="relative-heading"><div><div class="section-label"><span>RELATIVE PLACEMENT</span></div><div class="relative-summary">${relative ? `Linked to ${escapeHTML(boxes.find((candidate) => candidate.id === relative.boxId)?.name ?? relative.boxId)} · ${referenceFaceTitle(relative.face)}` : 'Anchor this box to another box face.'}</div></div>${relative ? '<button class="small-action" id="detach-relative" type="button">Detach</button>' : ''}</summary>
       <div class="relative-grid"><label class="measure-field"><span>Reference box</span><select id="relative-reference" aria-label="Reference box" ${draftDirty || !boxes.some((candidate) => candidate.id !== box.id && !isDescendant(candidate.id, box.id)) ? 'disabled' : ''}><option value="">${boxes.length < 2 ? 'No other boxes' : 'Choose box'}</option>${refOptions}</select></label>
       <label class="measure-field"><span>Reference face</span><select id="relative-face" aria-label="Reference face" ${draftDirty || !relative ? 'disabled' : ''}>${faceOptions(relative?.face)}</select></label></div>
       <div class="relative-grid side-grid"><label class="measure-field"><span>First side · U</span><select id="relative-u-side" aria-label="First side U" ${draftDirty || !relative ? 'disabled' : ''}>${sideOptions('u', relative?.u as RelativePlacement['u'])}</select></label>
-      <label class="measure-field"><span>Second side · V</span><select id="relative-v-side" aria-label="Second side V" ${draftDirty || !relative ? 'disabled' : ''}>${sideOptions('v', relative?.v as RelativePlacement['v'])}</select></label></div>
-      <details class="relative-offsets" ${offsetsOpen ? 'open' : ''}><summary>Offsets</summary><div class="relative-grid"><label class="measure-field relative-distance-field"><span>Distance from face</span><span class="measure-input"><input id="relative-offset" aria-label="Distance from face in inches" value="${escapeAttr(box.expressions?.['relative.offset'] ?? formatInches(relative?.offset ?? 0))}" title="${box.expressions?.['relative.offset'] ? `Resolved: ${formatInches(relative?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.offset'], relative?.offset ?? 0)}</label>
-      <label class="measure-field"><span>First side · U inward offset</span><span class="measure-input"><input id="relative-u-offset" aria-label="First side U inward offset in inches" value="${escapeAttr(box.expressions?.['relative.u.offset'] ?? formatInches(relative?.u?.offset ?? 0))}" title="${box.expressions?.['relative.u.offset'] ? `Resolved: ${formatInches(relative?.u?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative?.u ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.u.offset'], relative?.u?.offset ?? 0)}</label>
-      <label class="measure-field"><span>Second side · V inward offset</span><span class="measure-input"><input id="relative-v-offset" aria-label="Second side V inward offset in inches" value="${escapeAttr(box.expressions?.['relative.v.offset'] ?? formatInches(relative?.v?.offset ?? 0))}" title="${box.expressions?.['relative.v.offset'] ? `Resolved: ${formatInches(relative?.v?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative?.v ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.v.offset'], relative?.v?.offset ?? 0)}</label></div><div class="relative-help">Viewed from outside the face. Positive side offsets move inward.</div></details></section>
+      <label class="measure-field"><span>First side offset</span><span class="measure-input"><input id="relative-u-offset" aria-label="First side U inward offset in inches" value="${escapeAttr(box.expressions?.['relative.u.offset'] ?? formatInches(relative?.u?.offset ?? 0))}" title="${box.expressions?.['relative.u.offset'] ? `Resolved: ${formatInches(relative?.u?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative?.u ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.u.offset'], relative?.u?.offset ?? 0)}</label>
+      <label class="measure-field"><span>Second side · V</span><select id="relative-v-side" aria-label="Second side V" ${draftDirty || !relative ? 'disabled' : ''}>${sideOptions('v', relative?.v as RelativePlacement['v'])}</select></label>
+      <label class="measure-field"><span>Second side offset</span><span class="measure-input"><input id="relative-v-offset" aria-label="Second side V inward offset in inches" value="${escapeAttr(box.expressions?.['relative.v.offset'] ?? formatInches(relative?.v?.offset ?? 0))}" title="${box.expressions?.['relative.v.offset'] ? `Resolved: ${formatInches(relative?.v?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative?.v ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.v.offset'], relative?.v?.offset ?? 0)}</label>
+      <label class="measure-field relative-distance-field"><span>Distance from face</span><span class="measure-input"><input id="relative-offset" aria-label="Distance from face in inches" value="${escapeAttr(box.expressions?.['relative.offset'] ?? formatInches(relative?.offset ?? 0))}" title="${box.expressions?.['relative.offset'] ? `Resolved: ${formatInches(relative?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.offset'], relative?.offset ?? 0)}</label></div><div class="relative-help">Viewed from outside the face. Positive side offsets move inward.</div></details>
     <div class="section-label color-label"><span>FACE COLOR</span><span>${box.color.trim().toLowerCase() === TRANSPARENT_COLOR ? 'TRANSPARENT' : 'CUSTOM CODE'}</span></div><div class="color-row"><div class="swatch-grid">${COLOR_OPTIONS.map((c) => { const transparent = c === TRANSPARENT_COLOR; const chosen = box.color.trim().toLowerCase() === c; const swatchStyle = transparent ? `--cube:#1c2932;background-color:#1c2932;background-image:linear-gradient(45deg,#aab7be 25%,transparent 25%,transparent 75%,#aab7be 75%),linear-gradient(45deg,#aab7be 25%,transparent 25%,transparent 75%,#aab7be 75%);background-position:0 0,4px 4px;background-size:8px 8px;${chosen ? 'border:1px solid #f0c27e;box-shadow:none;position:relative' : ''}` : `--cube:${c}`; const check = transparent && chosen ? '<span aria-hidden="true" style="position:absolute;inset:0;display:grid;place-items:center;color:#17222b;font-size:10px;font-weight:800;line-height:1">✓</span>' : ''; return `<button class="swatch ${transparent ? 'swatch-transparent ' : ''}${chosen ? 'chosen' : ''}" data-color="${c}" style="${swatchStyle}" aria-label="${transparent ? `Transparent${chosen ? ' (selected)' : ''}` : `Color ${c}`}" aria-pressed="${chosen}" ${draftDirty ? 'disabled' : ''}>${check}</button>`; }).join('')}</div><input id="box-color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(box.color) ? box.color : '#d9a76e')}" ${draftDirty ? 'disabled' : ''}/></div>
     <div class="inspector-tip">Enter an inch value or arithmetic (for example, (20 - 3/4)); press Enter or leave the field to apply it.</div>`;
   const nameInput = host.querySelector<HTMLInputElement>('#box-name')!;
-  host.querySelector<HTMLDetailsElement>('.relative-offsets')?.addEventListener('toggle', (event) => { offsetsOpen = (event.currentTarget as HTMLDetailsElement).open; });
+  host.querySelector<HTMLDetailsElement>('.relative-card')?.addEventListener('toggle', (event) => { const card = event.currentTarget as HTMLDetailsElement; if (card.isConnected && relativeOpenBoxId === boxId) relativeOpen = card.open; });
   nameInput.addEventListener('change', () => updateBox(box.id, { name: nameInput.value.trim() || box.name }));
   host.querySelectorAll<HTMLInputElement>('.measure-input input[data-kind]').forEach((input) => {
     const apply = async () => { try { const parsed = await parseWithMissingVariables(input.value); const kind = input.dataset.kind as 'size' | 'position'; const index = Number(input.dataset.index); const field = `${kind}.${index}` as NumericField; const expressions = { ...(box.expressions ?? {}) }; if (/\bvar\s*\(/.test(input.value)) expressions[field] = input.value; else delete expressions[field]; const next = boxes.map((item) => item.id === box.id ? { ...item, [kind]: item[kind].map((n, i) => i === index ? parsed.value : n) as [number, number, number], expressions } : item); commitBoxes(next, 'Dimension updated', { preserveView: true }, parsed.variables); } catch (err) { if (err instanceof Error && err.message === 'Variable creation cancelled.') { renderInspector(); return; } input.classList.add('invalid'); notify(err instanceof Error ? err.message : 'Invalid dimension', true); } };
@@ -663,7 +673,7 @@ function renderInspector() {
       commitBoxes(boxes.map((item) => item.id === boxId ? nextBox : item), 'Placement offset updated', { preserveView: true }, parsed.variables);
     } catch (error) { if (error instanceof Error && error.message === 'Variable creation cancelled.') { renderInspector(); return; } input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid offset', true); }
   }
-  host.querySelector<HTMLButtonElement>('#detach-relative')?.addEventListener('click', () => { const expressions = { ...(box.expressions ?? {}) }; delete expressions['relative.offset']; delete expressions['relative.u.offset']; delete expressions['relative.v.offset']; delete expressions['position.0']; delete expressions['position.1']; delete expressions['position.2']; updateBox(box.id, { relative: undefined, expressions }); });
+  host.querySelector<HTMLButtonElement>('#detach-relative')?.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); const expressions = { ...(box.expressions ?? {}) }; delete expressions['relative.offset']; delete expressions['relative.u.offset']; delete expressions['relative.v.offset']; delete expressions['position.0']; delete expressions['position.1']; delete expressions['position.2']; updateBox(box.id, { relative: undefined, expressions }); });
   host.querySelectorAll<HTMLButtonElement>('.swatch').forEach((button) => button.addEventListener('click', () => updateBox(box.id, { color: button.dataset.color! })));
   const colorInput = host.querySelector<HTMLInputElement>('#box-color');
   if (colorInput) {
@@ -878,7 +888,7 @@ function loadDocument(document: ModelDocument) {
   appliedSource = document.appliedSource; hiddenBoxIds = new Set(document.hiddenBoxIds);
   history = structuredClone(document.history); historyAt = document.historyAt;
   selectedId = document.selectedId; selectedSketchIds = new Set(document.selectedSketchIds ?? (selectedRectangle() ? [selectedId!] : [])); selectedVariable = document.selectedVariable; selectedFace = document.selectedFace;
-  offsetsOpenBoxId = null; offsetsOpen = false;
+  relativeOpenBoxId = null; relativeOpen = true;
   viewMode = documentKind === 'sketch' ? 'top' : document.viewMode; projectionMode = documentKind === 'sketch' ? 'orthographic' : document.projectionMode; gridVisible = document.gridVisible;
   root.classList.toggle('sketch-mode', documentKind === 'sketch');
   root.classList.toggle('model-mode', documentKind === 'model');

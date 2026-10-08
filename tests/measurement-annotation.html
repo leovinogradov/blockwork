@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 import { createMeasurementAnnotation } from '/src/measurement-annotation.ts';
 import { createViewport } from '/src/viewport.ts';
+import { formatInches } from '/src/model.ts';
 
 const renderer = new THREE.WebGLRenderer();
 renderer.setSize(400, 400);
@@ -120,6 +121,22 @@ for (const axis of ['x', 'y', 'z']) for (const side of [1, -1]) {
   check(annotation.containsPoint(matrix[4], matrix[5]), `${axis}/${side}: transformed label center remains selectable`);
 }
 annotation.hide(); check(annotation.label.getAttribute('display') === 'none' && !annotation.containsPoint(200, 200), 'hidden annotations remove SVG visibility and picking');
+
+// Projected dimensions separate the solid axis line from dashed anchor connectors.
+previewCamera.position.set(0, 0, 40); previewCamera.lookAt(0, 0, 0); previewCamera.updateMatrixWorld();
+for (const offset of [0, 3, -2]) {
+  annotation.update([0, 1, 0], [2, 0, 0], 2, { ...measurement, distanceAxis: 'x', offset }, false, true, false, previewCamera);
+  const [solid, dashed] = annotation.group.children;
+  const line = solid.geometry.getAttribute('position'), connectors = dashed.geometry.getAttribute('position');
+  check(solid.material instanceof THREE.LineBasicMaterial && dashed.material instanceof THREE.LineDashedMaterial, `axis/offset=${offset}: solid dimension and dashed connectors use distinct materials`);
+  check(line.getX(0) === 0 && line.getY(0) === 1 + offset && line.getX(1) === 2 && line.getY(1) === 1 + offset, `axis/offset=${offset}: solid line follows offset X projection`);
+  check(connectors.getX(0) === 0 && connectors.getY(0) === 1 && connectors.getY(1) === 1 + offset && connectors.getX(2) === 2 && connectors.getY(2) === 0 && connectors.getY(3) === 1 + offset, `axis/offset=${offset}: dashed connectors reach both actual picked points`);
+  check(annotation.label.textContent === '2 in' && dashed.material.depthTest && dashed.material.color.getHex() === solid.material.color.getHex(), `axis/offset=${offset}: axis label, selection color and depth testing are preserved`);
+  annotation.update([0, 1, 0], [2, 0, 0], 2, { ...measurement, distanceAxis: 'x', offset }, false, false, true, previewCamera);
+  check(!dashed.material.depthTest, `axis/offset=${offset}: through mode applies to dashed connectors`);
+}
+annotation.update([0, 1, 0], [2, 0, 0], Math.sqrt(5), measurement, false, false, true, previewCamera);
+check(!annotation.group.children[1].visible, 'releasing axis mode removes dashed connectors from an existing annotation');
 annotation.dispose(); target.dispose(); box.geometry.dispose(); box.material.dispose(); renderer.dispose();
 check(overlay.children.length === 0, 'disposing annotations removes SVG labels');
 
@@ -128,9 +145,12 @@ check(overlay.children.length === 0, 'disposing annotations removes SVG labels')
 const host = document.querySelector('#viewport');
 let selected = null;
 let draftAxis = null, createdAxis = null;
+let createdMeasurement = null;
+let axisModeStatus = false, modeChanges = 0;
 const viewport = createViewport(host, (id) => { selected = id; }, undefined, undefined, undefined, undefined,
-  (_start, _end, _offset, axis) => { createdAxis = axis; },
-  (stage, axis) => { if (stage === 'second') draftAxis = axis; });
+  (start, end, offset, axis, distanceAxis) => { createdAxis = axis; createdMeasurement = { start, end, offset, axis, distanceAxis }; },
+  (stage, axis) => { if (stage === 'second') draftAxis = axis; },
+  (axisMode) => { axisModeStatus = axisMode; modeChanges++; });
 const testBox = { id: 'box', name: 'Box', size: [12, 8, 4], position: [0, 0, 0], color: '#86a9a3' };
 const dimension = { id: 'measurement', start: { objectId: 'box', coordinates: [0, 0, 0] }, end: { objectId: 'box', coordinates: [1, 0, 0] }, axis: 'z', offset: 4, lineHeight: 1 };
 viewport.setBoxes([testBox]); viewport.setMeasurements([dimension]); viewport.setView('top');
@@ -142,9 +162,9 @@ function framePixels() { return new Promise((resolve) => requestAnimationFrame((
   gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, image);
   resolve(image);
 })); }
-function pointer(type, dx = 0, dy = 0, buttons = 0) {
+function pointer(type, dx = 0, dy = 0, buttons = 0, shiftKey = false) {
   const bounds = canvas.getBoundingClientRect();
-  canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'mouse', pointerId: 1, button: 0, buttons, clientX: bounds.left + bounds.width / 2 + dx, clientY: bounds.top + bounds.height / 2 + dy }));
+  canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'mouse', pointerId: 1, button: 0, buttons, shiftKey, clientX: bounds.left + bounds.width / 2 + dx, clientY: bounds.top + bounds.height / 2 + dy }));
 }
 function click() { pointer('pointerdown', 0, 0, 1); pointer('pointerup'); }
 for (const projection of ['perspective', 'orthographic']) {
@@ -191,6 +211,67 @@ for (const fixture of [
   clickAlongLine(1); viewport.setView('iso'); await framePixels(); click();
   check(createdAxis === fixture.axis, `${fixture.view}: creation retains ${fixture.axis} after rotating the camera`);
   viewport.setMeasurementTool(false);
+}
+
+// Shift updates a stationary pointer while retaining the actual picked edge point.
+for (const mode of ['model', 'sketch']) for (const projection of ['perspective', 'orthographic']) {
+  viewport.setMode(mode);
+  if (mode === 'model') viewport.setBoxes([testBox]);
+  else viewport.setRectangles([{ id: 'box', name: 'Rectangle', size: [12, 8], position: [0, 0], color: '#ffffff' }]);
+  viewport.setProjection(projection);
+  for (const fixture of (mode === 'sketch' ? [
+    { view: 'top', axis: 'z', start: [0, 0], end: [1, 0], length: 12, height: 8, expected: [8.25 / 12, 1], distanceAxis: 'x' },
+  ] : [
+    { view: 'top', axis: 'z', start: [0, 0, 1], end: [1, 0, 1], length: 12, height: 8, expected: [8.25 / 12, 1, 1], distanceAxis: 'x' },
+    { view: 'front', axis: 'y', start: [0, 0, 0], end: [1, 0, 0], length: 12, height: 4, expected: [4.25 / 12, 0, 1], distanceAxis: 'x' },
+    { view: 'front', axis: 'y', start: [0, 0, 0], end: [1, 0, 0], length: 12, height: 4, pickX: 2.25, distance: 4, expected: [2.25 / 12, 0, 1], distanceAxis: 'z' },
+    { view: 'right', axis: 'x', start: [1, 0, 0], end: [1, 1, 0], length: 8, height: 4, expected: [1, 4.25 / 8, 1], distanceAxis: 'y' },
+  ])) {
+    viewport.setView(fixture.view);
+    viewport.setMeasurements([{ ...dimension, axis: fixture.axis, offset: 0, start: { objectId: 'box', coordinates: fixture.start }, end: { objectId: 'box', coordinates: fixture.end } }]);
+    viewport.setMeasurementAxis('auto'); viewport.setMeasurementTool(true);
+    await framePixels();
+    const matrix = host.querySelector('.measurement-label:not(.preview)').getAttribute('transform').slice(7, -1).split(' ').map(Number);
+    const screen = (x, y) => [matrix[4] + (x - fixture.length / 2) * matrix[0] - y * matrix[2] - 200, matrix[5] + (x - fixture.length / 2) * matrix[1] - y * matrix[3] - 200];
+    const first = screen(0, 0), second = screen(fixture.pickX ?? fixture.height + .25, fixture.height);
+    pointer('pointerdown', ...first, 1); pointer('pointerup', ...first);
+    pointer('pointermove', ...second); await framePixels();
+    const label = host.querySelector('.measurement-label.preview text');
+    const freeDistance = label.textContent;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    await framePixels();
+    const expectedDistance = `${formatInches(fixture.distance ?? fixture.height + .25)} in`;
+    check(label.textContent === expectedDistance && label.textContent !== freeDistance, `${mode}/${projection}/${fixture.view}: Shift updates the stationary preview to the largest axis distance`);
+    const changesAfterPress = modeChanges;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, repeat: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', shiftKey: false, bubbles: true }));
+    await framePixels();
+    check(label.textContent === expectedDistance && axisModeStatus && modeChanges === changesAfterPress, `${mode}/${projection}/${fixture.view}: key repeat and release leave axis mode on`);
+    pointer('pointermove', ...second); await framePixels();
+    check(label.textContent === expectedDistance, `${mode}/${projection}/${fixture.view}: pointer movement without holding Shift retains axis mode`);
+    host.querySelector('input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    check(axisModeStatus && modeChanges === changesAfterPress, `${mode}/${projection}/${fixture.view}: typing Shift in a field does not toggle axis mode`);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    await framePixels();
+    check(label.textContent === freeDistance && !axisModeStatus, `${mode}/${projection}/${fixture.view}: a second Shift press restores full distance`);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    createdMeasurement = null;
+    pointer('pointerdown', ...second, 1); pointer('pointerup', ...second);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    await framePixels();
+    check(label.textContent === freeDistance && !axisModeStatus, `${mode}/${projection}/${fixture.view}: toggling during label placement changes the pending dimension`);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    click();
+    check(createdMeasurement?.distanceAxis === fixture.distanceAxis && createdMeasurement?.end.coordinates.every((n, i) => Math.abs(n - fixture.expected[i]) < 1e-3), `${mode}/${projection}/${fixture.view}: shifted click saves the chosen axis and the actual geometry edge anchor`);
+    check(axisModeStatus, `${mode}/${projection}/${fixture.view}: creating a dimension retains the mode for the next measurement`);
+    viewport.setMeasurementTool(false);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    viewport.setMeasurementTool(true);
+    check(axisModeStatus, `${mode}/${projection}/${fixture.view}: leaving and re-entering Measure retains the selected mode`);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    check(!axisModeStatus, `${mode}/${projection}/${fixture.view}: Shift can toggle the mode before the first point`);
+    viewport.setMeasurementTool(false);
+  }
 }
 document.querySelector('#result').textContent = errors.length ? `${errors.length} failed / ${checks} checks` : `Passed ${checks} GPU and interaction checks`;
 document.querySelector('#failures').textContent = errors.join('\n');

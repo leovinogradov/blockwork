@@ -8,7 +8,7 @@ import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
 import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
-import { autoMeasurementAxis, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementAxisLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementAxis, type MeasurementAxisChoice, type MeasurementSegment } from './measurements';
+import { autoMeasurementAxis, dominantMeasurementAxis, measurementLine, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementAxisLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementAxis, type MeasurementAxisChoice, type MeasurementSegment } from './measurements';
 
 export type ViewName = 'iso' | 'front' | 'right' | 'top';
 export type ProjectionMode = 'perspective' | 'orthographic';
@@ -60,8 +60,9 @@ export function createViewport(
   onSketchDraw?: (first: [number, number], opposite: [number, number], tool: SketchTool) => void,
   onSketchStage?: (stage: 'idle' | 'first' | 'opposite') => void,
   onSketchSelect?: (ids: string[], action: SelectionAction) => void,
-  onMeasure?: (start: MeasurementAnchor, end: MeasurementAnchor, offset: number, axis: MeasurementAxis) => void,
+  onMeasure?: (start: MeasurementAnchor, end: MeasurementAnchor, offset: number, axis: MeasurementAxis, distanceAxis?: MeasurementAxis) => void,
   onMeasureStage?: (stage: 'first' | 'second' | 'placement' | 'invalid' | 'same', axis?: MeasurementAxis) => void,
+  onMeasureModeChange?: (axisMode: boolean) => void,
 ): Viewport {
   let disposed = false;
   let selectedId: string | null = null;
@@ -75,9 +76,11 @@ export function createViewport(
   let lineInputMode: 'cartesian' | 'polar' = 'cartesian';
   let sketchRectangles: SketchShape[] = [];
   let measurementTool = false;
+  let measurementAxisMode = false;
   let measurementsThroughObjects = true;
   let measurementAxis: MeasurementAxisChoice = 'auto';
   let measurementDraftAxis: MeasurementAxis | null = null;
+  let measurementDraftDistanceAxis: MeasurementAxis | undefined;
   let measurementFirst: MeasurementAnchor | null = null;
   let measurementSecond: MeasurementAnchor | null = null;
   let measurementPlacementCursor: [number, number] | null = null;
@@ -312,10 +315,14 @@ export function createViewport(
     measurementMarker.setAttribute('display', 'none');
     if (!measurementTool) { previewAnnotation.hide(); return; }
     if (measurementFirst && measurementSecond) {
-      drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), axis: measurementDraftAxis ?? 'z' });
+      drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementSecond, offset: placementOffset(), axis: measurementDraftAxis ?? 'z', distanceAxis: measurementDraftDistanceAxis });
       return;
     }
-    if (measurementFirst && measurementHover) drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementHover.anchor, axis: measurementDraftAxis ?? 'z' });
+    if (measurementFirst && measurementHover) {
+      const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry);
+      const distanceAxis = measurementAxisMode && start ? dominantMeasurementAxis(start, measurementHover.point) : undefined;
+      drawAnnotation(previewAnnotation, { id: 'preview', start: measurementFirst, end: measurementHover.anchor, axis: measurementDraftAxis ?? 'z', distanceAxis });
+    }
     else previewAnnotation.hide();
     const point = measurementHover?.point ?? (measurementFirst ? resolveMeasurementAnchor(measurementFirst, measurementGeometry) : null);
     if (point) {
@@ -329,16 +336,17 @@ export function createViewport(
     if (renderer) renderer.domElement.style.cursor = active ? 'crosshair' : sketchMode && sketchTool !== 'select' ? 'crosshair' : '';
   };
   const clearMeasurementDraft = () => {
-    measurementDraftAxis = null; measurementFirst = null; measurementSecond = null; measurementPlacementCursor = null; measurementHover = null;
+    measurementDraftAxis = null; measurementDraftDistanceAxis = undefined; measurementFirst = null; measurementSecond = null; measurementPlacementCursor = null; measurementHover = null;
   };
   const placementOffset = () => {
     if (!measurementFirst || !measurementSecond || !measurementPlacementCursor) return 0;
     const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry), end = resolveMeasurementAnchor(measurementSecond, measurementGeometry);
     if (!start || !end) return 0;
     const axis = sketchMode ? 'z' : measurementDraftAxis ?? 'z';
-    const frame = measurementAxisLayout(start, end, axis);
+    const line = measurementLine(start, end, measurementDraftDistanceAxis);
+    const frame = measurementAxisLayout(line.start, line.end, axis);
     const cursor = pointOnAnnotationPlane(frame, measurementPlacementCursor);
-    return cursor ? measurementOffsetAtPointer(start, end, cursor, axis) : DEFAULT_MEASUREMENT_OFFSET;
+    return cursor ? measurementOffsetAtPointer(line.start, line.end, cursor, axis) : DEFAULT_MEASUREMENT_OFFSET;
   };
   const updatePlacementCursor = (event: PointerEvent) => {
     if (!renderer) return;
@@ -875,6 +883,19 @@ export function createViewport(
     });
   };
 
+  const onMeasurementModifier = (event: KeyboardEvent) => {
+    if (event.key !== 'Shift' || event.repeat || event.ctrlKey || event.metaKey || event.altKey || !measurementTool) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
+    measurementAxisMode = !measurementAxisMode;
+    if (measurementFirst && measurementSecond) {
+      const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry), end = resolveMeasurementAnchor(measurementSecond, measurementGeometry);
+      measurementDraftDistanceAxis = measurementAxisMode && start && end ? dominantMeasurementAxis(start, end) : undefined;
+    }
+    onMeasureModeChange?.(measurementAxisMode);
+  };
+  const clearMeasurementHover = () => { measurementHover = null; };
+
   const measurementLabelAtPointer = (event: PointerEvent) => {
     updateMeasurements();
     pointerToNdc(event);
@@ -947,7 +968,8 @@ export function createViewport(
       if (measurementFirst && measurementSecond) {
         updatePlacementCursor(event); camera.updateMatrixWorld();
         const first = measurementFirst, second = measurementSecond, offset = parseInches(placementOffset()), axis = measurementDraftAxis ?? 'z';
-        clearMeasurementDraft(); onMeasure?.(first, second, offset, axis); onMeasureStage?.('first'); return;
+        const distanceAxis = measurementDraftDistanceAxis;
+        clearMeasurementDraft(); onMeasure?.(first, second, offset, axis, distanceAxis); onMeasureStage?.('first'); return;
       }
       const snap = measurementAtPointer(event); measurementHover = snap;
       if (!snap) { onMeasureStage?.('invalid'); return; }
@@ -959,8 +981,11 @@ export function createViewport(
       }
       const distance = resolveMeasurement({ id: 'preview', start: measurementFirst, end: snap.anchor }, measurementGeometry)?.distance ?? 0;
       if (distance < 1 / 128) { onMeasureStage?.('same'); return; }
+      const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry)!;
+      measurementDraftDistanceAxis = measurementAxisMode ? dominantMeasurementAxis(start, snap.point) : undefined;
       measurementSecond = structuredClone(snap.anchor); measurementHover = null;
-      updatePlacementCursor(event); onMeasureStage?.('placement'); return;
+      updatePlacementCursor(event);
+      onMeasureStage?.('placement'); return;
     }
     if (sketchMode && sketchTool !== 'select') {
       if (event.button === 0) { event.preventDefault(); event.stopImmediatePropagation(); }
@@ -1037,8 +1062,8 @@ export function createViewport(
     event.preventDefault();
     (sketchTool === 'line' ? lengthInput : widthInput).focus();
   };
-  const onPointerLeave = () => { sketchOverlay.classList.remove('pointing'); measurementHover = null; };
-  const onPointerCancel = () => { pointerDown = null; selectionBox.hidden = true; measurementHover = null; };
+  const onPointerLeave = () => { sketchOverlay.classList.remove('pointing'); clearMeasurementHover(); };
+  const onPointerCancel = () => { pointerDown = null; selectionBox.hidden = true; clearMeasurementHover(); };
 
   const clipCenter = new THREE.Vector3();
   const clipDirection = new THREE.Vector3();
@@ -1091,6 +1116,8 @@ export function createViewport(
     renderer.domElement.addEventListener('pointercancel', onPointerCancel, true);
     renderer.domElement.addEventListener('keydown', onSketchKeyDown);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
+    window.addEventListener('keydown', onMeasurementModifier);
+    window.addEventListener('blur', clearMeasurementHover);
     render();
   }
 
@@ -1125,6 +1152,8 @@ export function createViewport(
         renderer.domElement.removeEventListener('pointercancel', onPointerCancel, true);
         renderer.domElement.removeEventListener('keydown', onSketchKeyDown);
         renderer.domElement.removeEventListener('contextmenu', onContextMenu);
+        window.removeEventListener('keydown', onMeasurementModifier);
+        window.removeEventListener('blur', clearMeasurementHover);
       }
       controls?.dispose();
       clearFaceHighlight();
