@@ -1,0 +1,152 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Face highlight rendering checks</title>
+<style>body{font:16px system-ui;background:#101923;color:#ddd;padding:24px}.sketch-drawing-overlay,.sketch-selection-box{display:none}button{margin-right:8px}</style>
+<h1>Face highlight rendering checks</h1>
+<p id="result">Running GPU checks…</p>
+<pre id="failures"></pre>
+<p>Drag with the middle mouse button to orbit the highlighted face.</p>
+<button id="projection">Toggle projection</button>
+<button id="clear">Clear selection</button>
+<button id="select">Select front face</button>
+<div id="viewport" style="width:600px;height:450px;position:relative;margin-top:12px"></div>
+<script type="module">
+// Run npm run dev and open /tests/face-highlight.html for real-WebGL checks.
+import * as THREE from 'three';
+import { createFaceHighlight } from '/src/face-highlight.ts';
+import { getFaceFrame } from '/src/model.ts';
+import { createViewport } from '/src/viewport.ts';
+
+const errors = [];
+let checks = 0;
+function check(condition, label) { checks++; if (!condition) errors.push(label); }
+function same(a, b) { return a.every((value, index) => value === b[index]); }
+const renderer = new THREE.WebGLRenderer();
+const size = 129;
+renderer.setSize(size, size);
+const target = new THREE.WebGLRenderTarget(size, size);
+const pixels = new Uint8Array(size * size * 4);
+const scene = new THREE.Scene();
+scene.add(new THREE.AmbientLight(0xffffff, 1));
+const material = new THREE.MeshStandardMaterial({ color: '#5075a0' });
+const highlight = createFaceHighlight(material, 0xffba4b);
+const box = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), material);
+scene.add(box);
+const faces = ['front', 'back', 'left', 'right', 'top', 'bottom'];
+const opposite = { front: 'back', back: 'front', left: 'right', right: 'left', top: 'bottom', bottom: 'top' };
+
+function render(camera) {
+  renderer.setRenderTarget(target);
+  renderer.render(scene, camera);
+  renderer.readRenderTargetPixels(target, 0, 0, size, size, pixels);
+  return pixels.slice();
+}
+
+for (const projection of ['perspective', 'orthographic']) {
+  for (const face of faces) for (const angle of [0, 0.6, 1.2, 1.5]) {
+    const camera = projection === 'perspective'
+      ? new THREE.PerspectiveCamera(42, 1, 0.1, 100)
+      : new THREE.OrthographicCamera(-6, 6, 6, -6, 0.1, 100);
+    const frame = getFaceFrame(face);
+    const normal = new THREE.Vector3().setComponent(frame.normalAxis, frame.normalSign);
+    const tangent = new THREE.Vector3().setComponent(frame.uAxis, 1);
+    const center = normal.clone().multiplyScalar(4);
+    camera.up.set(0, 0, 0).setComponent(frame.vAxis, 1);
+    camera.position.copy(center).addScaledVector(normal, 20 * Math.cos(angle)).addScaledVector(tangent, 20 * Math.sin(angle));
+    camera.lookAt(center);
+    const label = `${projection}/${face}/angle=${angle}`;
+    highlight.setFace(null);
+    const baseline = render(camera);
+    highlight.setFace(face);
+    const selected = render(camera);
+    check(!same(baseline, selected), `${label}: selected face is tinted`);
+    check(baseline.every((v, i) => i % 4 !== 3 || v === selected[i]), `${label}: coverage and alpha are unchanged`);
+    highlight.setFace(opposite[face]);
+    check(same(baseline, render(camera)), `${label}: the opposite face does not tint visible faces`);
+    highlight.setFace(null);
+    check(same(baseline, render(camera)), `${label}: deselection exactly restores rendering`);
+  }
+}
+check(material.color.getHexString() === '5075a0' && material.opacity === 1 && material.depthWrite && material.depthTest,
+  'Selection leaves base color, opacity and depth settings untouched');
+check(renderer.info.programs.length === 1, 'Face changes reuse the shader program');
+
+// Separate material uniforms must stay independent even when programs are shared.
+const otherMaterial = new THREE.MeshStandardMaterial({ color: '#5075a0' });
+const otherHighlight = createFaceHighlight(otherMaterial, 0xffba4b);
+const other = new THREE.Mesh(box.geometry, otherMaterial);
+box.position.x = -5; other.position.x = 5; scene.add(other);
+const camera = new THREE.OrthographicCamera(-10, 10, 6, -6, 0.1, 100);
+camera.up.set(0, 0, 1); camera.position.set(0, -20, 0); camera.lookAt(0, 0, 0);
+const baseline = render(camera);
+highlight.setFace('front');
+const selected = render(camera);
+const sample = (data, x) => Array.from(data.slice((64 * size + x) * 4, (64 * size + x) * 4 + 4));
+check(!same(sample(baseline, 32), sample(selected, 32)) && same(sample(baseline, 96), sample(selected, 96)),
+  'Highlighting one material does not tint the other');
+otherHighlight.setFace('front'); highlight.setFace(null);
+const switched = render(camera);
+check(same(sample(baseline, 32), sample(switched, 32)) && !same(sample(baseline, 96), sample(switched, 96)),
+  'Switching selection updates independent uniforms without recompilation');
+
+// A real occluder must hide the mask just as it hides the underlying surface.
+otherHighlight.setFace(null); other.visible = false; box.position.x = 0;
+const cover = new THREE.Mesh(new THREE.BoxGeometry(12, 2, 12), new THREE.MeshBasicMaterial({ color: '#779070' }));
+cover.position.y = -6; scene.add(cover);
+const covered = render(camera);
+highlight.setFace('front');
+check(same(covered, render(camera)), 'A solid box occludes the selected face');
+material.transparent = true; material.opacity = 0.25; material.depthWrite = false; material.needsUpdate = true;
+cover.visible = false; highlight.setFace(null);
+const transparentBaseline = render(camera);
+highlight.setFace('front');
+const transparentSelected = render(camera);
+check(!same(transparentBaseline, transparentSelected) && transparentBaseline.every((v, i) => i % 4 !== 3 || v === transparentSelected[i]),
+  'Transparent boxes are tinted without changing alpha');
+check(material.opacity === 0.25 && !material.depthWrite, 'Transparent material settings survive selection');
+renderer.dispose(); target.dispose(); box.geometry.dispose(); material.dispose(); otherMaterial.dispose(); cover.geometry.dispose(); cover.material.dispose();
+
+// Exercise the actual viewport's selection, visibility and rebuild lifecycle.
+const viewport = createViewport(document.getElementById('viewport'), () => {});
+const spec = { id: 'box', name: 'Box', size: [8, 8, 8], position: [0, 0, 0], color: '#5075a0' };
+viewport.setBoxes([spec]); viewport.setGrid(false);
+// The viewport schedules its render first; read before the drawing buffer is cleared.
+const snapshot = () => new Promise((resolve) => requestAnimationFrame(() => {
+  const canvas = document.querySelector('#viewport canvas');
+  const gl = canvas.getContext('webgl2');
+  const data = new Uint8Array(canvas.width * canvas.height * 4);
+  gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  resolve(data);
+}));
+const viewportUnselected = await snapshot();
+viewport.select('box');
+const viewportOutline = await snapshot();
+viewport.select('box', 'front');
+check(!same(viewportOutline, await snapshot()), 'Viewport applies the selected face mask');
+viewport.select('box');
+check(same(viewportOutline, await snapshot()), 'Removing the selected face leaves outline-only selection');
+viewport.select(null);
+check(same(viewportUnselected, await snapshot()), 'Viewport deselection exactly restores rendering');
+viewport.select('box', 'top');
+const edited = { ...spec, color: '#cc3355' };
+viewport.setBoxes([edited], { preserveView: true });
+const rebuilt = await snapshot();
+viewport.select('box');
+check(!same(rebuilt, await snapshot()), 'Geometry rebuild reapplies the selected face');
+viewport.select('box', 'top');
+check(same(rebuilt, await snapshot()), 'Geometry rebuild preserves the correct face mask');
+viewport.select(null);
+const editedBaseline = await snapshot();
+viewport.setBoxes([edited], { preserveView: true });
+check(same(editedBaseline, await snapshot()) && spec.color === '#5075a0' && edited.color === '#cc3355',
+  'Edits and deselection preserve the authoritative colors');
+viewport.select('box', 'front'); viewport.setVisibility('box', false); viewport.setVisibility('box', true);
+check(same(editedBaseline, await snapshot()), 'Hiding and showing a selected box clears its mask');
+viewport.select('box', 'front');
+let projection = 'perspective';
+document.getElementById('projection').onclick = () => { projection = projection === 'perspective' ? 'orthographic' : 'perspective'; viewport.setProjection(projection); };
+document.getElementById('clear').onclick = () => viewport.select(null);
+document.getElementById('select').onclick = () => viewport.select('box', 'front');
+document.getElementById('result').textContent = `${checks - errors.length}/${checks} checks passed${errors.length ? ' — FAILED' : ' — PASS'}`;
+document.getElementById('failures').textContent = errors.join('\n');
+</script>

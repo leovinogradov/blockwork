@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { NavigationControls } from './navigation-controls';
 import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
+import { createFaceHighlight } from './face-highlight';
 import { createMeasurementAnnotation } from './measurement-annotation';
-import { getFaceFrame, parseInches, formatInches, type BoxSpec, type FaceName } from './model';
+import { parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
@@ -41,6 +42,7 @@ type BoxObject = {
   edgeColor: number;
   sketch?: boolean;
   bounds?: THREE.Box3;
+  faceHighlight?: ReturnType<typeof createFaceHighlight>;
 };
 
 const CLEAR_COLOR = 0x101923;
@@ -90,7 +92,6 @@ export function createViewport(
   let currentView: ViewName = 'iso';
   let animationFrame = 0;
   let pointerDown: { x: number; y: number; button: number; pointerId: number; dragged: boolean; additive: boolean; world?: [number, number] } | null = null;
-  let faceHighlight: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null;
   let lastBounds = new THREE.Box3();
   const objects = new Map<string, BoxObject>();
   const hiddenIds = new Set<string>();
@@ -106,54 +107,6 @@ export function createViewport(
   scene.add(root);
   root.add(boxRoot);
   root.add(sketchPreview);
-
-  const clearFaceHighlight = () => {
-    if (!faceHighlight) return;
-    boxRoot.remove(faceHighlight);
-    faceHighlight.geometry.dispose();
-    faceHighlight.material.dispose();
-    faceHighlight = null;
-  };
-
-  const updateFaceHighlight = () => {
-    clearFaceHighlight();
-    if (!selectedId || !selectedFace) return;
-    const object = objects.get(selectedId);
-    if (!object || object.sketch) return;
-
-    const frame = getFaceFrame(selectedFace);
-    const dimensions = [object.size.x, object.size.y, object.size.z];
-    const geometry = new THREE.PlaneGeometry(
-      dimensions[frame.uAxis],
-      dimensions[frame.vAxis],
-    );
-    const material = new THREE.MeshBasicMaterial({
-      color: SELECTED_EDGE_COLOR,
-      depthWrite: false,
-      opacity: 0.28,
-      side: THREE.DoubleSide,
-      transparent: true,
-    });
-    faceHighlight = new THREE.Mesh(geometry, material);
-    const axisVector = (axis: 0 | 1 | 2, sign: 1 | -1) => {
-      const vector = new THREE.Vector3();
-      vector.setComponent(axis, sign);
-      return vector;
-    };
-    const u = axisVector(frame.uAxis, frame.uSign);
-    const v = axisVector(frame.vAxis, frame.vSign);
-    const normal = axisVector(frame.normalAxis, frame.normalSign);
-
-    // PlaneGeometry lies in local XY with its normal along +Z. Align those
-    // axes to the signed outside face frame so width and height stay on the
-    // face's U/V axes for all faces in this Z-up viewport.
-    faceHighlight.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(u, v, normal));
-    faceHighlight.position.copy(object.mesh.position).addScaledVector(
-      normal,
-      dimensions[frame.normalAxis] / 2 + 0.012,
-    );
-    boxRoot.add(faceHighlight);
-  };
 
   const perspectiveCamera = new THREE.PerspectiveCamera(42, 1, 0.1, 10000);
   perspectiveCamera.up.set(0, 0, 1);
@@ -597,8 +550,8 @@ export function createViewport(
     for (const [objectId, object] of objects) {
       object.edges.material.color.setHex(selectedIds.has(objectId) ? SELECTED_EDGE_COLOR : object.edgeColor);
       object.edges.material.opacity = selectedIds.has(objectId) ? 1 : 0.74;
+      object.faceHighlight?.setFace(objectId === selectedId ? selectedFace : null);
     }
-    updateFaceHighlight();
   };
   const select = (id: string | null, face: FaceName | null = null) => applySelection(id ? [id] : [], face);
   const selectMany = (ids: Iterable<string>) => applySelection(ids);
@@ -616,7 +569,6 @@ export function createViewport(
     measurementGeometry = { boxes, sketches: options.sketches ?? [] };
     measurementHover = null;
     if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
-    clearFaceHighlight();
     hiddenIds.clear();
     for (const id of options.hiddenIds ?? []) hiddenIds.add(id);
     for (const object of objects.values()) {
@@ -642,6 +594,7 @@ export function createViewport(
         opacity: faceColor.opacity,
         depthWrite: faceColor.opacity === 1,
       });
+      const faceHighlight = createFaceHighlight(material, SELECTED_EDGE_COLOR);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.set(x + width / 2, y + depth / 2, z + height / 2);
       mesh.userData.boxId = spec.id;
@@ -657,7 +610,7 @@ export function createViewport(
       mesh.visible = isVisible;
       edges.visible = isVisible;
       boxRoot.add(mesh, edges);
-      objects.set(spec.id, { id: spec.id, mesh, edges, size: new THREE.Vector3(width, depth, height), edgeColor: EDGE_COLOR });
+      objects.set(spec.id, { id: spec.id, mesh, edges, size: new THREE.Vector3(width, depth, height), edgeColor: EDGE_COLOR, faceHighlight });
       if (isVisible) {
         lastBounds.expandByPoint(new THREE.Vector3(x, y, z));
         lastBounds.expandByPoint(new THREE.Vector3(x + width, y + depth, z + height));
@@ -700,7 +653,6 @@ export function createViewport(
     measurementGeometry = { rectangles };
     measurementHover = null;
     if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
-    clearFaceHighlight();
     sketchRectangles = rectangles;
     hiddenIds.clear();
     for (const id of options.hiddenIds ?? []) hiddenIds.add(id);
@@ -1167,7 +1119,6 @@ export function createViewport(
         window.removeEventListener('blur', clearMeasurementHover);
       }
       controls?.dispose();
-      clearFaceHighlight();
       angleGuide.geometry.dispose();
       angleGuide.material.dispose();
       sketchPreview.geometry.dispose();
