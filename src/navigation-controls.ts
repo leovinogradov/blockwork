@@ -1,44 +1,88 @@
-import { OrthographicCamera, PerspectiveCamera } from 'three';
+import { MOUSE, OrthographicCamera, PerspectiveCamera, Vector2, Vector3 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-// Model units are inches. This is a reference scale, not a movement floor.
-const DEFAULT_REFERENCE_VIEW_HEIGHT = 6;
-const PAN_SPEED = 0.85;
 const ZOOM_SPEED = 0.8;
-const MULTIPLIER_POW = 0 // 0 = linear slowdown, 0.5 = square-root slowdown, 1 = no slowdown
+type PickNavigationPoint = (pointer: Vector2) => Vector3 | null;
 
 export class NavigationControls extends OrbitControls {
-  private referenceViewHeight: number;
+  private readonly surface: HTMLElement;
+  private readonly pickPoint: PickNavigationPoint;
+  private readonly pointers = new Set<number>();
 
-  constructor(camera: PerspectiveCamera | OrthographicCamera, element: HTMLElement, referenceViewHeight = DEFAULT_REFERENCE_VIEW_HEIGHT) {
-    super(camera, element);
-    this.referenceViewHeight = referenceViewHeight;
-    this.addEventListener('change', this.updateNavigationSpeeds);
-    this.updateNavigationSpeeds();
+  constructor(camera: PerspectiveCamera | OrthographicCamera, element: HTMLElement, pickPoint: PickNavigationPoint) {
+    // Register preparation before OrbitControls' handlers. Viewport tools can
+    // still intercept input in the capture phase before either handler runs.
+    super(camera, null);
+    this.surface = element;
+    this.pickPoint = pickPoint;
+    this.enableDamping = false;
+    this.screenSpacePanning = true;
+    this.zoomToCursor = true;
+    this.panSpeed = 1;
+    this.zoomSpeed = ZOOM_SPEED;
+    element.addEventListener('pointerdown', this.preparePointerDown);
+    element.addEventListener('pointerup', this.finishPointer);
+    element.addEventListener('pointercancel', this.finishPointer);
+    element.addEventListener('wheel', this.prepareWheel, { passive: true });
+    this.connect(element);
   }
 
-  setReferenceViewHeight(viewHeight: number) {
-    this.referenceViewHeight = viewHeight;
-    this.updateNavigationSpeeds();
+  private surfaceDepth(clientX: number, clientY: number) {
+    const rect = this.surface.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    this.object.updateMatrixWorld();
+    const point = this.pickPoint(new Vector2(
+      (clientX - rect.left) / rect.width * 2 - 1,
+      1 - (clientY - rect.top) / rect.height * 2,
+    ));
+    if (!point) return null;
+    const depth = point.clone().sub(this.object.position).dot(this.object.getWorldDirection(new Vector3()));
+    return Number.isFinite(depth) && depth > 0 ? depth : null;
   }
 
-  private updateNavigationSpeeds = () => {
-    const camera = this.object;
-    const viewHeight = camera instanceof OrthographicCamera
-      ? (camera.top - camera.bottom) / camera.zoom
-      : camera instanceof PerspectiveCamera
-        ? 2 * camera.position.distanceTo(this.target) * Math.tan(camera.fov * Math.PI / 360)
-        : this.referenceViewHeight;
-    // OrbitControls' movement is linear in view height. Multiplying by its
-    // inverse square root makes movement follow sqrt(reference * viewHeight).
-    // It keeps decreasing toward zero, with no threshold or minimum speed.
-    const multiplier = viewHeight > 0 ? Math.pow(this.referenceViewHeight / viewHeight, MULTIPLIER_POW) : 1;
-    this.panSpeed = PAN_SPEED * multiplier;
-    this.zoomSpeed = ZOOM_SPEED * multiplier;
+  private preparePointerDown = (event: PointerEvent) => {
+    if (!this.enabled) return;
+    this.pointers.add(event.pointerId);
+    if (event.pointerType === 'touch') return;
+    const action = event.button === 0 ? this.mouseButtons.LEFT
+      : event.button === 1 ? this.mouseButtons.MIDDLE : event.button === 2 ? this.mouseButtons.RIGHT : null;
+    const modified = event.ctrlKey || event.metaKey || event.shiftKey;
+    const panning = action === MOUSE.PAN ? !modified : action === MOUSE.ROTATE && modified;
+    if (!panning || !this.enablePan) return;
+    this.panSpeed = 1;
+    if (this.object instanceof PerspectiveCamera) {
+      const depth = this.surfaceDepth(event.clientX, event.clientY);
+      const targetDistance = this.object.position.distanceTo(this.target);
+      // OrbitControls pans on a screen-facing plane at targetDistance. This
+      // ratio moves that plane to the picked depth without moving the camera
+      // or its orbit center. Keep it fixed for the entire drag.
+      if (depth !== null && targetDistance > 0) this.panSpeed = depth / (targetDistance * this.object.zoom);
+    }
+  };
+
+  private finishPointer = (event: PointerEvent) => {
+    this.pointers.delete(event.pointerId);
+    if (this.pointers.size === 0) this.panSpeed = 1;
+  };
+
+  private prepareWheel = (event: WheelEvent) => {
+    if (!this.enabled || !this.enableZoom || event.deltaY === 0 || this.pointers.size > 0) return;
+    if (!(this.object instanceof PerspectiveCamera)) return;
+    const depth = this.surfaceDepth(event.clientX, event.clientY);
+    if (depth === null) return; // Empty space keeps the current focus depth.
+    const distance = Math.max(this.minDistance, Math.min(this.maxDistance, depth));
+    // Rebase along the view direction to preserve the framing. Setting the
+    // target directly to an off-center hit would make the camera turn/jump.
+    this.target.copy(this.object.position).addScaledVector(this.object.getWorldDirection(new Vector3()), distance);
+    this.update();
   };
 
   override dispose() {
-    this.removeEventListener('change', this.updateNavigationSpeeds);
+    this.surface.removeEventListener('pointerdown', this.preparePointerDown);
+    this.surface.removeEventListener('pointerup', this.finishPointer);
+    this.surface.removeEventListener('pointercancel', this.finishPointer);
+    this.surface.removeEventListener('wheel', this.prepareWheel);
+    this.pointers.clear();
     super.dispose();
   }
 }

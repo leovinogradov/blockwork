@@ -1,136 +1,213 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { OrthographicCamera, PerspectiveCamera } from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { MOUSE, OrthographicCamera, PerspectiveCamera, Plane, Raycaster, Vector2, Vector3 } from 'three';
 import { NavigationControls } from '../src/navigation-controls';
 
-// Exercise OrbitControls' real input handlers without requiring WebGL.
+// Exercise the actual OrbitControls input handlers and camera projection.
 class Surface extends EventTarget {
   clientWidth = 600;
   clientHeight = 400;
   style = { touchAction: '' };
   getRootNode() { return this; }
+  getBoundingClientRect() { return { left: 50, top: 25, width: 600, height: 400 }; }
   setPointerCapture() {}
   releasePointerCapture() {}
-  send(type: string, fields: Record<string, number | string> = {}) {
+  send(type: string, fields: Record<string, number | string | boolean> = {}) {
     this.dispatchEvent(Object.assign(new Event(type, { cancelable: true }), {
-      pointerId: 1, pointerType: 'mouse', button: 2, clientX: 100, clientY: 100,
-      deltaMode: 0, ...fields,
+      pointerId: 1, pointerType: 'mouse', button: 2, clientX: 350, clientY: 225,
+      deltaMode: 0, deltaY: 0, ...fields,
     }));
   }
 }
 
-function setup(projection: 'perspective' | 'orthographic', scale: number, stock = false, reference = 6) {
+function setup(projection: 'perspective' | 'orthographic', distance = 100, targetDistance = 0.5, zoom = 1) {
   const surface = new Surface();
   const camera = projection === 'perspective'
     ? new PerspectiveCamera(42, 1.5)
     : new OrthographicCamera(-30, 30, 20, -20);
-  camera.position.set(0, 0, projection === 'perspective' ? scale : 100);
-  if (camera instanceof OrthographicCamera) camera.zoom = scale;
+  camera.position.set(0, 0, distance);
+  camera.zoom = zoom;
   camera.updateProjectionMatrix();
-  const element = surface as unknown as HTMLElement;
-  const controls = stock ? new OrbitControls(camera, element) : new NavigationControls(camera, element, reference);
-  if (stock) { controls.panSpeed = 0.85; controls.zoomSpeed = 0.8; }
+  const plane = new Plane(new Vector3(0, 0, 1), 0);
+  const raycaster = new Raycaster();
+  const pointAt = (pointer: Vector2) => {
+    camera.updateMatrixWorld();
+    raycaster.setFromCamera(pointer, camera);
+    return raycaster.ray.intersectPlane(plane, new Vector3());
+  };
+  let pickCount = 0;
+  let hasGeometry = true;
+  const controls = new NavigationControls(camera, surface as unknown as HTMLElement, (pointer) => {
+    pickCount++;
+    return hasGeometry ? pointAt(pointer) : null;
+  });
   controls.minDistance = 0.5;
   controls.maxDistance = 5000;
   controls.minZoom = 0.08;
   controls.maxZoom = 200;
-  controls.screenSpacePanning = true;
-  const viewHeight = () => camera instanceof OrthographicCamera
-    ? 40 / camera.zoom
-    : 2 * camera.position.distanceTo(controls.target) * Math.tan(21 * Math.PI / 180);
-  const pan = () => {
-    const before = controls.target.clone();
-    surface.send('pointerdown');
-    surface.send('pointermove', { clientX: 200 });
-    surface.send('pointerup', { clientX: 200 });
-    return controls.target.distanceTo(before);
+  controls.target.set(0, 0, distance - targetDistance);
+  controls.update();
+  const screenPoint = (point: Vector3) => {
+    camera.updateMatrixWorld();
+    const ndc = point.clone().project(camera);
+    return new Vector2(50 + (ndc.x + 1) * 300, 25 + (1 - ndc.y) * 200);
   };
-  return { surface, camera, controls, viewHeight, pan };
+  const pickAt = (x: number, y: number) => pointAt(new Vector2((x - 50) / 300 - 1, 1 - (y - 25) / 200))!;
+  return { surface, camera, controls, screenPoint, pickAt, picks: () => pickCount, hideGeometry: () => { hasGeometry = false; } };
+}
+
+function closeTo(actual: number, expected: number, tolerance = 1e-8) {
+  assert.ok(Math.abs(actual - expected) < tolerance, `${actual} should equal ${expected}`);
 }
 
 for (const projection of ['perspective', 'orthographic'] as const) {
-  test(`${projection}: pan and wheel zoom match existing speeds at the reference scale`, () => {
-    const scale = projection === 'perspective' ? 100 : 1;
-    const reference = projection === 'perspective' ? 200 * Math.tan(21 * Math.PI / 180) : 40;
-    for (const deltaY of [-100, 100]) {
-      const current = setup(projection, scale, false, reference);
-      const stock = setup(projection, scale, true);
-      assert.equal(current.pan(), stock.pan());
-      current.surface.send('wheel', { deltaY });
-      stock.surface.send('wheel', { deltaY });
-      assert.equal(current.viewHeight(), stock.viewHeight());
-      current.controls.dispose(); stock.controls.dispose();
-    }
-  });
-
-  test(`${projection}: 100x smaller view gives 10x smaller pan movement, with no floor`, () => {
-    const distant = setup(projection, projection === 'perspective' ? 64 : 2);
-    const close = setup(projection, projection === 'perspective' ? 0.64 : 200);
-    const distantMovement = distant.pan();
-    const closeMovement = close.pan();
-    assert.ok(Math.abs(distantMovement / closeMovement - 10) < 1e-10);
-    assert.ok(closeMovement > 0 && closeMovement < distantMovement);
-    distant.controls.dispose(); close.controls.dispose();
-  });
-
-  test(`${projection}: wheel movement follows the power curve in both directions`, () => {
-    for (const deltaY of [-0.01, 0.01]) {
-      const movements = [];
-      for (const scale of projection === 'perspective' ? [64, 0.64] : [2, 200]) {
-        const current = setup(projection, scale);
-        // Leave room for zoom-in rather than testing against a travel limit.
-        current.controls.maxZoom = 1000;
-        const before = current.viewHeight();
-        current.surface.send('wheel', { deltaY });
-        const movement = current.viewHeight() - before;
-        assert.equal(Math.sign(movement), Math.sign(deltaY));
-        movements.push(Math.abs(movement));
-        current.controls.dispose();
-      }
-      assert.ok(Math.abs(movements[0] / movements[1] - 10) < 0.001);
-    }
-  });
-
-  test(`${projection}: sensitivity is smooth across the reference scale`, () => {
-    const movements = [];
-    for (const height of [5.999, 6, 6.001]) {
-      const scale = projection === 'perspective' ? height / (2 * Math.tan(21 * Math.PI / 180)) : 40 / height;
-      const current = setup(projection, scale);
-      movements.push(current.pan());
+  test(`${projection}: the picked point tracks the full mouse drag and stops immediately`, () => {
+    for (const distance of [1, 100]) {
+      const current = setup(projection, distance);
+      const anchor = current.pickAt(300, 180);
+      const position = current.camera.position.clone();
+      const quaternion = current.camera.quaternion.clone();
+      current.surface.send('pointerdown', { clientX: 300, clientY: 180 });
+      assert.ok(current.camera.position.equals(position));
+      assert.ok(current.camera.quaternion.equals(quaternion));
+      current.surface.send('pointermove', { clientX: 370, clientY: 220 });
+      current.surface.send('pointermove', { clientX: 440, clientY: 260 });
+      const projected = current.screenPoint(anchor);
+      closeTo(projected.x, 440);
+      closeTo(projected.y, 260);
+      current.surface.send('pointerup', { clientX: 440, clientY: 260 });
+      const stopped = current.camera.position.clone();
+      for (let frame = 0; frame < 30; frame++) current.controls.update();
+      assert.ok(current.camera.position.equals(stopped));
+      assert.equal(current.controls.enableDamping, false);
+      assert.equal(current.picks(), projection === 'perspective' ? 1 : 0);
       current.controls.dispose();
     }
-    const below = movements[1] - movements[0];
-    const above = movements[2] - movements[1];
-    assert.ok(below > 0 && above > 0);
-    assert.ok(Math.abs(below / above - 1) < 0.001);
   });
 
-  test(`${projection}: scene reference updates sensitivity without moving the camera`, () => {
-    const current = setup(projection, projection === 'perspective' ? 1 : 100);
+  test(`${projection}: wheel zoom preserves the off-center point under the cursor`, () => {
+    for (const deltaY of [-100, 100]) {
+      const current = setup(projection);
+      const anchor = current.pickAt(470, 140);
+      const quaternion = current.camera.quaternion.clone();
+      current.surface.send('wheel', { clientX: 470, clientY: 140, deltaY });
+      const projected = current.screenPoint(anchor);
+      closeTo(projected.x, 470);
+      closeTo(projected.y, 140);
+      assert.ok(current.camera.quaternion.angleTo(quaternion) < 1e-7);
+      if (projection === 'perspective') {
+        const movement = current.camera.position.distanceTo(new Vector3(0, 0, 100));
+        assert.ok(movement > 3, 'a stale target 0.5 inches away must not slow zoom at a 100-inch surface');
+      } else assert.equal(Math.sign(current.camera.zoom - 1), -Math.sign(deltaY));
+      current.controls.dispose();
+    }
+  });
+
+  test(`${projection}: disabled controls and wheel during a drag do not rebase the view`, () => {
+    const current = setup(projection);
+    const target = current.controls.target.clone();
     const position = current.camera.position.clone();
-    const originalSpeed = current.controls.panSpeed;
-    assert.ok(current.controls instanceof NavigationControls);
-    current.controls.setReferenceViewHeight(24);
-    assert.equal(current.controls.panSpeed, originalSpeed * 2);
+    current.controls.enableZoom = false;
+    current.surface.send('wheel', { deltaY: -100 });
+    assert.ok(current.controls.target.equals(target));
     assert.ok(current.camera.position.equals(position));
+    assert.equal(current.picks(), 0);
+    current.controls.enableZoom = true;
+    current.surface.send('pointerdown');
+    const duringPan = current.camera.position.clone();
+    const picks = current.picks();
+    current.surface.send('wheel', { deltaY: -100 });
+    assert.ok(current.camera.position.equals(duringPan));
+    assert.equal(current.picks(), picks);
+    current.surface.send('pointercancel');
+    current.surface.send('wheel', { deltaY: -100 });
+    assert.ok(!current.camera.position.equals(duringPan) || current.camera.zoom !== 1);
     current.controls.dispose();
   });
 
-  test(`${projection}: zoom still respects travel limits and can zoom back out`, () => {
-    const current = setup(projection, projection === 'perspective' ? 0.6 : 180);
-    current.surface.send('wheel', { deltaY: -10000 });
-    if (current.camera instanceof PerspectiveCamera) {
-      assert.ok(Math.abs(current.camera.position.distanceTo(current.controls.target) - 0.5) < 1e-10);
-    } else assert.equal(current.camera.zoom, 200);
-    const closestHeight = current.viewHeight();
-    current.surface.send('wheel', { deltaY: 10000 });
-    assert.ok(current.viewHeight() > closestHeight);
-    if (current.camera instanceof PerspectiveCamera) {
-      assert.ok(current.camera.position.distanceTo(current.controls.target) <= 5000);
-    } else assert.equal(current.camera.zoom, 0.08);
-    assert.ok(current.controls.panSpeed < 0.85);
-    assert.ok(current.controls.zoomSpeed < 0.8);
+  test(`${projection}: empty space keeps navigation usable at the current depth`, () => {
+    const current = setup(projection, 100, 100);
+    current.hideGeometry();
+    const anchor = current.pickAt(350, 225);
+    current.surface.send('pointerdown');
+    current.surface.send('pointermove', { clientX: 400 });
+    current.surface.send('pointerup', { clientX: 400 });
+    closeTo(current.screenPoint(anchor).x, 400);
+    current.surface.send('wheel', { deltaY: -100 });
+    assert.ok(Number.isFinite(current.camera.position.length()));
+    assert.ok(Number.isFinite(current.camera.zoom));
     current.controls.dispose();
+  });
+
+  test(`${projection}: camera travel and zoom limits still apply`, () => {
+    const current = setup(projection, 1, 1);
+    current.surface.send('wheel', { deltaY: -100000 });
+    if (current.camera instanceof PerspectiveCamera) {
+      closeTo(current.camera.position.distanceTo(current.controls.target), 0.5);
+    } else assert.equal(current.camera.zoom, 200);
+    current.hideGeometry();
+    current.surface.send('wheel', { deltaY: 100000 });
+    if (current.camera instanceof PerspectiveCamera) {
+      closeTo(current.camera.position.distanceTo(current.controls.target), 5000);
+    } else assert.equal(current.camera.zoom, 0.08);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: disposing removes navigation listeners`, () => {
+    const current = setup(projection);
+    const position = current.camera.position.clone();
+    current.controls.dispose();
+    current.surface.send('pointerdown');
+    current.surface.send('wheel', { deltaY: -100 });
+    assert.equal(current.picks(), 0);
+    assert.ok(current.camera.position.equals(position));
   });
 }
+
+test('perspective: Shift-middle pan uses picked depth and plain middle still orbits', () => {
+  const current = setup('perspective');
+  current.controls.mouseButtons.MIDDLE = MOUSE.ROTATE;
+  const anchor = current.pickAt(350, 225);
+  current.surface.send('pointerdown', { button: 1, shiftKey: true });
+  current.surface.send('pointermove', { button: 1, shiftKey: true, clientX: 410 });
+  current.surface.send('pointerup', { button: 1, shiftKey: true, clientX: 410 });
+  closeTo(current.screenPoint(anchor).x, 410);
+  const quaternion = current.camera.quaternion.clone();
+  current.surface.send('pointerdown', { button: 1 });
+  current.surface.send('pointermove', { button: 1, clientX: 410 });
+  current.surface.send('pointerup', { button: 1, clientX: 410 });
+  assert.ok(current.camera.quaternion.angleTo(quaternion) > 0.1);
+  assert.equal(current.picks(), 1);
+  current.controls.dispose();
+});
+
+test('perspective: zoom rebases to newly hovered geometry on every wheel event', () => {
+  const current = setup('perspective', 100, 0.5);
+  const firstPosition = current.camera.position.clone();
+  current.surface.send('wheel', { deltaY: -100 });
+  const firstMovement = firstPosition.distanceTo(current.camera.position);
+  // Mimic moving inside an object: the old target is now nearly at the camera.
+  current.controls.target.copy(current.camera.position).addScaledVector(current.camera.getWorldDirection(new Vector3()), 0.5);
+  current.controls.update();
+  const secondPosition = current.camera.position.clone();
+  current.surface.send('wheel', { deltaY: -100 });
+  assert.ok(secondPosition.distanceTo(current.camera.position) > firstMovement * 0.9);
+  assert.equal(current.picks(), 2);
+  current.controls.dispose();
+});
+
+test('perspective: surface pan stays accurate with camera zoom and Z-up oblique views', () => {
+  const current = setup('perspective', 100, 0.5, 2);
+  current.camera.up.set(0, 0, 1);
+  current.camera.position.set(40, -60, 50);
+  current.camera.lookAt(0, 0, 0);
+  current.controls.target.copy(current.camera.position).addScaledVector(current.camera.getWorldDirection(new Vector3()), 0.5);
+  current.controls.update();
+  const anchor = current.pickAt(350, 225);
+  current.surface.send('pointerdown');
+  current.surface.send('pointermove', { clientX: 430, clientY: 265 });
+  current.surface.send('pointerup', { clientX: 430, clientY: 265 });
+  closeTo(current.screenPoint(anchor).x, 430);
+  closeTo(current.screenPoint(anchor).y, 265);
+  current.controls.dispose();
+});

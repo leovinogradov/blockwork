@@ -514,12 +514,10 @@ export function createViewport(
   const makeControls = () => {
     if (!renderer) return;
     controls?.dispose();
-    controls = new NavigationControls(camera, renderer.domElement, navigationReferenceHeight());
-    controls.enableDamping = true;
+    controls = new NavigationControls(camera, renderer.domElement, navigationPointAtPointer);
     controls.enableRotate = !sketchMode;
-    controls.dampingFactor = 0.11;
     controls.enablePan = true;
-    controls.rotateSpeed = 0.7;
+    controls.rotateSpeed = 0.686;
     controls.screenSpacePanning = true;
     controls.mouseButtons = sketchMode
       ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN }
@@ -555,11 +553,16 @@ export function createViewport(
     ? new THREE.Vector3(0, 0, 0)
     : lastBounds.getCenter(new THREE.Vector3());
 
-  const navigationReferenceHeight = () => {
-    const diameter = lastBounds.isEmpty() ? 0 : lastBounds.getSize(new THREE.Vector3()).length();
-    // Normalize around a fitted model. Recompute on scene edits, so the
-    // reference stays fixed throughout pan and zoom gestures.
-    return (diameter > 0 ? diameter : EMPTY_RADIUS * 2) * 1.28;
+  const navigationRaycaster = new THREE.Raycaster();
+  const navigationPointAtPointer = (ndc: THREE.Vector2) => {
+    camera.updateMatrixWorld();
+    boxRoot.updateMatrixWorld(true);
+    navigationRaycaster.setFromCamera(ndc, camera);
+    if (sketchMode) return navigationRaycaster.ray.intersectPlane(
+      new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), new THREE.Vector3(),
+    );
+    const meshes = [...objects.values()].filter(({ mesh }) => mesh.visible).map(({ mesh }) => mesh);
+    return navigationRaycaster.intersectObjects(meshes, false)[0]?.point ?? null;
   };
 
   const fit = () => {
@@ -689,7 +692,6 @@ export function createViewport(
     }
     select(selectedId, selectedFace);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
-    controls?.setReferenceViewHeight(navigationReferenceHeight());
     if (!options.preserveView) fit();
   };
 
@@ -728,7 +730,6 @@ export function createViewport(
     }
     selectMany(selectedIds);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
-    controls?.setReferenceViewHeight(navigationReferenceHeight());
     if (!options.preserveView) fit();
   };
 
@@ -760,7 +761,6 @@ export function createViewport(
     for (const candidate of objects.values()) {
       if (candidate.mesh.visible) lastBounds.union(candidate.bounds ?? new THREE.Box3().setFromObject(candidate.mesh));
     }
-    controls?.setReferenceViewHeight(navigationReferenceHeight());
     if (!visible && selectedIds.has(id)) applySelection([...selectedIds].filter((selected) => selected !== id), selectedFace);
   };
 
