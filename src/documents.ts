@@ -7,6 +7,7 @@ import type { ModelSketch } from './model-sketch';
 import { DEFAULT_MEASUREMENT_OFFSET, validateMeasurements, type Measurement } from './measurements';
 
 export type DocumentKind = 'model' | 'sketch';
+export type WorkspacePreferences = { measurementsThroughObjects: boolean };
 /** Workspace-local links; model source continues to embed the last applied shapes. */
 export type SketchTarget = { documentId: string; sketchId: string; origin: [number, number] };
 export type Snapshot = { measurements?: Measurement[]; groups?: GroupSpec[]; treeOrder?: string[]; boxes: BoxSpec[]; sketches?: ModelSketch[]; rectangles?: SketchShape[]; variables: VariableSpec[]; source: string; hiddenIds: string[] };
@@ -73,8 +74,8 @@ export function createBlankDocument(documents: ModelDocument[], kind: DocumentKi
   return document;
 }
 
-export function serializeWorkspace(documents: ModelDocument[], activeId: string): string {
-  return JSON.stringify({ measurementUnits: 'inches', activeId, documents: documents.map((document) => ({
+export function serializeWorkspace(documents: ModelDocument[], activeId: string, preferences: WorkspacePreferences = { measurementsThroughObjects: true }): string {
+  return JSON.stringify({ measurementUnits: 'inches', activeId, preferences, documents: documents.map((document) => ({
     id: document.id, name: document.name, kind: document.kind, sketchTargets: document.sketchTargets, source: document.source, appliedSource: document.appliedSource,
     draftDirty: document.draftDirty, groups: document.groups, collapsedGroupIds: document.collapsedGroupIds, treeOrder: document.treeOrder, boxes: document.boxes, sketches: document.sketches, rectangles: document.rectangles, measurements: document.measurements, variables: document.variables,
     hiddenBoxIds: document.hiddenBoxIds, viewMode: document.viewMode,
@@ -112,7 +113,7 @@ function restoreDocument(value: unknown, legacyPixelMeasurements = false): Model
     document.appliedSource = kind === 'sketch' ? generateSketchSource(rectangles, groups, document.treeOrder, measurements) : generateSource(model.boxes, model.variables, groups, document.treeOrder, document.sketches, measurements);
     if (!document.draftDirty) document.source = document.appliedSource;
   }
-  document.hiddenBoxIds = Array.isArray(data.hiddenBoxIds) ? data.hiddenBoxIds.filter((id) => [...model.boxes, ...document.sketches, ...rectangles, ...measurements].some((item) => item.id === id)) : [];
+  document.hiddenBoxIds = Array.isArray(data.hiddenBoxIds) ? data.hiddenBoxIds.filter((id) => [...groups, ...model.boxes, ...document.sketches, ...rectangles, ...measurements].some((item) => item.id === id)) : [];
   if (['iso', 'front', 'right', 'top'].includes(data.viewMode ?? '')) document.viewMode = data.viewMode!;
   if (data.projectionMode === 'orthographic') document.projectionMode = data.projectionMode;
   if (typeof data.gridVisible === 'boolean') document.gridVisible = data.gridVisible;
@@ -122,7 +123,7 @@ function restoreDocument(value: unknown, legacyPixelMeasurements = false): Model
   return document;
 }
 
-export function restoreWorkspace(raw: string): { documents: ModelDocument[]; activeId: string } {
+export function restoreWorkspace(raw: string): { documents: ModelDocument[]; activeId: string; preferences: WorkspacePreferences } {
   const data = JSON.parse(raw);
   // The original single-model save becomes the first tab.
   const documents = Array.isArray(data?.documents) ? data.documents.map((document: unknown) => restoreDocument(document, data.measurementUnits !== 'inches')) : [restoreDocument(data, data.measurementUnits !== 'inches')];
@@ -139,5 +140,6 @@ export function restoreWorkspace(raw: string): { documents: ModelDocument[]; act
     });
   }
   const activeId = documents.some((document: ModelDocument) => document.id === data.activeId) ? data.activeId : documents[0].id;
-  return { documents, activeId };
+  const preferences = { measurementsThroughObjects: typeof data.preferences?.measurementsThroughObjects === 'boolean' ? data.preferences.measurementsThroughObjects : true };
+  return { documents, activeId, preferences };
 }

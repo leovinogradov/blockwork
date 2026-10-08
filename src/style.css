@@ -29,6 +29,7 @@ textarea.text-field.variable-description{height:auto;min-height:72px;padding:8px
 .component-select:disabled{cursor:not-allowed}
 .visibility-toggle{width:25px;height:25px;display:flex;align-items:center;justify-content:center;flex:none;padding:3px;border:0;border-radius:4px;background:transparent;color:#78909c;cursor:pointer}
 .visibility-toggle:hover{background:#2b3b45;color:#d5e0e5}
+.visibility-toggle:disabled{opacity:.45;cursor:default}
 .visibility-toggle:focus-visible{outline:1px solid var(--amber);outline-offset:-1px}
 .visibility-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .hidden-object{background:#151f27}

@@ -25,7 +25,7 @@ export interface Viewport {
   setMeasurementsThroughObjects(through: boolean): void;
   select(id: string | null, face?: FaceName | null): void;
   selectMany(ids: Iterable<string>): void;
-  setVisibility(id: string, visible: boolean): void;
+  setVisibility(ids: string | Iterable<string>, visible: boolean): void;
   setView(view: ViewName): void;
   fit(): void;
   setProjection(mode: ProjectionMode): void;
@@ -514,7 +514,7 @@ export function createViewport(
   const makeControls = () => {
     if (!renderer) return;
     controls?.dispose();
-    controls = new NavigationControls(camera, renderer.domElement, navigationPointAtPointer);
+    controls = new NavigationControls(camera, renderer.domElement, navigationPointAtPointer, navigationModelScale);
     controls.enableRotate = !sketchMode;
     controls.enablePan = true;
     controls.rotateSpeed = 0.686;
@@ -554,6 +554,7 @@ export function createViewport(
     : lastBounds.getCenter(new THREE.Vector3());
 
   const navigationRaycaster = new THREE.Raycaster();
+  const navigationModelScale = () => lastBounds.isEmpty() ? 0 : lastBounds.getSize(new THREE.Vector3()).length();
   const navigationPointAtPointer = (ndc: THREE.Vector2) => {
     camera.updateMatrixWorld();
     boxRoot.updateMatrixWorld(true);
@@ -749,19 +750,21 @@ export function createViewport(
     if (sketchMode) { setProjection('orthographic'); setView('top'); }
   };
 
-  const setVisibility = (id: string, visible: boolean) => {
-    const object = objects.get(id);
-    if (!object && !annotations.some((a) => a.measurement.id === id)) return;
-    if (visible) hiddenIds.delete(id);
-    else hiddenIds.add(id);
-    if (object) { object.mesh.visible = visible; object.edges.visible = visible; }
-    if (!visible && (measurementFirst?.objectId === id || measurementSecond?.objectId === id)) { clearMeasurementDraft(); onMeasureStage?.('first'); }
+  const setVisibility = (ids: string | Iterable<string>, visible: boolean) => {
+    for (const id of typeof ids === 'string' ? [ids] : ids) {
+      const object = objects.get(id);
+      if (!object && !annotations.some((a) => a.measurement.id === id)) continue;
+      if (visible) hiddenIds.delete(id);
+      else hiddenIds.add(id);
+      if (object) { object.mesh.visible = visible; object.edges.visible = visible; }
+    }
+    if (!visible && (hiddenIds.has(measurementFirst?.objectId ?? '') || hiddenIds.has(measurementSecond?.objectId ?? ''))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     lastBounds.makeEmpty();
     for (const candidate of objects.values()) {
       if (candidate.mesh.visible) lastBounds.union(candidate.bounds ?? new THREE.Box3().setFromObject(candidate.mesh));
     }
-    if (!visible && selectedIds.has(id)) applySelection([...selectedIds].filter((selected) => selected !== id), selectedFace);
+    if (!visible && [...selectedIds].some((id) => hiddenIds.has(id))) applySelection([...selectedIds].filter((id) => !hiddenIds.has(id)), selectedFace);
   };
 
   const setView = (view: ViewName) => {

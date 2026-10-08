@@ -120,6 +120,26 @@ for (const axis of ['x', 'y', 'z']) for (const side of [1, -1]) {
   check(matrix.every(Number.isFinite) && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, `${axis}/${side}: readable finite SVG projection`);
   check(annotation.containsPoint(matrix[4], matrix[5]), `${axis}/${side}: transformed label center remains selectable`);
 }
+// Vertical labels keep their reading direction as rounding changes during orbit.
+for (const projection of ['perspective', 'orthographic']) for (const isPreview of [false, true]) {
+  const camera = projection === 'perspective'
+    ? new THREE.PerspectiveCamera(42, 1, .01, 100)
+    : new THREE.OrthographicCamera(-20, 20, 20, -20, .01, 100);
+  camera.up.set(0, 0, 1);
+  const vertical = makeAnnotation(isPreview);
+  for (const zoom of [.25, 1, 4]) for (const angle of [.1, .4, 1, 2, 3, 4, 5, 6]) for (const axis of ['x', 'y', 'z']) {
+    camera.zoom = zoom; camera.updateProjectionMatrix();
+    camera.position.set(30 * Math.cos(angle), 30 * Math.sin(angle), 12);
+    camera.lookAt(0, 0, 0); camera.updateMatrixWorld();
+    vertical.update([0, 0, -4], [0, 0, 4], 8, { ...measurement, axis, offset: 0 }, false, false, true, camera);
+    const matrix = vertical.label.getAttribute('transform')?.slice(7, -1).split(' ').map(Number);
+    const fixture = `${projection}/preview=${isPreview}/zoom=${zoom}/angle=${angle}/axis=${axis}`;
+    check(vertical.label.getAttribute('display') !== 'none' && matrix?.[1] < 0, `${fixture}: vertical text reads bottom-to-top`);
+    check(matrix && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, `${fixture}: vertical text is not mirrored`);
+    check(matrix && vertical.containsPoint(matrix[4], matrix[5]), `${fixture}: vertical label remains selectable`);
+  }
+  vertical.dispose();
+}
 // A zoomed-in perspective label can be outside the view while its affine
 // approximation stretches back across it. Through mode must not bypass clipping.
 const clippingCamera = new THREE.PerspectiveCamera(42, 1, .01, 100);

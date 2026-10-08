@@ -2,19 +2,23 @@ import { MOUSE, OrthographicCamera, PerspectiveCamera, Vector2, Vector3 } from '
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 const ZOOM_SPEED = 0.8;
+const MIN_ZOOM_STEP_FRACTION = 1 / 100;
+const WHEEL_STEP_DELTA = 100;
 type PickNavigationPoint = (pointer: Vector2) => Vector3 | null;
 
 export class NavigationControls extends OrbitControls {
   private readonly surface: HTMLElement;
   private readonly pickPoint: PickNavigationPoint;
+  private readonly modelScale: () => number;
   private readonly pointers = new Set<number>();
 
-  constructor(camera: PerspectiveCamera | OrthographicCamera, element: HTMLElement, pickPoint: PickNavigationPoint) {
+  constructor(camera: PerspectiveCamera | OrthographicCamera, element: HTMLElement, pickPoint: PickNavigationPoint, modelScale: () => number) {
     // Register preparation before OrbitControls' handlers. Viewport tools can
     // still intercept input in the capture phase before either handler runs.
     super(camera, null);
     this.surface = element;
     this.pickPoint = pickPoint;
+    this.modelScale = modelScale;
     this.enableDamping = false;
     this.screenSpacePanning = true;
     this.zoomToCursor = true;
@@ -42,6 +46,7 @@ export class NavigationControls extends OrbitControls {
 
   private preparePointerDown = (event: PointerEvent) => {
     if (!this.enabled) return;
+    this.zoomSpeed = ZOOM_SPEED;
     this.pointers.add(event.pointerId);
     if (event.pointerType === 'touch') return;
     const action = event.button === 0 ? this.mouseButtons.LEFT
@@ -67,15 +72,43 @@ export class NavigationControls extends OrbitControls {
 
   private prepareWheel = (event: WheelEvent) => {
     if (!this.enabled || !this.enableZoom || event.deltaY === 0 || this.pointers.size > 0) return;
-    if (!(this.object instanceof PerspectiveCamera)) return;
-    const depth = this.surfaceDepth(event.clientX, event.clientY);
-    if (depth === null) return; // Empty space keeps the current focus depth.
-    const distance = Math.max(this.minDistance, Math.min(this.maxDistance, depth));
-    // Rebase along the view direction to preserve the framing. Setting the
-    // target directly to an off-center hit would make the camera turn/jump.
-    this.target.copy(this.object.position).addScaledVector(this.object.getWorldDirection(new Vector3()), distance);
-    this.update();
+    if (this.object instanceof PerspectiveCamera) {
+      const depth = this.surfaceDepth(event.clientX, event.clientY);
+      if (depth !== null) {
+        const distance = Math.max(this.minDistance, Math.min(this.maxDistance, depth));
+        // Rebase along the view direction to preserve the framing. Setting the
+        // target directly to an off-center hit would make the camera turn/jump.
+        this.target.copy(this.object.position).addScaledVector(this.object.getWorldDirection(new Vector3()), distance);
+        this.update();
+      } // Empty space keeps the current focus depth.
+    }
+    this.prepareZoomSpeed(event);
   };
+
+  private prepareZoomSpeed(event: WheelEvent) {
+    this.zoomSpeed = ZOOM_SPEED;
+    const extent = this.object instanceof OrthographicCamera
+      ? (this.object.top - this.object.bottom) / this.object.zoom
+      : this.object.position.distanceTo(this.target);
+    // Match OrbitControls' wheel-unit conversion; retain its Ctrl/pinch
+    // acceleration. A standard 100-pixel step moves at least 1/25 of the
+    // visible model's diagonal, with smaller inputs scaled proportionally.
+    const wheelUnits = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
+    const delta = Math.abs(event.deltaY) * wheelUnits / WHEEL_STEP_DELTA;
+    const minimumStep = this.modelScale() * MIN_ZOOM_STEP_FRACTION * delta;
+    if (extent <= 0 || minimumStep <= 0) return;
+    const zoomIn = event.deltaY < 0;
+    const baseExponent = Math.log(0.95) * ZOOM_SPEED * delta;
+    const normalStep = extent * Math.abs(Math.expm1(zoomIn ? baseExponent : -baseExponent));
+    if (normalStep >= minimumStep) return;
+    // Solve for the stock zoom exponent instead of adding a separate camera
+    // movement, preserving zoom-to-cursor and the existing travel limits.
+    const ratio = minimumStep / extent;
+    const exponent = zoomIn
+      ? -Math.log1p(-Math.min(ratio, 1 - Number.EPSILON))
+      : Math.log1p(ratio);
+    this.zoomSpeed = exponent / (-Math.log(0.95) * delta);
+  }
 
   override dispose() {
     this.surface.removeEventListener('pointerdown', this.preparePointerDown);

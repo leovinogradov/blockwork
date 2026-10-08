@@ -20,7 +20,7 @@ class Surface extends EventTarget {
   }
 }
 
-function setup(projection: 'perspective' | 'orthographic', distance = 100, targetDistance = 0.5, zoom = 1) {
+function setup(projection: 'perspective' | 'orthographic', distance = 100, targetDistance = 0.5, zoom = 1, modelScale = 0) {
   const surface = new Surface();
   const camera = projection === 'perspective'
     ? new PerspectiveCamera(42, 1.5)
@@ -40,7 +40,7 @@ function setup(projection: 'perspective' | 'orthographic', distance = 100, targe
   const controls = new NavigationControls(camera, surface as unknown as HTMLElement, (pointer) => {
     pickCount++;
     return hasGeometry ? pointAt(pointer) : null;
-  });
+  }, () => modelScale);
   controls.minDistance = 0.5;
   controls.maxDistance = 5000;
   controls.minZoom = 0.08;
@@ -53,7 +53,11 @@ function setup(projection: 'perspective' | 'orthographic', distance = 100, targe
     return new Vector2(50 + (ndc.x + 1) * 300, 25 + (1 - ndc.y) * 200);
   };
   const pickAt = (x: number, y: number) => pointAt(new Vector2((x - 50) / 300 - 1, 1 - (y - 25) / 200))!;
-  return { surface, camera, controls, screenPoint, pickAt, picks: () => pickCount, hideGeometry: () => { hasGeometry = false; } };
+  return {
+    surface, camera, controls, screenPoint, pickAt, picks: () => pickCount,
+    hideGeometry: () => { hasGeometry = false; },
+    setModelScale: (size: number) => { modelScale = size; },
+  };
 }
 
 function closeTo(actual: number, expected: number, tolerance = 1e-8) {
@@ -211,3 +215,79 @@ test('perspective: surface pan stays accurate with camera zoom and Z-up oblique 
   closeTo(current.screenPoint(anchor).y, 265);
   current.controls.dispose();
 });
+
+for (const projection of ['perspective', 'orthographic'] as const) {
+  const extent = (current: ReturnType<typeof setup>) => current.camera instanceof OrthographicCamera
+    ? (current.camera.top - current.camera.bottom) / current.camera.zoom
+    : current.camera.position.z;
+
+  test(`${projection}: close-up zoom steps are at least 1/25 of the model and stay cursor anchored`, () => {
+    for (const deltaY of [-100, 100]) {
+      const current = setup(projection, 1, 1, projection === 'orthographic' ? 20 : 1, 5);
+      // At screen center, camera travel / view-height change is exactly 5/25.
+      const before = extent(current);
+      current.surface.send('wheel', { deltaY });
+      closeTo(Math.abs(extent(current) - before), 5 / 25);
+      // Check off-center anchoring separately: perspective travels along a ray.
+      const pointUnderCursor = current.pickAt(430, 180);
+      current.surface.send('wheel', { clientX: 430, clientY: 180, deltaY });
+      closeTo(current.screenPoint(pointUnderCursor).x, 430);
+      closeTo(current.screenPoint(pointUnderCursor).y, 180);
+      current.controls.dispose();
+    }
+  });
+
+  test(`${projection}: tiny inputs scale the minimum proportionally and wheel units agree`, () => {
+    for (const [deltaY, deltaMode, expected] of [[1, 0, 0.002], [100, 0, 0.2], [6.25, 1, 0.2], [1, 2, 0.2]]) {
+      const current = setup(projection, 1, 1, projection === 'orthographic' ? 20 : 1, 5);
+      const before = extent(current);
+      current.surface.send('wheel', { deltaY, deltaMode });
+      closeTo(extent(current) - before, expected);
+      current.controls.dispose();
+    }
+  });
+
+  test(`${projection}: the minimum follows model edits and disappears for an empty model`, () => {
+    const current = setup(projection, 1, 1, projection === 'orthographic' ? 20 : 1, 5);
+    const before = extent(current);
+    current.surface.send('wheel', { deltaY: 100 });
+    closeTo(extent(current) - before, 0.2);
+    current.setModelScale(10);
+    const edited = extent(current);
+    current.surface.send('wheel', { deltaY: 100 });
+    closeTo(extent(current) - edited, 0.4);
+    current.setModelScale(0);
+    current.surface.send('wheel', { deltaY: 100 });
+    assert.equal(current.controls.zoomSpeed, 0.8);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: faster normal zoom is preserved and pan remains unchanged`, () => {
+    const current = setup(projection, 100, 100, 1, 5);
+    const original = setup(projection, 100, 100);
+    for (const deltaY of [-100, 100]) {
+      current.surface.send('wheel', { deltaY });
+      original.surface.send('wheel', { deltaY });
+      closeTo(extent(current), extent(original));
+      assert.equal(current.controls.zoomSpeed, 0.8);
+    }
+    const anchor = current.pickAt(350, 225);
+    current.surface.send('pointerdown');
+    current.surface.send('pointermove', { clientX: 430 });
+    current.surface.send('pointerup', { clientX: 430 });
+    closeTo(current.screenPoint(anchor).x, 430);
+    current.controls.dispose(); original.controls.dispose();
+  });
+
+  test(`${projection}: minimum zoom still stops at camera limits and allows zooming back out`, () => {
+    const current = setup(projection, 1, 1, projection === 'orthographic' ? 100 : 1, 25);
+    current.surface.send('wheel', { deltaY: -100 });
+    if (current.camera instanceof PerspectiveCamera) {
+      closeTo(current.camera.position.distanceTo(current.controls.target), 0.5);
+    } else assert.equal(current.camera.zoom, 200);
+    const before = extent(current);
+    current.surface.send('wheel', { deltaY: 100 });
+    closeTo(extent(current) - before, 1);
+    current.controls.dispose();
+  });
+}

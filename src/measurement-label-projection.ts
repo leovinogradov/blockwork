@@ -43,7 +43,10 @@ export function measurementLabelProjection(position: Vector3, direction: Vector3
   const py = position3.clone().addScaledVector(new THREE.Vector3(...perpendicular), step).project(camera).sub(projectedCenter);
   let ux = px.x * viewportSize[0] / (2 * step), uy = -px.y * viewportSize[1] / (2 * step);
   let vx = py.x * viewportSize[0] / (2 * step), vy = -py.y * viewportSize[1] / (2 * step);
-  if (ux < 0 || Math.abs(ux) < 1e-6 && uy > 0) { ux = -ux; uy = -uy; }
+  // Vertical text reads bottom-to-top. Ignore rounding-sized horizontal
+  // components before checking their sign, with a tolerance relative to zoom.
+  const vertical = Math.abs(ux) <= Math.hypot(ux, uy) * 1e-6;
+  if (vertical ? uy > 0 : ux < 0) { ux = -ux; uy = -uy; }
   if (ux * vy - uy * vx < 0) { vx = -vx; vy = -vy; }
   const determinant = ux * vy - uy * vx;
   const basisArea = Math.hypot(ux, uy) * Math.hypot(vx, vy);

@@ -70,6 +70,41 @@ test('visible perspective and orthographic labels keep finite, readable transfor
   }
 });
 
+test('vertical labels read bottom-to-top throughout an orbit, independent of zoom and endpoint direction', () => {
+  const cameras = [perspective(), new THREE.OrthographicCamera(-20, 20, 14, -14, .01, 100)];
+  for (const camera of cameras) {
+    camera.up.set(0, 0, 1);
+    for (const zoom of [.25, 1, 4]) for (const angle of [.1, .2, .3, .4, .5, 1, 2, 3, 4, 5, 6]) {
+      camera.zoom = zoom; camera.updateProjectionMatrix();
+      camera.position.set(30 * Math.cos(angle), 30 * Math.sin(angle), 12);
+      camera.lookAt(0, 0, 0); camera.updateMatrixWorld();
+      for (const sign of [-1, 1]) {
+        const matrix = measurementLabelProjection([0, 0, 2], [0, 0, sign], [0, -sign, 0], labelSize, camera, size);
+        assert.ok(matrix, `${camera.type}, zoom=${zoom}, angle=${angle}`);
+        assert.ok(matrix[1] < 0, 'vertical text must keep reading bottom-to-top');
+        assert.ok(matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, 'text must not be mirrored');
+      }
+    }
+  }
+});
+
+test('nearly vertical labels ignore rounding-sized horizontal changes but other labels still read left-to-right', () => {
+  const cameras = [perspective(), new THREE.OrthographicCamera(-10, 10, 7, -7, .01, 100)];
+  for (const camera of cameras) {
+    camera.updateMatrixWorld();
+    for (const tilt of [-1e-8, 0, 1e-8, -.1, .1, -1, 1]) {
+      const length = Math.hypot(tilt, 1);
+      const direction: Vector3 = [tilt / length, 1 / length, 0];
+      const perpendicular: Vector3 = [-1 / length, tilt / length, 0];
+      const matrix = measurementLabelProjection([0, 0, -10], direction, perpendicular, labelSize, camera, size);
+      assert.ok(matrix);
+      if (Math.abs(tilt) <= 1e-8) assert.ok(matrix[1] < 0, 'rounding must not flip a vertical label');
+      else assert.ok(matrix[0] > 0, 'nonvertical labels read left-to-right');
+      assert.ok(matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, 'text must not be mirrored');
+    }
+  }
+});
+
 test('invalid sizes, geometry and camera matrices cannot reach SVG', () => {
   const camera = perspective();
   assert.equal(measurementLabelProjection([NaN, 0, -10], u, v, labelSize, camera, size), null);

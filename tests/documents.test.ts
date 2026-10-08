@@ -58,6 +58,27 @@ test('reload retains every file, active tab, pending draft, last good model, and
   assert.equal(saved.boxes[0].size[0], 24);
 });
 
+test('reload retains both measurement see-through choices across workspace tabs', () => {
+  const model = createDocument('model.js', '');
+  const sketch = createDocument('sketch.js', '', 'sketch');
+  for (const measurementsThroughObjects of [false, true]) {
+    for (const activeId of [model.id, sketch.id]) {
+      const restored = restoreWorkspace(serializeWorkspace([model, sketch], activeId, { measurementsThroughObjects }));
+      assert.equal(restored.preferences.measurementsThroughObjects, measurementsThroughObjects);
+      assert.equal(restored.activeId, activeId);
+    }
+  }
+});
+
+test('older or invalid measurement see-through preferences use the existing default', () => {
+  const document = createDocument('model.js', '');
+  const saved = JSON.parse(serializeWorkspace([document], document.id));
+  for (const preferences of [undefined, null, {}, { measurementsThroughObjects: 'false' }, { measurementsThroughObjects: 0 }]) {
+    assert.equal(restoreWorkspace(JSON.stringify({ ...saved, preferences })).preferences.measurementsThroughObjects, true);
+  }
+  assert.equal(restoreWorkspace(JSON.stringify({ source: '', boxes: [] })).preferences.measurementsThroughObjects, true);
+});
+
 test('migrates original single-model saves without discarding their draft or variables', () => {
   const source = 'unfinished draft';
   const savedBox = { ...box, expressions: { 'size.0': 'var(width)' } };
