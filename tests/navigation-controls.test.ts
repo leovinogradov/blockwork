@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MOUSE, OrthographicCamera, PerspectiveCamera, Plane, Raycaster, Vector2, Vector3 } from 'three';
-import { NavigationControls } from '../src/navigation-controls';
+import { MIN_ZOOM_STEP_FRACTION, NavigationControls } from '../src/navigation-controls';
 
 // Exercise the actual OrbitControls input handlers and camera projection.
 class Surface extends EventTarget {
@@ -221,13 +221,13 @@ for (const projection of ['perspective', 'orthographic'] as const) {
     ? (current.camera.top - current.camera.bottom) / current.camera.zoom
     : current.camera.position.z;
 
-  test(`${projection}: close-up zoom steps are at least 1/25 of the model and stay cursor anchored`, () => {
+  test(`${projection}: close-up zoom steps use the configured model fraction and stay cursor anchored`, () => {
     for (const deltaY of [-100, 100]) {
-      const current = setup(projection, 1, 1, projection === 'orthographic' ? 20 : 1, 5);
-      // At screen center, camera travel / view-height change is exactly 5/25.
+      // Zoom in enough that the configured minimum exceeds normal wheel travel.
+      const current = setup(projection, 1, 1, projection === 'orthographic' ? 100 : 1, 5);
       const before = extent(current);
       current.surface.send('wheel', { deltaY });
-      closeTo(Math.abs(extent(current) - before), 5 / 25);
+      closeTo(Math.abs(extent(current) - before), 5 * MIN_ZOOM_STEP_FRACTION);
       // Check off-center anchoring separately: perspective travels along a ray.
       const pointUnderCursor = current.pickAt(430, 180);
       current.surface.send('wheel', { clientX: 430, clientY: 180, deltaY });
@@ -238,24 +238,24 @@ for (const projection of ['perspective', 'orthographic'] as const) {
   });
 
   test(`${projection}: tiny inputs scale the minimum proportionally and wheel units agree`, () => {
-    for (const [deltaY, deltaMode, expected] of [[1, 0, 0.002], [100, 0, 0.2], [6.25, 1, 0.2], [1, 2, 0.2]]) {
-      const current = setup(projection, 1, 1, projection === 'orthographic' ? 20 : 1, 5);
+    for (const [deltaY, deltaMode, steps] of [[1, 0, 0.01], [100, 0, 1], [6.25, 1, 1], [1, 2, 1]]) {
+      const current = setup(projection, 1, 1, projection === 'orthographic' ? 100 : 1, 5);
       const before = extent(current);
       current.surface.send('wheel', { deltaY, deltaMode });
-      closeTo(extent(current) - before, expected);
+      closeTo(extent(current) - before, 5 * MIN_ZOOM_STEP_FRACTION * steps);
       current.controls.dispose();
     }
   });
 
   test(`${projection}: the minimum follows model edits and disappears for an empty model`, () => {
-    const current = setup(projection, 1, 1, projection === 'orthographic' ? 20 : 1, 5);
+    const current = setup(projection, 1, 1, projection === 'orthographic' ? 100 : 1, 5);
     const before = extent(current);
     current.surface.send('wheel', { deltaY: 100 });
-    closeTo(extent(current) - before, 0.2);
+    closeTo(extent(current) - before, 5 * MIN_ZOOM_STEP_FRACTION);
     current.setModelScale(10);
     const edited = extent(current);
     current.surface.send('wheel', { deltaY: 100 });
-    closeTo(extent(current) - edited, 0.4);
+    closeTo(extent(current) - edited, 10 * MIN_ZOOM_STEP_FRACTION);
     current.setModelScale(0);
     current.surface.send('wheel', { deltaY: 100 });
     assert.equal(current.controls.zoomSpeed, 0.8);
@@ -280,14 +280,16 @@ for (const projection of ['perspective', 'orthographic'] as const) {
   });
 
   test(`${projection}: minimum zoom still stops at camera limits and allows zooming back out`, () => {
-    const current = setup(projection, 1, 1, projection === 'orthographic' ? 100 : 1, 25);
+    // Force a minimum step larger than the remaining travel to either limit.
+    const modelScale = 1 / MIN_ZOOM_STEP_FRACTION;
+    const current = setup(projection, 1, 1, projection === 'orthographic' ? 100 : 1, modelScale);
     current.surface.send('wheel', { deltaY: -100 });
     if (current.camera instanceof PerspectiveCamera) {
       closeTo(current.camera.position.distanceTo(current.controls.target), 0.5);
     } else assert.equal(current.camera.zoom, 200);
     const before = extent(current);
     current.surface.send('wheel', { deltaY: 100 });
-    closeTo(extent(current) - before, 1);
+    closeTo(extent(current) - before, modelScale * MIN_ZOOM_STEP_FRACTION);
     current.controls.dispose();
   });
 }

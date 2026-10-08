@@ -2,7 +2,7 @@ import { MOUSE, OrthographicCamera, PerspectiveCamera, Vector2, Vector3 } from '
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 const ZOOM_SPEED = 0.8;
-const MIN_ZOOM_STEP_FRACTION = 1 / 100;
+export const MIN_ZOOM_STEP_FRACTION = 1 / 100;
 const WHEEL_STEP_DELTA = 100;
 type PickNavigationPoint = (pointer: Vector2) => Vector3 | null;
 
@@ -91,8 +91,8 @@ export class NavigationControls extends OrbitControls {
       ? (this.object.top - this.object.bottom) / this.object.zoom
       : this.object.position.distanceTo(this.target);
     // Match OrbitControls' wheel-unit conversion; retain its Ctrl/pinch
-    // acceleration. A standard 100-pixel step moves at least 1/25 of the
-    // visible model's diagonal, with smaller inputs scaled proportionally.
+    // acceleration. A standard 100-pixel step moves at least the configured
+    // fraction of the visible model's diagonal; smaller inputs scale proportionally.
     const wheelUnits = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
     const delta = Math.abs(event.deltaY) * wheelUnits / WHEEL_STEP_DELTA;
     const minimumStep = this.modelScale() * MIN_ZOOM_STEP_FRACTION * delta;
