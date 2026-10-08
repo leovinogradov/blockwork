@@ -120,6 +120,34 @@ for (const axis of ['x', 'y', 'z']) for (const side of [1, -1]) {
   check(matrix.every(Number.isFinite) && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0, `${axis}/${side}: readable finite SVG projection`);
   check(annotation.containsPoint(matrix[4], matrix[5]), `${axis}/${side}: transformed label center remains selectable`);
 }
+// A zoomed-in perspective label can be outside the view while its affine
+// approximation stretches back across it. Through mode must not bypass clipping.
+const clippingCamera = new THREE.PerspectiveCamera(42, 1, .01, 100);
+clippingCamera.lookAt(0, -1, -1); clippingCamera.updateMatrixWorld();
+const offscreenCenter = clippingCamera.localToWorld(new THREE.Vector3(5, 0, -.011));
+const clippingStart = offscreenCenter.clone().add(new THREE.Vector3(-4, 0, 0)).toArray();
+const clippingEnd = offscreenCenter.clone().add(new THREE.Vector3(4, 0, 0)).toArray();
+const clippingMeasurement = { ...measurement, axis: 'y', offset: 0 };
+const clippingPreview = makeAnnotation(true);
+for (const target of [annotation, clippingPreview]) {
+  for (const through of [false, true]) {
+    target.update(clippingStart, clippingEnd, 8, clippingMeasurement, false, false, through, clippingCamera);
+    check(target.group.visible && target.label.getAttribute('display') === 'none', `clipping/preview=${target === clippingPreview}/through=${through}: hide offscreen label without hiding dimension lines`);
+    check(!target.containsPoint(200, 200), 'clipped labels cannot be selected');
+  }
+  const outside = clippingCamera.localToWorld(new THREE.Vector3(100, 0, -20));
+  target.update(outside.clone().add(new THREE.Vector3(-4, 0, 0)).toArray(), outside.clone().add(new THREE.Vector3(4, 0, 0)).toArray(),
+    8, clippingMeasurement, false, false, true, clippingCamera);
+  check(target.label.getAttribute('display') === 'none', 'through labels fully outside the side of the view are hidden even at a safe depth');
+  clippingCamera.position.copy(offscreenCenter).add(new THREE.Vector3(0, 30, 30));
+  clippingCamera.lookAt(offscreenCenter); clippingCamera.updateMatrixWorld();
+  target.update(clippingStart, clippingEnd, 8, clippingMeasurement, false, false, true, clippingCamera);
+  check(target.label.getAttribute('display') !== 'none', 'clipped label reappears when the camera returns to a valid view');
+  const matrix = target.label.getAttribute('transform').slice(7, -1).split(' ').map(Number);
+  check(matrix.every(Number.isFinite) && target.containsPoint(matrix[4], matrix[5]), 'restored labels have finite transforms and working picking');
+  clippingCamera.position.set(0, 0, 0); clippingCamera.lookAt(0, -1, -1); clippingCamera.updateMatrixWorld();
+}
+clippingPreview.dispose();
 annotation.hide(); check(annotation.label.getAttribute('display') === 'none' && !annotation.containsPoint(200, 200), 'hidden annotations remove SVG visibility and picking');
 
 // Projected dimensions separate the solid axis line from dashed anchor connectors.

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { NavigationControls } from './navigation-controls';
 import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
 import { createMeasurementAnnotation } from './measurement-annotation';
@@ -210,7 +210,7 @@ export function createViewport(
   root.add(axes);
 
   let renderer: THREE.WebGLRenderer | null = null;
-  let controls: OrbitControls | null = null;
+  let controls: NavigationControls | null = null;
   let observer: ResizeObserver | null = null;
   let resizePending = true;
   let renderedWidth = 0;
@@ -514,14 +514,12 @@ export function createViewport(
   const makeControls = () => {
     if (!renderer) return;
     controls?.dispose();
-    controls = new OrbitControls(camera, renderer.domElement);
+    controls = new NavigationControls(camera, renderer.domElement, navigationReferenceHeight());
     controls.enableDamping = true;
     controls.enableRotate = !sketchMode;
     controls.dampingFactor = 0.11;
     controls.enablePan = true;
-    controls.panSpeed = 0.85;
     controls.rotateSpeed = 0.7;
-    controls.zoomSpeed = 0.8;
     controls.screenSpacePanning = true;
     controls.mouseButtons = sketchMode
       ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN }
@@ -556,6 +554,13 @@ export function createViewport(
   const boundsCenter = () => lastBounds.isEmpty()
     ? new THREE.Vector3(0, 0, 0)
     : lastBounds.getCenter(new THREE.Vector3());
+
+  const navigationReferenceHeight = () => {
+    const diameter = lastBounds.isEmpty() ? 0 : lastBounds.getSize(new THREE.Vector3()).length();
+    // Normalize around a fitted model. Recompute on scene edits, so the
+    // reference stays fixed throughout pan and zoom gestures.
+    return (diameter > 0 ? diameter : EMPTY_RADIUS * 2) * 1.28;
+  };
 
   const fit = () => {
     const target = boundsCenter();
@@ -684,6 +689,7 @@ export function createViewport(
     }
     select(selectedId, selectedFace);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
+    controls?.setReferenceViewHeight(navigationReferenceHeight());
     if (!options.preserveView) fit();
   };
 
@@ -722,6 +728,7 @@ export function createViewport(
     }
     selectMany(selectedIds);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
+    controls?.setReferenceViewHeight(navigationReferenceHeight());
     if (!options.preserveView) fit();
   };
 
@@ -753,6 +760,7 @@ export function createViewport(
     for (const candidate of objects.values()) {
       if (candidate.mesh.visible) lastBounds.union(candidate.bounds ?? new THREE.Box3().setFromObject(candidate.mesh));
     }
+    controls?.setReferenceViewHeight(navigationReferenceHeight());
     if (!visible && selectedIds.has(id)) applySelection([...selectedIds].filter((selected) => selected !== id), selectedFace);
   };
 

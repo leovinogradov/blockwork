@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { withDepthBias } from './depth-bias';
 import { formatInches } from './model';
 import { measurementAnnotationLayout, type Measurement } from './measurements';
+import { measurementLabelProjection } from './measurement-label-projection';
 import type { Vector3 } from './groups';
 
 /** Depth-tested dimension lines with browser-rendered SVG text. */
@@ -92,21 +93,11 @@ export function createMeasurementAnnotation(overlay: SVGSVGElement, preview = fa
     const layout = frame!;
     group.visible = Math.abs(camera.getWorldDirection(new THREE.Vector3()).dot(new THREE.Vector3(...layout.normal))) >= 1e-5;
     if (!group.visible || size[0] <= 0 || size[1] <= 0) { setLabelVisible(false); return; }
-    const clip = new THREE.Vector4(...layout.labelPosition, 1).applyMatrix4(camera.matrixWorldInverse).applyMatrix4(camera.projectionMatrix);
-    if (clip.w <= 0 || Math.abs(clip.z / clip.w) > 1) { setLabelVisible(false); return; }
-    const center = labelPosition.clone().project(camera);
-    const u = new THREE.Vector3(...layout.direction);
-    const v = new THREE.Vector3(...layout.perpendicular);
-    const step = .001;
-    const px = labelPosition.clone().addScaledVector(u, step).project(camera).sub(center);
-    const py = labelPosition.clone().addScaledVector(v, step).project(camera).sub(center);
-    let ux = px.x * size[0] / (2 * step), uy = -px.y * size[1] / (2 * step);
-    let vx = py.x * size[0] / (2 * step), vy = -py.y * size[1] / (2 * step);
-    if (ux < 0 || Math.abs(ux) < 1e-6 && uy > 0) { ux = -ux; uy = -uy; }
-    if (ux * vy - uy * vx < 0) { vx = -vx; vy = -vy; }
-    // SVG's downward Y axis is included in the projected basis, keeping text readable.
-    matrix = [ux, uy, vx, vy, (center.x + 1) * size[0] / 2, (1 - center.y) * size[1] / 2];
-    const visible = Math.abs(ux * vy - uy * vx) >= 1e-6 && (preview || through || !isOccluded(layout.labelPosition));
+    const projected = measurementLabelProjection(layout.labelPosition, layout.direction, layout.perpendicular,
+      [labelWidth, labelHeight], camera, size);
+    if (!projected) { setLabelVisible(false); return; }
+    matrix = projected;
+    const visible = preview || through || !isOccluded(layout.labelPosition);
     setLabelVisible(visible);
     if (visible) {
       const nextTransform = `matrix(${matrix.join(' ')})`;

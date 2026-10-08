@@ -153,6 +153,8 @@ measurement({
 
 ## View controls
 
+Measurement labels are clipped to the camera view, including in THROUGH mode. Labels crossing the camera's depth clipping planes or becoming nearly edge-on hide briefly and return when the view permits. See [Measurement label clipping](docs/measurement-label-clipping.md) for the perspective distortion fix and regression checks.
+
 Drag with the middle mouse button to orbit. Hold Shift while dragging with the middle button, or use the right mouse button, to pan. Scroll the wheel to zoom. The viewport also shows these controls while you work. The toolbar provides isometric, front, right, and top views, perspective or orthographic projection, grid toggle, and fit-to-model. Keyboard shortcuts: **1** front, **3** right, **7** top, **F** fit, and **Delete** remove the selected box. Undo and redo use Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z when focus is outside text fields.
 
 3D models contain boxes and mounted sketches; 2D sketch files contain rectangles and lines. Blockwork does not currently create boolean operations or export CAD formats.
