@@ -4,6 +4,7 @@ import { serializeMeasurement, validateMeasurements, type Measurement } from './
 
 /** The canonical model representation. All lengths are inches on a 1/64" grid. */
 export type FaceName = "front" | "back" | "left" | "right" | "top" | "bottom";
+export type CylinderAxis = 'x' | 'y' | 'z';
 export type RelativePlacement = {
   boxId: string;
   face: FaceName;
@@ -16,6 +17,10 @@ export type RelativePlacement = {
 };
 
 export type BoxSpec = {
+  /** Missing kind is a box. */
+  kind?: 'cylinder';
+  /** Cylinder length axis; omitted means Z. */
+  axis?: CylinderAxis;
   id: string;
   name: string;
   /** X width, Y depth, Z height. */
@@ -29,9 +34,44 @@ export type BoxSpec = {
   expressions?: Partial<Record<NumericField, string>>;
 };
 
-export type NumericField = "size.0" | "size.1" | "size.2" | "position.0" | "position.1" | "position.2" | "relative.offset" | "relative.u.offset" | "relative.v.offset";
+export type NumericField = "radius" | "size.0" | "size.1" | "size.2" | "position.0" | "position.1" | "position.2" | "relative.offset" | "relative.u.offset" | "relative.v.offset";
 export type VariableSpec = { name: string; value: number; expression?: string; description?: string };
 export type ModelSpec = { boxes: BoxSpec[]; variables: VariableSpec[]; groups?: GroupSpec[]; sketches?: ModelSketch[]; measurements?: Measurement[] };
+
+export function cylinderAxes(solid: { axis?: CylinderAxis }): { lengthAxis: 0 | 1 | 2; radialAxes: [0 | 1 | 2, 0 | 1 | 2] } {
+  const lengthAxis = solid.axis === 'x' ? 0 : solid.axis === 'y' ? 1 : 2;
+  return { lengthAxis, radialAxes: [0, 1, 2].filter((axis) => axis !== lengthAxis) as [0 | 1 | 2, 0 | 1 | 2] };
+}
+
+/** Map cylinder-local radial/radial/length coordinates to world X/Y/Z. */
+export function cylinderAxisOrder(solid: { axis?: CylinderAxis }): [number, number, number] {
+  const { radialAxes, lengthAxis } = cylinderAxes(solid);
+  return [...radialAxes, lengthAxis];
+}
+
+export function cylinderSize(radius: number, length: number, axis: CylinderAxis = 'z'): [number, number, number] {
+  const size: [number, number, number] = [radius * 2, radius * 2, radius * 2];
+  size[cylinderAxes({ axis }).lengthAxis] = length;
+  return size;
+}
+
+/** Change the length direction while retaining local dimensions and expressions. */
+export function reorientCylinder(solid: BoxSpec, axis: CylinderAxis): BoxSpec {
+  if (solid.kind !== 'cylinder') throw new Error('Only cylinders have a length axis.');
+  const oldOrder = cylinderAxisOrder(solid), nextOrder = cylinderAxisOrder({ axis });
+  const size = [...solid.size] as [number, number, number];
+  const expressions = { ...solid.expressions };
+  for (let i = 0; i < 3; i++) delete expressions[`size.${i}` as NumericField];
+  oldOrder.forEach((oldIndex, localIndex) => {
+    const nextIndex = nextOrder[localIndex];
+    size[nextIndex] = solid.size[oldIndex];
+    const expression = solid.expressions?.[`size.${oldIndex}` as NumericField];
+    if (expression) expressions[`size.${nextIndex}` as NumericField] = expression;
+  });
+  const next: BoxSpec = { ...solid, size, expressions, axis };
+  if (axis === 'z') delete next.axis;
+  return next;
+}
 
 export class MissingVariableError extends Error {
   readonly variableName: string;
@@ -185,7 +225,7 @@ export function formatInches(value: number): string {
 function expressionMap(value: unknown, id: string, hasRelative: boolean): Partial<Record<NumericField, string>> {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Box ${id} expressions must be an object.`);
-  const allowed: NumericField[] = ["size.0", "size.1", "size.2", "position.0", "position.1", "position.2", "relative.offset", "relative.u.offset", "relative.v.offset"];
+  const allowed: NumericField[] = ["radius", "size.0", "size.1", "size.2", "position.0", "position.1", "position.2", "relative.offset", "relative.u.offset", "relative.v.offset"];
   const output: Partial<Record<NumericField, string>> = {};
   for (const [key, expression] of Object.entries(value as Record<string, unknown>)) {
     if (!allowed.includes(key as NumericField) || key.startsWith("relative") && !hasRelative) throw new Error(`Box ${id} has an invalid expression field: ${key}.`);
@@ -327,11 +367,22 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = [], gr
     if (expressions["relative.u.offset"] && (!raw.relative || typeof raw.relative !== "object" || Array.isArray(raw.relative) || !(raw.relative as Record<string, unknown>).u)) throw new Error(`Box ${raw.id} expression relative.u.offset requires a relative u edge.`);
     if (expressions["relative.v.offset"] && (!raw.relative || typeof raw.relative !== "object" || Array.isArray(raw.relative) || !(raw.relative as Record<string, unknown>).v)) throw new Error(`Box ${raw.id} expression relative.v.offset requires a relative v edge.`);
     const resolver = variableResolver(resolvedVariables);
+    if (raw.axis !== undefined && (raw.kind !== 'cylinder' || !['x', 'y', 'z'].includes(raw.axis as string))) throw new Error('Cylinder axis must be x, y or z.');
+    const axis = raw.axis as CylinderAxis | undefined;
+    const { radialAxes } = cylinderAxes({ axis });
     const size = tuple(raw.size, `Box ${raw.id} size`, expressions, "size", resolver);
+    if (expressions.radius) {
+      if (raw.kind !== 'cylinder') throw new Error('Radius expressions require a cylinder.');
+      const radius = parseInches(expressions.radius, resolver);
+      if (radius <= 0) throw new Error('Cylinder radius must be positive after 1/64-inch snapping.');
+      size[radialAxes[0]] = size[radialAxes[1]] = parseInches(2 * radius);
+    }
     const position = tuple(raw.position, `Box ${raw.id} position`, expressions, "position", resolver);
     if (size.some((part) => part <= 0)) throw new Error(`Box ${raw.id} sizes must be positive after 1/64-inch snapping.`);
+    if (raw.kind !== undefined && raw.kind !== 'cylinder') throw new Error('Unknown solid kind.');
+    if (raw.kind === 'cylinder' && size[radialAxes[0]] !== size[radialAxes[1]]) throw new Error('Cylinder radial dimensions must have the same diameter.');
     const relative = normalizeRelative(raw.relative, raw.id, expressions, resolver);
-    return { id: raw.id, name: raw.name, size, position, color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(relative ? { relative } : {}), ...(Object.keys(expressions).length ? { expressions } : {}) };
+    return { id: raw.id, name: raw.name, size, position, color: raw.color, ...(raw.kind === 'cylinder' ? { kind: 'cylinder' as const } : {}), ...(axis && axis !== 'z' ? { axis } : {}), ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(relative ? { relative } : {}), ...(Object.keys(expressions).length ? { expressions } : {}) };
   });
   validateGroupMembers(boxes, groups);
   const byId = new Map(boxes.map((box) => [box.id, box]));
@@ -423,6 +474,22 @@ export function createBoxFromFace(parent: BoxSpec, face: FaceName, id: string, g
   return validateBoxes([{ ...parent, relative: undefined, expressions: undefined }, child], [], groups)[1];
 }
 
+/** Attach a cylinder with its circular end on the selected face and length pointing outward. */
+export function createCylinderFromFace(parent: BoxSpec, face: FaceName, id: string, groups: GroupSpec[] = [], dimensions?: { radius: number; length: number }): BoxSpec {
+  const frame = getFaceFrame(face);
+  const radius = dimensions ? parseInches(dimensions.radius) : Math.max(1 / 64, Math.floor(Math.min(parent.size[frame.uAxis], parent.size[frame.vAxis]) * 32) / 64);
+  const length = dimensions ? parseInches(dimensions.length) : 3 / 4;
+  if (radius <= 0 || length <= 0) throw new Error('Radius and length must be positive.');
+  const axis = (['x', 'y', 'z'] as const)[frame.normalAxis];
+  const size = cylinderSize(radius, length, axis);
+  const child: BoxSpec = {
+    id, name: `${parent.name} ${face} cylinder`, kind: 'cylinder', ...(axis !== 'z' ? { axis } : {}), size,
+    position: [...parent.position], color: '#8795a1', ...(parent.groupId ? { groupId: parent.groupId } : {}),
+    relative: { boxId: parent.id, face, offset: 0, u: { side: 'left', offset: 0 }, v: { side: 'bottom', offset: 0 } },
+  };
+  return validateBoxes([{ ...parent, relative: undefined, expressions: undefined }, child], [], groups)[1];
+}
+
 /** Turn the current model into plain editable JavaScript for the code editor. */
 export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [], groups: GroupSpec[] = [], order: string[] = [], sketches: ModelSketch[] = [], measurements: Measurement[] = []): string {
   const lines = ["// Edit these components to build your model. Dimensions are in inches."];
@@ -439,7 +506,9 @@ export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [],
     const relative = box.relative
       ? `, relative: { boxId: ${JSON.stringify(box.relative.boxId)}, face: ${JSON.stringify(box.relative.face)}, offset: ${field("relative.offset", box.relative.offset)}${box.relative.u ? `, u: { side: ${JSON.stringify(box.relative.u.side)}, offset: ${field("relative.u.offset", box.relative.u.offset)} }` : ""}${box.relative.v ? `, v: { side: ${JSON.stringify(box.relative.v.side)}, offset: ${field("relative.v.offset", box.relative.v.offset)} }` : ""} }`
       : "";
-    return `box({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, size: ${vec(box.size, "size")}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${relative} })`;
+    const { lengthAxis, radialAxes } = cylinderAxes(box);
+    const dimensions = box.kind === 'cylinder' ? `radius: ${field('radius', box.size[radialAxes[0]] / 2)}, length: ${field(`size.${lengthAxis}` as NumericField, box.size[lengthAxis])}${box.axis ? `, axis: ${JSON.stringify(box.axis)}` : ''}` : `size: ${vec(box.size, "size")}`;
+    return `${box.kind ?? 'box'}({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, ${dimensions}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${relative} })`;
   }, order));
   return `${lines.join("\n")}\n`;
 }

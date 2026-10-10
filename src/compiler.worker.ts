@@ -1,14 +1,12 @@
 import { validateGroups, type GroupSpec } from './groups';
-import { parseInches, resolveModel, type ModelSpec } from "./model";
+import { cylinderAxes, cylinderSize, parseInches, resolveModel, type CylinderAxis, type ModelSpec } from "./model";
 import { validateSketchShapes, type SketchShape } from './sketch';
 
 import { validateMeasurements, type Measurement } from './measurements';
 
 type CompileRequest = { source: string; kind?: 'model' | 'sketch' };
 type CompileResponse = ModelSpec | { rectangles: SketchShape[]; groups: GroupSpec[]; measurements: Measurement[] } | { error: string };
-type BoxHelper = (raw: unknown) => unknown;
 type GroupHelper = (raw: unknown, items?: unknown) => unknown;
-type InchHelper = (value: string | number) => number | string;
 
 const workerScope = self as unknown as {
   addEventListener(type: "message", listener: (event: MessageEvent<CompileRequest>) => void): void;
@@ -47,11 +45,11 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       rejectOwnershipFields(spec);
       const result = { ...spec, id: spec.id ?? `group-${nextGroupId++}`, name: spec.name ?? `Group ${groups.length + 1}` };
       if (items !== undefined) {
-        if (!Array.isArray(items)) throw new Error('group(properties, items) expects an array of box, sketch, rectangle, line, measurement, or group results.');
+        if (!Array.isArray(items)) throw new Error('group(properties, items) expects an array of box, cylinder, sketch, rectangle, circle, line, measurement, or group results.');
         const seen = new Set<object>();
         const children = Array.from(items, (item: unknown) => {
-          if (!item || typeof item !== 'object' || !members.has(item)) throw new Error('Group items must be results returned by box(), sketch(), rectangle(), line(), measurement(), or group().');
-          if (event.data.kind !== 'sketch' && members.get(item) === 'shape') throw new Error('Model rectangles and lines must be inside sketch(properties, items).');
+          if (!item || typeof item !== 'object' || !members.has(item)) throw new Error('Group items must be results returned by box(), cylinder(), sketch(), rectangle(), circle(), line(), measurement(), or group().');
+          if (event.data.kind !== 'sketch' && members.get(item) === 'shape') throw new Error('Model rectangles, circles and lines must be inside sketch(properties, items).');
           if (seen.has(item)) throw new Error('An item cannot appear twice in a group.');
           seen.add(item);
           const child = item as Record<string, unknown>;
@@ -90,9 +88,20 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       members.set(result, 'shape');
       return result;
     };
+    const circle = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('circle(...) expects an object.');
+      const spec = raw as Record<string, unknown>;
+      const radius = spec.radius;
+      if (typeof radius !== 'string' && typeof radius !== 'number') throw new Error('Circle radius must be an inch string or number.');
+      const diameter = 2 * parseInches(radius);
+      const result = { ...rectangle({ ...spec, id: spec.id ?? `circle-${nextShapeId++}`, name: spec.name ?? `Circle ${rectangles.length + 1}`, size: [diameter, diameter] }), kind: 'circle' };
+      rectangles[rectangles.length - 1] = result;
+      members.set(result, 'shape');
+      return result;
+    };
     if (event.data.kind === 'sketch') {
-      const evaluate = new Function('rectangle', 'line', 'inch', 'group', 'measurement', `"use strict";\n${event.data.source}`) as (rectangleHelper: BoxHelper, lineHelper: BoxHelper, inchHelper: InchHelper, groupHelper: GroupHelper, measurementHelper: BoxHelper) => unknown;
-      evaluate(rectangle, line, parseInches, group, measurement);
+      const evaluate = new Function('rectangle', 'line', 'circle', 'inch', 'group', 'measurement', `"use strict";\n${event.data.source}`);
+      evaluate(rectangle, line, circle, parseInches, group, measurement);
       const validGroups = validateGroups(groups, true);
       const shapes = validateSketchShapes(rectangles, validGroups);
       workerScope.postMessage({ rectangles: shapes, groups: validGroups, measurements: validateMeasurements(measurements, { rectangles: shapes, groups: validGroups }) });
@@ -104,11 +113,11 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       if (sketches.length >= 2000) throw new Error('At most 2000 sketches are allowed.');
       const spec = raw as Record<string, unknown>;
       rejectOwnershipFields(spec);
-      if (Object.hasOwn(spec, 'shapes') || Object.hasOwn(spec, 'items')) throw new Error('Use sketch(properties, items) to define rectangles and lines.');
-      if (!Array.isArray(items)) throw new Error('Sketch items must be an array of rectangle() or line() results.');
+      if (Object.hasOwn(spec, 'shapes') || Object.hasOwn(spec, 'items')) throw new Error('Use sketch(properties, items) to define rectangles, circles and lines.');
+      if (!Array.isArray(items)) throw new Error('Sketch items must be an array of rectangle(), circle() or line() results.');
       const seen = new Set<object>();
       const shapes = Array.from(items, (item: unknown) => {
-        if (!item || typeof item !== 'object' || members.get(item) !== 'shape') throw new Error('Sketch items must be results returned by rectangle() or line().');
+        if (!item || typeof item !== 'object' || members.get(item) !== 'shape') throw new Error('Sketch items must be results returned by rectangle(), circle() or line().');
         if (seen.has(item) || claimedShapes.has(item)) throw new Error('A shape cannot appear twice or belong to two sketches.');
         seen.add(item);
         return item;
@@ -170,12 +179,26 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       variables.push(raw);
       return raw;
     };
+    const cylinder = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('cylinder(...) expects an object.');
+      const spec = raw as Record<string, unknown>;
+      const radius = spec.radius;
+      if (typeof radius !== 'string' && typeof radius !== 'number') throw new Error('Cylinder radius must be an inch string or number.');
+      const diameter = typeof radius === 'number' ? 2 * parseInches(radius) : 1;
+      if (spec.axis !== undefined && !['x', 'y', 'z'].includes(spec.axis as string)) throw new Error('Cylinder axis must be x, y or z.');
+      const axis = spec.axis as CylinderAxis | undefined;
+      const size: unknown[] = cylinderSize(diameter / 2, 1, axis); size[cylinderAxes({ axis }).lengthAxis] = spec.length;
+      const result = { ...box({ ...spec, id: spec.id ?? `cylinder-${nextBoxId++}`, name: spec.name ?? `Cylinder ${boxes.length + 1}`, size }), kind: 'cylinder', ...(axis && axis !== 'z' ? { axis } : {}) };
+      if (typeof radius === 'string') result.expressions = { ...(result.expressions as object), radius };
+      boxes[boxes.length - 1] = result;
+      return registerObject(result);
+    };
     // Only defer variable references; ordinary inch() calls retain legacy numeric behavior.
     const inch = (value: string | number) => typeof value === "string" && /\bvar\s*\(/.test(value) ? value : parseInches(value);
     // Code runs in a disposable worker. The main thread enforces a hard timeout.
-    const evaluate = new Function("box", "variable", "inch", "group", "sketch", "rectangle", "line", "measurement", `"use strict";\n${event.data.source}`) as (boxHelper: BoxHelper, variableHelper: BoxHelper, inchHelper: InchHelper, groupHelper: GroupHelper, sketchHelper: GroupHelper, rectangleHelper: BoxHelper, lineHelper: BoxHelper, measurementHelper: BoxHelper) => unknown;
-    evaluate(box, variable, inch, group, sketch, rectangle, line, measurement);
-    if (rectangles.some((shape) => !claimedShapes.has(shape as object))) throw new Error("Model rectangles and lines must be inside sketch(properties, items).");
+    const evaluate = new Function("box", "variable", "inch", "group", "sketch", "rectangle", "line", "circle", "cylinder", "measurement", `"use strict";\n${event.data.source}`);
+    evaluate(box, variable, inch, group, sketch, rectangle, line, circle, cylinder, measurement);
+    if (rectangles.some((shape) => !claimedShapes.has(shape as object))) throw new Error("Model rectangles, circles and lines must be inside sketch(properties, items).");
     const response: CompileResponse = resolveModel(boxes, variables, groups, sketches, measurements);
     workerScope.postMessage(response);
   } catch (error) {

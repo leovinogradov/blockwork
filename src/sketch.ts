@@ -4,12 +4,12 @@ import { serializeMeasurement, validateMeasurements, type Measurement } from './
 
 export type SketchShape = {
   /** Missing kind is a rectangle for compatibility with saved sketches. */
-  kind?: 'line';
+  kind?: 'line' | 'circle';
   id: string;
   name: string;
-  /** Rectangle width/height, or signed line displacement, in inches. */
+  /** Rectangle width/height, circle diameter on both axes, or signed line displacement. */
   size: [number, number];
-  /** Rectangle minimum corner or line start on the model X/Y plane. */
+  /** Bounding minimum corner for rectangles/circles, or line start on the X/Y plane. */
   position: [number, number];
   color: string;
   groupId?: string;
@@ -18,7 +18,7 @@ export type SketchShape = {
 // Existing rectangle-only callers can retain their original type.
 export type RectangleSpec = Omit<SketchShape, 'kind'>;
 
-export type SketchSnap = { point: [number, number]; kind: 'corner' | 'endpoint' | 'edge' | null };
+export type SketchSnap = { point: [number, number]; kind: 'corner' | 'endpoint' | 'center' | 'edge' | null };
 
 /** Signed angle from +X: positive clockwise, negative counterclockwise. */
 export function lineMeasurements([dx, dy]: [number, number]): { length: number; angle: number } {
@@ -44,28 +44,36 @@ export function parseLineAngle(value: string): number {
   return (wrapped > 180 ? wrapped - 360 : wrapped < -180 ? wrapped + 360 : wrapped) || 0;
 }
 
-/** Snap to corners, line endpoints, or the nearest point on an existing segment. */
+/** Snap to corners, line endpoints, circle centers, or existing straight/curved edges. */
 export function snapToSketchEdges(cursor: [number, number], rectangles: SketchShape[], tolerance: number): SketchSnap {
   const onGrid = (value: number) => Math.round(value * 64) / 64;
   const fallback: SketchSnap = { point: [onGrid(cursor[0]), onGrid(cursor[1])], kind: null };
   if (!(tolerance > 0)) return fallback;
 
   let closestCorner: [number, number] | null = null;
-  let cornerKind: 'corner' | 'endpoint' = 'corner';
+  let cornerKind: 'corner' | 'endpoint' | 'center' = 'corner';
   let cornerDistance = (tolerance * 0.75) ** 2;
   let closestEdge: [number, number] | null = null;
+  let curvedEdge = false;
   let edgeDistance = tolerance ** 2;
-  const considerCorner = (point: [number, number], kind: 'corner' | 'endpoint' = 'corner') => {
+  const considerCorner = (point: [number, number], kind: 'corner' | 'endpoint' | 'center' = 'corner') => {
     const distance = (cursor[0] - point[0]) ** 2 + (cursor[1] - point[1]) ** 2;
     if (distance <= cornerDistance) { cornerDistance = distance; closestCorner = point; cornerKind = kind; }
   };
-  const considerEdge = (point: [number, number]) => {
+  const considerEdge = (point: [number, number], curved = false) => {
     const distance = (cursor[0] - point[0]) ** 2 + (cursor[1] - point[1]) ** 2;
-    if (distance <= edgeDistance) { edgeDistance = distance; closestEdge = point; }
+    if (distance <= edgeDistance) { edgeDistance = distance; closestEdge = point; curvedEdge = curved; }
   };
   for (const rectangle of rectangles) {
     const [x1, y1] = rectangle.position;
     const x2 = x1 + rectangle.size[0], y2 = y1 + rectangle.size[1];
+    if (rectangle.kind === 'circle') {
+      const radius = rectangle.size[0] / 2, cx = x1 + radius, cy = y1 + radius;
+      considerCorner([cx, cy], 'center');
+      const distance = Math.hypot(cursor[0] - cx, cursor[1] - cy);
+      if (distance > 0) considerEdge([cx + radius * (cursor[0] - cx) / distance, cy + radius * (cursor[1] - cy) / distance], true);
+      continue;
+    }
     if (rectangle.kind === 'line') {
       considerCorner([x1, y1], 'endpoint'); considerCorner([x2, y2], 'endpoint');
       const [dx, dy] = rectangle.size;
@@ -81,12 +89,19 @@ export function snapToSketchEdges(cursor: [number, number], rectangles: SketchSh
     considerEdge([x1, y]); considerEdge([x2, y]);
   }
   if (closestCorner) return { point: closestCorner, kind: cornerKind };
-  if (closestEdge) return { point: [onGrid(closestEdge[0]), onGrid(closestEdge[1])], kind: 'edge' };
+  if (closestEdge) return { point: curvedEdge ? closestEdge : [onGrid(closestEdge[0]), onGrid(closestEdge[1])], kind: 'edge' };
   return fallback;
 }
 
 export function lineFromPoints(start: [number, number], end: [number, number], id: string, name: string, color: string): SketchShape {
   return validateSketchShapes([{ id, name, color, kind: 'line', position: start, size: [end[0] - start[0], end[1] - start[1]] }])[0];
+}
+
+/** Circle input is a radius; canonical size remains its bounding dimensions. */
+export function circleFromCenter(center: [number, number], radius: number | string, id: string, name: string, color: string): SketchShape {
+  const d = 2 * parseInches(radius);
+  const [x, y] = center.map((n) => parseInches(n * 2) / 2);
+  return validateSketchShapes([{ id, name, color, kind: 'circle', size: [d, d], position: [x - d / 2, y - d / 2] }])[0];
 }
 
 /** Convert two sketch clicks into an axis-aligned rectangle in model X/Y coordinates. */
@@ -101,7 +116,7 @@ export function validateSketchShapes(input: unknown, inputGroups: unknown = []):
   if (input.length > 2000) throw new Error('A sketch can contain at most 2000 shapes.');
   const ids = new Set<string>();
   const groups = validateGroups(inputGroups, true);
-  const shapes = input.map((entry, index) => {
+  const shapes = input.map((entry, index): SketchShape => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`Rectangle ${index + 1} must be an object.`);
     const raw = entry as Record<string, unknown>;
     if (typeof raw.id !== 'string' || !raw.id.trim()) throw new Error(`Rectangle ${index + 1} needs an ID.`);
@@ -113,34 +128,36 @@ export function validateSketchShapes(input: unknown, inputGroups: unknown = []):
       if (!Array.isArray(value) || value.length !== 2) throw new Error(`Rectangle ${raw.id} ${label} must have two values.`);
       return value.map((part) => {
         if (typeof part !== 'number' && typeof part !== 'string') throw new Error(`Rectangle ${raw.id} ${label} values must be inches.`);
-        return parseInches(part);
+        // An odd 1/64-inch diameter needs half-grid bounds to keep its center fixed.
+        return raw.kind === 'circle' && label === 'position' && typeof part === 'number' ? parseInches(part * 2) / 2 : parseInches(part);
       }) as [number, number];
     };
     if (raw.groupId !== undefined && (typeof raw.groupId !== 'string' || !raw.groupId.trim())) throw new Error('Shape groupId must be a group ID.');
     const size = vector(raw.size, 'size');
-    if (raw.kind !== undefined && raw.kind !== 'line') throw new Error('Unknown sketch shape kind.');
+    if (raw.kind !== undefined && raw.kind !== 'line' && raw.kind !== 'circle') throw new Error('Unknown sketch shape kind.');
+    if (raw.kind === 'circle' && size[0] !== size[1]) throw new Error('Circle dimensions must have the same diameter.');
     if (raw.kind === 'line') {
       if (Math.hypot(...size) < 1 / 64) throw new Error('Choose two different points to draw a line.');
     } else if (size.some((part) => part <= 0)) throw new Error(`Rectangle ${raw.id} sizes must be positive.`);
-    return { id: raw.id, name: raw.name, size, position: vector(raw.position ?? [0, 0], 'position'), color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(raw.kind === 'line' ? { kind: 'line' as const } : {}) };
+    return { id: raw.id, name: raw.name, size, position: vector(raw.position ?? [0, 0], 'position'), color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(raw.kind === 'line' || raw.kind === 'circle' ? { kind: raw.kind } : {}) };
   });
   validateGroupMembers(shapes, groups);
   return shapes;
 }
 
 export function generateSketchSource(rectangles: SketchShape[], groups: GroupSpec[] = [], order: string[] = [], measurements: Measurement[] = []): string {
-  const lines = ['// Draw rectangles and lines on the X/Y plane. Dimensions are in inches.'];
+  const lines = ['// Draw rectangles, circles and lines on the X/Y plane. Dimensions are in inches.'];
   const validGroups = validateGroups(groups, true);
   lines.push(...generateGroupedSource<SketchShape | Measurement>(validGroups, [...validateSketchShapes(rectangles, validGroups), ...validateMeasurements(measurements, { rectangles, groups: validGroups })], (item) => 'start' in item ? serializeMeasurement(item) : serializeSketchShape(item), order));
   return `${lines.join('\n')}\n`;
 }
 
 export function serializeSketchShape(rectangle: SketchShape): string {
-    const vector = (values: [number, number]) => `[${values.map((value) => `inch(${JSON.stringify(formatInches(value))})`).join(', ')}]`;
+    const vector = (values: [number, number]) => `[${values.map((value) => Number.isInteger(value * 64) ? `inch(${JSON.stringify(formatInches(value))})` : JSON.stringify(value)).join(', ')}]`;
     const geometry = rectangle.kind === 'line'
       ? `start: ${vector(rectangle.position)}, end: ${vector([rectangle.position[0] + rectangle.size[0], rectangle.position[1] + rectangle.size[1]])}`
-      : `size: ${vector(rectangle.size)}, position: ${vector(rectangle.position)}`;
-    return `${rectangle.kind === 'line' ? 'line' : 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
+      : `${rectangle.kind === 'circle' ? `radius: inch(${JSON.stringify(formatInches(rectangle.size[0] / 2))})` : `size: ${vector(rectangle.size)}`}, position: ${vector(rectangle.position)}`;
+    return `${rectangle.kind ?? 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
 }
 
 // Compatibility for existing rectangle-only consumers.

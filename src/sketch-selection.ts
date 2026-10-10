@@ -20,6 +20,14 @@ export function sketchShapesInBox(shapes: SketchShape[], first: SelectionPoint, 
     if (hiddenIds.has(shape.id)) return false;
     const a = project(shape.position);
     const b = project([shape.position[0] + shape.size[0], shape.position[1] + shape.size[1]]);
+    if (shape.kind === 'circle') {
+      const center = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      const radius = [Math.abs(b[0] - a[0]) / 2, Math.abs(b[1] - a[1]) / 2];
+      return [0, 1].reduce((distance, axis) => {
+        const closest = Math.max(min[axis], Math.min(center[axis], max[axis]));
+        return distance + ((closest - center[axis]) / radius[axis]) ** 2;
+      }, 0) <= 1;
+    }
     if (shape.kind !== 'line') return [0, 1].every((axis) => Math.max(a[axis], b[axis]) >= min[axis] && Math.min(a[axis], b[axis]) <= max[axis]);
     let start = 0, end = 1;
     for (const axis of [0, 1]) {

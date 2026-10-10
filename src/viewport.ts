@@ -4,7 +4,7 @@ import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
 import { createFaceHighlight } from './face-highlight';
 import { createMeasurementAnnotation } from './measurement-annotation';
-import { parseInches, formatInches, type BoxSpec, type FaceName } from './model';
+import { cylinderAxes, parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { modelObjectsInBox } from './model-selection';
@@ -14,7 +14,7 @@ import { autoMeasurementAxis, dominantMeasurementAxis, measurementLine, DEFAULT_
 
 export type ViewName = 'iso' | 'front' | 'right' | 'top';
 export type ProjectionMode = 'perspective' | 'orthographic';
-export type SketchTool = 'select' | 'rectangle' | 'line';
+export type SketchTool = 'select' | 'rectangle' | 'line' | 'circle';
 
 export interface Viewport {
   setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[] }): void;
@@ -342,13 +342,16 @@ export function createViewport(
     selectionBox.hidden = true;
     clearSketchPreview();
     const line = sketchTool === 'line';
+    const circle = sketchTool === 'circle';
     if (line) sizeBox.prepend(lengthInput.parentElement!, angleInput.parentElement!);
     sizeBox.classList.toggle('line-dimensions', line);
+    sizeBox.classList.toggle('circle-dimensions', circle);
     sizeBox.querySelectorAll<HTMLElement>('.line-polar-field').forEach((label) => { label.hidden = !line; });
     sizeBox.querySelector('small')!.textContent = line ? '+ clockwise · − counterclockwise' : 'in · Enter to draw';
-    widthInput.parentElement!.firstChild!.textContent = line ? 'ΔX ' : 'W ';
+    widthInput.parentElement!.firstChild!.textContent = line ? 'ΔX ' : circle ? 'Radius ' : 'W ';
+    heightInput.parentElement!.hidden = circle;
     heightInput.parentElement!.firstChild!.textContent = line ? 'ΔY ' : 'H ';
-    widthInput.setAttribute('aria-label', line ? 'Line X displacement in inches' : 'Rectangle width in inches');
+    widthInput.setAttribute('aria-label', line ? 'Line X displacement in inches' : circle ? 'Circle radius in inches' : 'Rectangle width in inches');
     heightInput.setAttribute('aria-label', line ? 'Line Y displacement in inches' : 'Rectangle height in inches');
     sketchOverlay.classList.toggle('active', sketchMode && sketchTool !== 'select');
     sketchOverlay.classList.remove('pointing');
@@ -361,12 +364,13 @@ export function createViewport(
     const [x1, y1] = origin;
     const [x2, y2] = point;
     const previous = sketchPreview.geometry;
-    sketchPreview.geometry = new THREE.BufferGeometry().setFromPoints(sketchTool === 'line' ? [new THREE.Vector3(x1, y1, 0.04), new THREE.Vector3(x2, y2, 0.04)] : [
+    const radius = sketchTool === 'circle' ? parseInches(Math.hypot(x2 - x1, y2 - y1)) : Math.hypot(x2 - x1, y2 - y1);
+    sketchPreview.geometry = new THREE.BufferGeometry().setFromPoints(sketchTool === 'circle' ? Array.from({ length: 96 }, (_, i) => new THREE.Vector3(x1 + radius * Math.cos(i * Math.PI / 48), y1 + radius * Math.sin(i * Math.PI / 48), 0.04)) : sketchTool === 'line' ? [new THREE.Vector3(x1, y1, 0.04), new THREE.Vector3(x2, y2, 0.04)] : [
       new THREE.Vector3(x1, y1, 0.04), new THREE.Vector3(x2, y1, 0.04),
       new THREE.Vector3(x2, y2, 0.04), new THREE.Vector3(x1, y2, 0.04),
     ]);
     previous.dispose();
-    sketchPreview.visible = sketchTool === 'line' ? Math.hypot(x2 - x1, y2 - y1) >= 1 / 64 : Math.abs(x2 - x1) >= 1 / 64 && Math.abs(y2 - y1) >= 1 / 64;
+    sketchPreview.visible = sketchTool === 'circle' || sketchTool === 'line' ? radius >= 1 / 64 : Math.abs(x2 - x1) >= 1 / 64 && Math.abs(y2 - y1) >= 1 / 64;
     sketchOverlay.classList.add('sizing');
     if (sketchTool === 'line') {
       const delta: [number, number] = [x2 - x1, y2 - y1];
@@ -394,6 +398,8 @@ export function createViewport(
         sizeBox.style.left = `${Math.max(8, Math.min(delta[0] >= 0 ? px - boxWidth - 14 : px + 14, rect.width - boxWidth - 8))}px`;
         sizeBox.style.top = `${Math.max(8, Math.min(py + 14, rect.height - boxHeight - 8))}px`;
       }
+    } else if (sketchTool === 'circle') {
+      if (document.activeElement !== widthInput) widthInput.value = radius >= 1 / 64 ? formatInches(radius) : '';
     } else {
       if (document.activeElement !== widthInput) widthInput.value = Math.abs(x2 - x1) >= 1 / 64 ? formatInches(Math.abs(x2 - x1)) : '';
       if (document.activeElement !== heightInput) heightInput.value = Math.abs(y2 - y1) >= 1 / 64 ? formatInches(Math.abs(y2 - y1)) : '';
@@ -403,7 +409,7 @@ export function createViewport(
   const finishSketch = (opposite: [number, number]) => {
     if (!sketchFirst) return;
     const first = sketchFirst;
-    if (sketchTool === 'line' ? Math.hypot(opposite[0] - first[0], opposite[1] - first[1]) < 1 / 64 : Math.abs(opposite[0] - first[0]) < 1 / 64 || Math.abs(opposite[1] - first[1]) < 1 / 64) return;
+    if (sketchTool === 'circle' ? parseInches(Math.hypot(opposite[0] - first[0], opposite[1] - first[1])) < 1 / 64 : sketchTool === 'line' ? Math.hypot(opposite[0] - first[0], opposite[1] - first[1]) < 1 / 64 : Math.abs(opposite[0] - first[0]) < 1 / 64 || Math.abs(opposite[1] - first[1]) < 1 / 64) return;
     clearSketchPreview();
     onSketchDraw?.(first, opposite, sketchTool);
     onSketchStage?.('first');
@@ -415,6 +421,10 @@ export function createViewport(
       try { const value = parse(input.value); input.classList.remove('invalid'); return value; }
       catch { if (markInvalid) input.classList.add('invalid'); return null; }
     };
+    if (sketchTool === 'circle') {
+      const radius = read(widthInput, (value) => { const r = parseInches(value); if (r <= 0) throw new Error(); return r; });
+      return radius === null ? null : [sketchFirst[0] + radius, sketchFirst[1]];
+    }
     if (sketchTool === 'line' && lineInputMode === 'polar') {
       const length = read(lengthInput, (value) => { const n = parseInches(value); if (n < 0) throw new Error(); return n; });
       const angle = read(angleInput, parseLineAngle);
@@ -442,9 +452,14 @@ export function createViewport(
       if (sketchFirst && point) updateSketchPreview(sketchFirst, point, sketchTool === 'line' ? lineInputMode : undefined);
     });
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Tab' && sketchFirst && (sketchTool === 'line' || (input === widthInput && !event.shiftKey))) {
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation();
+        setSketchTool('select'); renderer?.domElement.focus({ preventScroll: true });
+        return;
+      }
+      if (event.key === 'Tab' && sketchFirst && (sketchTool === 'circle' || sketchTool === 'line' || (input === widthInput && !event.shiftKey))) {
         event.preventDefault();
-        const inputs = sketchTool === 'line' ? lineDimensionInputs : [widthInput, heightInput];
+        const inputs = sketchTool === 'circle' ? [widthInput] : sketchTool === 'line' ? lineDimensionInputs : [widthInput, heightInput];
         const next = (inputs.indexOf(input) + (event.shiftKey ? -1 : 1) + inputs.length) % inputs.length;
         inputs[next].focus();
         return;
@@ -586,7 +601,14 @@ export function createViewport(
       const depth = Math.max(Math.abs(rawDepth), 0.01);
       const height = Math.max(Math.abs(rawHeight), 0.01);
       const [x, y, z] = spec.position;
-      const geometry = new THREE.BoxGeometry(width, depth, height);
+      let geometry: THREE.BufferGeometry;
+      if (spec.kind === 'cylinder') {
+        const { lengthAxis, radialAxes } = cylinderAxes(spec);
+        const radius = spec.size[radialAxes[0]] / 2;
+        geometry = new THREE.CylinderGeometry(radius, radius, spec.size[lengthAxis], 96);
+        if (lengthAxis === 0) geometry.rotateZ(-Math.PI / 2);
+        if (lengthAxis === 2) geometry.rotateX(Math.PI / 2);
+      } else geometry = new THREE.BoxGeometry(width, depth, height);
       const faceColor = parseFaceColor(spec.color);
       const material = new THREE.MeshStandardMaterial({
         color: faceColor.color,
@@ -635,7 +657,7 @@ export function createViewport(
         const [x, y] = shape.position, [dx, dy] = shape.size;
         const a = new THREE.Vector3(x - width / 2, y - height / 2, 0);
         const b = new THREE.Vector3(x + dx - width / 2, y + dy - height / 2, 0);
-        const points = shape.kind === 'line' ? [a, b] : [a, new THREE.Vector3(b.x, a.y, a.z), new THREE.Vector3(b.x, a.y, a.z), b, b, new THREE.Vector3(a.x, b.y, a.z), new THREE.Vector3(a.x, b.y, a.z), a];
+        const points = shape.kind === 'circle' ? Array.from({ length: 96 }, (_, i) => [i, i + 1].map((j) => new THREE.Vector3((a.x + b.x) / 2 + dx / 2 * Math.cos(j * Math.PI / 48), (a.y + b.y) / 2 + dy / 2 * Math.sin(j * Math.PI / 48), 0))).flat() : shape.kind === 'line' ? [a, b] : [a, new THREE.Vector3(b.x, a.y, a.z), new THREE.Vector3(b.x, a.y, a.z), b, b, new THREE.Vector3(a.x, b.y, a.z), new THREE.Vector3(a.x, b.y, a.z), a];
         const stroke = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points), withDepthBias(new THREE.LineBasicMaterial({ color: parseFaceColor(shape.color).color }), 2));
         stroke.userData.boxId = spec.id;
         mesh.add(stroke);
@@ -665,7 +687,7 @@ export function createViewport(
     for (const spec of rectangles) {
       const [width, height] = spec.size;
       const [x, y] = spec.position;
-      const geometry = new THREE.PlaneGeometry(Math.abs(width) || 1 / 64, Math.abs(height) || 1 / 64);
+      const geometry = spec.kind === 'circle' ? new THREE.CircleGeometry(width / 2, 96) : new THREE.PlaneGeometry(Math.abs(width) || 1 / 64, Math.abs(height) || 1 / 64);
       const faceColor = parseFaceColor(spec.color);
       // Keep the plane raycastable while rendering the outline only.
       const material = new THREE.MeshBasicMaterial({ color: faceColor.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });

@@ -79,14 +79,16 @@ textarea.text-field.variable-description{height:auto;min-height:72px;padding:8px
 .document-kind-option strong svg{width:19px;height:19px;flex:none;color:#e8bd79;stroke-width:1.75}
 .document-kind-mark{display:inline-flex;align-items:center;justify-content:center}
 .document-kind-mark svg{display:block;width:15px;height:15px;stroke-width:1.8}
-.document-kind-dialog{width:min(480px,calc(100vw - 28px));padding:24px}
-.document-kind-dialog h2{margin:8px 0 6px}
-.document-kind-dialog p{color:#aebdc6;font-size:12px;margin:0 0 18px}
+.document-kind-dialog{width:min(480px,calc(100vw - 28px));max-height:calc(100dvh - 28px);overflow-y:auto;padding:24px}
+.document-kind-dialog h2{margin:8px 0 18px}
+.document-open-group[hidden]{display:none}
+.document-open-group:not([hidden])+.document-create-group{margin-top:20px;padding-top:18px;border-top:1px solid #42515c}
 .document-kind-options{display:grid;gap:10px}
 .document-kind-option{display:flex;flex-direction:column;align-items:flex-start;gap:5px;width:100%;padding:16px;border:1px solid #425766;border-radius:6px;background:#1c2a34;color:#e8f1f5;cursor:pointer;text-align:left}
+.document-kind-option[hidden]{display:none}
 .document-kind-option:hover,.document-kind-option:focus-visible{border-color:#f0c27e;background:#293b45}
 .document-kind-option strong{font-size:15px}
-.document-kind-option span{font-size:12px;color:#afc0ca}
+.document-kind-option>span{font-size:12px;color:#afc0ca}
 .document-kind-mark{font-size:16px;color:#e8bd79;margin-right:5px}
 .row-square{width:14px;height:14px;flex:none;background:var(--cube);border:1px solid #c8d6db;box-shadow:2px 2px 0 #20343e}
 .row-sketch{width:16px;height:12px;flex:none;display:inline-block;border:1px dashed var(--cube);background:color-mix(in srgb,var(--cube) 12%,transparent);transform:skewY(-12deg)}
@@ -210,3 +212,8 @@ body.is-resizing-panels,body.is-resizing-panels *{cursor:col-resize!important;us
 .stage-toolbar{height:auto;min-height:43px;flex-wrap:wrap;padding:8px 10px;row-gap:5px}.stage-actions{margin-left:auto}
 @media(max-width:980px){.workspace{--sidebar-default-width:190px;--inspector-default-width:235px;--stage-min-width:250px}}
 @media(max-width:760px){.workspace{grid-template-columns:minmax(150px,34%) minmax(0,1fr);column-gap:6px}.panel-resizer{display:none}.stage{grid-column:2}.inspector{grid-column:1 / -1;grid-row:2}.code-panel{grid-row:3}.stage-toolbar{padding:5px;row-gap:3px}}
+
+.row-circle{width:14px;height:14px;flex:none;border:2px solid var(--cube);border-radius:50%}
+.row-cylinder{width:14px;height:16px;flex:none;background:var(--cube);border:1px solid #c8d6db;border-radius:50% / 20%}
+.sketch-drawing-overlay.sizing .sketch-dimensions.circle-dimensions{grid-template-columns:1fr;min-width:170px}
+.sketch-dimensions.circle-dimensions input{width:80px}

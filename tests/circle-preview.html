@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Circle radius and cursor preview checks</title>
+<style>
+  body{font:16px system-ui;background:#10171e;color:#ddd;padding:24px}
+  #viewport{width:600px;height:400px;position:relative;overflow:hidden}
+</style>
+<h1>Circle radius and cursor preview checks</h1>
+<p id="result">Running preview checks…</p>
+<pre id="failures"></pre>
+<div id="viewport"></div>
+<script type="module">
+// Run pnpm dev and open /tests/circle-preview.html for real-browser checks.
+import { createViewport } from '/src/viewport.ts';
+import { parseInches } from '/src/model.ts';
+
+const host = document.querySelector('#viewport');
+const errors = [];
+let checks = 0;
+const draws = [];
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const viewport = createViewport(host, () => {}, undefined, (first, opposite, tool) => draws.push({ first, opposite, tool }));
+viewport.setMode('sketch');
+viewport.setRectangles([]);
+viewport.setGrid(false);
+viewport.setSketchTool('circle');
+const canvas = host.querySelector('canvas');
+canvas.setPointerCapture = () => {};
+canvas.releasePointerCapture = () => {};
+canvas.hasPointerCapture = () => false;
+const input = host.querySelector('[aria-label="Circle radius in inches"]');
+const gl = canvas.getContext('webgl2');
+const frame = () => new Promise((resolve) => requestAnimationFrame(() => {
+  const image = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+  gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  resolve(image);
+}));
+const same = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+function pointer(type, dx = 0, dy = 0, buttons = 0) {
+  const bounds = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerType: 'mouse', pointerId: 1,
+    button: type === 'pointermove' && buttons === 0 ? -1 : 0, buttons,
+    clientX: bounds.left + bounds.width / 2 + dx, clientY: bounds.top + bounds.height / 2 + dy }));
+}
+const click = (dx = 0, dy = 0) => { pointer('pointerdown', dx, dy, 1); pointer('pointerup', dx, dy); };
+const key = (element, key) => element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+try {
+  await frame();
+  const empty = await frame();
+  click();
+  check(document.activeElement === canvas, 'Center click keeps canvas focus so cursor movement remains active');
+  pointer('pointermove', 40);
+  const firstRadius = parseInches(input.value);
+  const firstPreview = await frame();
+  check(firstRadius > 0, 'Moving without holding a button displays a radius');
+  check(!same(empty, firstPreview), 'Moving without holding a button renders a circle preview');
+  pointer('pointermove', 80);
+  const largerRadius = parseInches(input.value);
+  check(largerRadius > firstRadius, 'Displayed radius grows as the cursor moves outward without a button held');
+  check(!same(firstPreview, await frame()), 'Circle preview grows as the cursor moves outward');
+  pointer('pointermove', 20);
+  check(parseInches(input.value) < firstRadius, 'Displayed radius shrinks as the cursor moves inward');
+  key(canvas, 'Tab');
+  check(document.activeElement === input, 'Tab focuses the radius for exact entry');
+  input.value = '1 1/2'; input.dispatchEvent(new Event('input', { bubbles: true }));
+  key(input, 'Enter');
+  check(draws.length === 1 && draws[0].tool === 'circle', 'Entering a radius creates a circle');
+  check(Math.abs(Math.hypot(draws[0].opposite[0] - draws[0].first[0], draws[0].opposite[1] - draws[0].first[1]) - 1.5) < 1e-10, 'Entered radius is the center-to-rim distance');
+
+  click(); pointer('pointermove', 40);
+  const radiusBeforeClick = parseInches(input.value);
+  click(40);
+  check(draws.length === 2, 'Click-center, move, click-rim creates a circle');
+  check(parseInches(Math.hypot(draws[1].opposite[0] - draws[1].first[0], draws[1].opposite[1] - draws[1].first[1])) === radiusBeforeClick, 'Click-created radius matches the preview readout');
+
+  pointer('pointerdown', 0, 0, 1); pointer('pointermove', 30, 0, 1);
+  const dragRadius = parseInches(input.value), dragPreview = await frame();
+  check(dragRadius > 0, 'Holding left click also updates the radius');
+  pointer('pointermove', 60, 0, 1);
+  check(parseInches(input.value) > dragRadius, 'Radius readout changes while dragging');
+  check(!same(dragPreview, await frame()), 'Preview changes while dragging');
+  pointer('pointerup', 60);
+  check(draws.length === 3, 'Releasing a center-to-rim drag creates a circle');
+
+  click(); pointer('pointermove', 40); key(canvas, 'Tab'); key(input, 'Escape');
+  check(draws.length === 3 && !host.querySelector('.sketch-drawing-overlay').classList.contains('active'), 'Escape cancels exact radius entry');
+} catch (error) { errors.push(String(error)); }
+viewport.dispose();
+document.querySelector('#result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `${checks} checks passed`;
+document.querySelector('#failures').textContent = errors.join('\n');
+</script>

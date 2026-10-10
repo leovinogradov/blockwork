@@ -1,5 +1,5 @@
 import { pointOnPlane, worldPosition, type GroupSpec, type Vector3 } from './groups';
-import type { BoxSpec } from './model';
+import { cylinderAxes, type BoxSpec } from './model';
 import { modelSketchFrame, type ModelSketch } from './model-sketch';
 import type { SketchShape } from './sketch';
 
@@ -9,7 +9,7 @@ export type MeasurementAxis = 'x' | 'y' | 'z';
 export type MeasurementAxisChoice = 'auto' | MeasurementAxis;
 export type Measurement = { id: string; name?: string; groupId?: string; start: MeasurementAnchor; end: MeasurementAnchor; offset?: number; lineHeight?: number; axis?: MeasurementAxis; distanceAxis?: MeasurementAxis };
 export type MeasurementGeometry = { boxes?: BoxSpec[]; rectangles?: SketchShape[]; sketches?: ModelSketch[]; groups?: GroupSpec[] };
-export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnchor; a: Vector3; b: Vector3 };
+export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnchor; a: Vector3; b: Vector3; pointKind?: 'center' | 'edge'; curveCenter?: Vector3; curveAxes?: [number, number] };
 
 /** Shared defaults and all annotation sizes use inches, just like geometry. */
 export const DEFAULT_MEASUREMENT_OFFSET = 2;
@@ -33,7 +33,7 @@ export function resolveMeasurementAnchor(anchor: MeasurementAnchor, geometry: Me
   const item = target(anchor, geometry);
   if (!item) return null;
   const c = anchor.coordinates;
-  if ('axis' in item) return pointOnPlane(modelSketchFrame(item, geometry.groups), [item.size[0] * c[0], item.size[1] * c[1]]);
+  if ('shapes' in item) return pointOnPlane(modelSketchFrame(item, geometry.groups), [item.size[0] * c[0], item.size[1] * c[1]]);
   const position = worldPosition(item.position, geometry.groups ?? [], item.groupId);
   const local = item.size.length === 2 && 'kind' in item && item.kind === 'line'
     ? [position[0] + item.size[0] * c[0], position[1] + item.size[1] * c[0], 0] as Vector3
@@ -117,7 +117,14 @@ export function validateMeasurements(input: unknown = [], geometry: MeasurementG
       const item = target(a, geometry);
       if (!item) throw new Error(`Measurement references missing geometry: ${a.objectId}${a.shapeId ? '/' + a.shapeId : ''}.`);
       const dimensions = 'kind' in item && item.kind === 'line' ? 1 : item.size.length;
-      if (!Array.isArray(a.coordinates) || a.coordinates.length !== dimensions || a.coordinates.some((n) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1) || (dimensions > 1 && a.coordinates.filter((n) => n !== 0 && n !== 1).length > 1)) throw new Error('Measurement endpoints must lie on a corner or edge.');
+      const circular = 'kind' in item && (item.kind === 'circle' || item.kind === 'cylinder');
+      if (!Array.isArray(a.coordinates) || a.coordinates.length !== dimensions || a.coordinates.some((n) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1)) throw new Error('Measurement endpoints must lie on a corner or edge, or a circular center.');
+      if (circular) {
+        const { lengthAxis, radialAxes } = item.kind === 'cylinder' ? cylinderAxes(item) : { lengthAxis: 2, radialAxes: [0, 1] };
+        const x = a.coordinates[radialAxes[0]], y = a.coordinates[radialAxes[1]], z = a.coordinates[lengthAxis];
+        const radius = Math.hypot(x - 0.5, y - 0.5);
+        if (Math.abs(radius - 0.5) > 1e-8 && radius > 1e-8 || (dimensions === 3 && z !== 0 && z !== 1)) throw new Error('Circular measurements must lie on the rim or end center.');
+      } else if (dimensions > 1 && a.coordinates.filter((n) => n !== 0 && n !== 1).length > 1) throw new Error('Measurement endpoints must lie on a corner or edge.');
       return { objectId: a.objectId, ...(a.shapeId !== undefined ? { shapeId: a.shapeId } : {}), coordinates: [...a.coordinates] };
     };
     if (raw.offset !== undefined && (typeof raw.offset !== 'number' || !Number.isFinite(raw.offset))) throw new Error('Measurement offset must be a finite inch distance.');
@@ -146,6 +153,27 @@ export function measurementSegments(geometry: MeasurementGeometry, hidden: Set<s
   const append = (item: BoxSpec | SketchShape | ModelSketch, objectId: string, shapeId?: string) => {
     const dimensions = 'kind' in item && item.kind === 'line' ? 1 : item.size.length;
     const anchor = (coordinates: number[]): MeasurementAnchor => ({ objectId, ...(shapeId ? { shapeId } : {}), coordinates });
+    const push = (c: number[], d: number[], extra: Partial<MeasurementSegment> = {}) => {
+      const start = anchor(c), end = anchor(d);
+      result.push({ start, end, a: resolveMeasurementAnchor(start, geometry)!, b: resolveMeasurementAnchor(end, geometry)!, ...extra });
+    };
+    if ('kind' in item && (item.kind === 'circle' || item.kind === 'cylinder')) {
+      const { lengthAxis, radialAxes } = item.kind === 'cylinder' ? cylinderAxes(item) : { lengthAxis: 2, radialAxes: [0, 1] as [number, number] };
+      for (const z of dimensions === 3 ? [0, 1] : [undefined]) {
+        const coords = (x: number, y: number) => {
+          const c = Array(dimensions).fill(0.5); c[radialAxes[0]] = x; c[radialAxes[1]] = y;
+          if (z !== undefined) c[lengthAxis] = z;
+          return c;
+        };
+        const center = coords(0.5, 0.5);
+        const curveCenter = resolveMeasurementAnchor(anchor(center), geometry)!;
+        push(center, center, { pointKind: 'center' });
+        const steps = 96;
+        const rim = (i: number) => coords(0.5 + Math.cos(i * Math.PI * 2 / steps) / 2, 0.5 + Math.sin(i * Math.PI * 2 / steps) / 2);
+        for (let i = 0; i < steps; i++) push(rim(i), rim(i + 1), { pointKind: 'edge', curveCenter, curveAxes: radialAxes });
+      }
+      return;
+    }
     for (let axis = 0; axis < dimensions; axis++) {
       for (let bits = 0; bits < 2 ** (dimensions - 1); bits++) {
         let bit = 0;
@@ -166,15 +194,17 @@ export function measurementSegments(geometry: MeasurementGeometry, hidden: Set<s
 
 /** Projected picking uses pixels and corrects the edge fraction for perspective. */
 export function snapMeasurement(cursor: [number, number], segments: MeasurementSegment[], project: (p: Vector3) => { x: number; y: number; w: number; visible: boolean }, isVisible: (p: Vector3) => boolean = () => true, tolerance = 12) {
-  type Snap = { anchor: MeasurementAnchor; point: Vector3; kind: 'corner' | 'edge' };
+  type Snap = { anchor: MeasurementAnchor; point: Vector3; kind: 'corner' | 'edge' | 'center' };
   let corner: Snap | null = null;
   let edge: Snap | null = null;
   let cornerDistance = (tolerance * 0.75) ** 2, edgeDistance = tolerance ** 2;
   for (const segment of segments) {
     const a = project(segment.a), b = project(segment.b);
     for (const [p, anchor, point] of [[a, segment.start, segment.a], [b, segment.end, segment.b]] as const) {
+      // Rim tessellation vertices are edges, not discrete corner snap targets.
+      if (segment.pointKind === 'edge') continue;
       const distance = (cursor[0] - p.x) ** 2 + (cursor[1] - p.y) ** 2;
-      if (p.visible && distance <= cornerDistance && isVisible(point)) { cornerDistance = distance; corner = { anchor, point, kind: 'corner' }; }
+      if (p.visible && distance <= cornerDistance && isVisible(point)) { cornerDistance = distance; corner = { anchor, point, kind: segment.pointKind ?? 'corner' }; }
     }
     if (!a.visible || !b.visible) continue;
     const dx = b.x - a.x, dy = b.y - a.y, length = dx * dx + dy * dy;
@@ -183,10 +213,21 @@ export function snapMeasurement(cursor: [number, number], segments: MeasurementS
     const distance = (cursor[0] - a.x - dx * screenT) ** 2 + (cursor[1] - a.y - dy * screenT) ** 2;
     if (distance > edgeDistance) continue;
     const t = screenT * a.w / ((1 - screenT) * b.w + screenT * a.w);
-    const point = segment.a.map((n, i) => n + (segment.b[i] - n) * t) as Vector3;
+    let point = segment.a.map((n, i) => n + (segment.b[i] - n) * t) as Vector3;
+    const coordinates = segment.start.coordinates.map((n, i) => n + (segment.end.coordinates[i] - n) * t);
+    if (segment.curveCenter) {
+      // Project chord interpolation back onto the real rim, retaining live anchors.
+      const radius = Math.hypot(...segment.a.map((n, i) => n - segment.curveCenter![i]));
+      const length = Math.hypot(...point.map((n, i) => n - segment.curveCenter![i]));
+      point = point.map((n, i) => segment.curveCenter![i] + (n - segment.curveCenter![i]) * radius / length) as Vector3;
+      const [u, v] = segment.curveAxes ?? [0, 1];
+      const fractionRadius = Math.hypot(coordinates[u] - 0.5, coordinates[v] - 0.5);
+      coordinates[u] = 0.5 + (coordinates[u] - 0.5) / (2 * fractionRadius);
+      coordinates[v] = 0.5 + (coordinates[v] - 0.5) / (2 * fractionRadius);
+    }
     if (!isVisible(point)) continue;
     edgeDistance = distance;
-    edge = { point, kind: 'edge', anchor: { ...segment.start, coordinates: segment.start.coordinates.map((n, i) => n + (segment.end.coordinates[i] - n) * t) } };
+    edge = { point, kind: 'edge', anchor: { ...segment.start, coordinates } };
   }
   return corner ?? edge;
 }
