@@ -35,6 +35,7 @@ export type ModelDocument = {
   historyAt: number;
   selectedId: string | null;
   selectedSketchIds: string[];
+  selectedModelIds: string[];
   selectedVariable: string | null;
   selectedFace: FaceName | null;
   error: string;
@@ -57,7 +58,7 @@ export function createDocument(name: string, source: string, kind: DocumentKind 
   return {
     id: crypto.randomUUID(), name, kind, source, appliedSource: '', draftDirty: true,
     groups: [], collapsedGroupIds: [], treeOrder: [], boxes: [], sketches: [], rectangles: [], measurements: [], variables: [], hiddenBoxIds: [], viewMode: kind === 'sketch' ? 'top' : 'iso', projectionMode: kind === 'sketch' ? 'orthographic' : 'perspective', gridVisible: true,
-    history: [], historyAt: -1, selectedId: null, selectedSketchIds: [], selectedVariable: null, selectedFace: null, error: '',
+    history: [], historyAt: -1, selectedId: null, selectedSketchIds: [], selectedModelIds: [], selectedVariable: null, selectedFace: null, error: '',
     scrollTop: 0, scrollLeft: 0, selectionStart: 0, selectionEnd: 0,
   };
 }

@@ -1,0 +1,135 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2D and 3D multi-selection UI checks</title>
+<div id="app"></div>
+<aside id="test-output" style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:#fff;padding:8px;font:12px monospace;max-width:600px">
+  <span id="test-result">Running shared selection checks…</span><pre id="test-failures"></pre>
+</aside>
+<script type="module">
+// Run pnpm dev and open /tests/multi-selection-ui.html. Storage is isolated
+// to this page so real documents, source and recovery copies are untouched.
+import { createDocument, serializeWorkspace } from '/src/documents.ts';
+import { generateSource } from '/src/model.ts';
+import { generateSketchSource } from '/src/sketch.ts';
+import { compileModel } from '/src/compiler.ts';
+
+const model = createDocument('3D selection checks.js', '', 'model');
+model.boxes = [
+  { id:'a', name:'Left box', size:[3,3,3], position:[0,0,0], color:'#d9a76e' },
+  { id:'b', name:'Right box', size:[3,3,3], position:[10,0,0], color:'#86a9a3' },
+  { id:'hidden', name:'Hidden box', size:[3,3,3], position:[5,0,0], color:'#bd8c79' },
+];
+model.sketches = [{ id:'c', name:'Mounted sketch', axis:'z', size:[3,3], position:[5,0,4], color:'#8798b5', shapes:[] }];
+model.source = generateSource(model.boxes, [], [], [], model.sketches);
+const sketch = createDocument('2D selection checks.js', '', 'sketch');
+sketch.rectangles = [
+  { id:'a', name:'Rectangle', size:[3,3], position:[0,0], color:'#d9a76e' },
+  { id:'b', name:'Signed line', kind:'line', size:[-3,-3], position:[13,3], color:'#86a9a3' },
+  { id:'c', name:'Second rectangle', size:[3,3], position:[5,0], color:'#8798b5' },
+  { id:'hidden', name:'Hidden rectangle', size:[3,3], position:[5,0], color:'#bd8c79' },
+];
+sketch.source = generateSketchSource(sketch.rectangles);
+for (const doc of [model, sketch]) {
+  doc.appliedSource = doc.source; doc.draftDirty = false; doc.hiddenBoxIds = ['hidden'];
+}
+const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([model, sketch], model.id)]]);
+Object.defineProperty(window, 'localStorage', { value:{
+  getItem: (key) => memory.get(key) ?? null,
+  setItem: (key, value) => memory.set(key, value),
+  removeItem: (key) => memory.delete(key),
+} });
+await import('/src/main.ts');
+
+const $ = (selector) => document.querySelector(selector);
+const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+const errors = [];
+let checks = 0;
+function check(condition, message) { checks++; if (!condition) errors.push(message); }
+const selected = () => [...document.querySelectorAll('.component-row.box-row.selected')].map((row) => row.dataset.treeId).sort();
+const ids = () => [...document.querySelectorAll('.component-row.box-row')].map((row) => row.dataset.treeId);
+const compiledItems = (result, kind) => kind === 'sketch' ? result.rectangles : [...result.boxes, ...result.sketches];
+function pointer(type, x, y, shiftKey = false) {
+  const canvas = $('#viewport canvas');
+  canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {}; canvas.hasPointerCapture = () => false;
+  canvas.dispatchEvent(new PointerEvent(type, { bubbles:true, pointerType:'mouse', pointerId:1, button:0,
+    buttons:type === 'pointerup' ? 0 : 1, clientX:x, clientY:y, shiftKey }));
+}
+function marquee(reverse = false, shiftKey = false, empty = false) {
+  const bounds = $('#viewport canvas').getBoundingClientRect();
+  let first = [bounds.left + 3, bounds.top + 3];
+  let end = empty ? [bounds.left + 15, bounds.top + 15] : [bounds.right - 3, bounds.bottom - 3];
+  if (reverse) [first, end] = [end, first];
+  pointer('pointerdown', ...first, shiftKey); pointer('pointermove', ...end, shiftKey); pointer('pointerup', ...end, shiftKey);
+}
+function clickItem(id, shiftKey = false) { $(`[data-id="${id}"]`).dispatchEvent(new MouseEvent('click', { bubbles:true, shiftKey })); }
+function assertSelection(kind, count = 3) {
+  check(selected().length === count, `${kind}: tree highlights ${count} selected items`);
+  check($('#inspector-content .object-name')?.textContent === `${count} components selected`, `${kind}: inspector shows the shared selection`);
+  check($('#selection-status').textContent === `SELECTED · ${count} COMPONENTS`, `${kind}: status shows the shared selection count`);
+  check(!$('#delete-box').disabled && !$('#duplicate-box').disabled, `${kind}: bulk actions remain available`);
+}
+async function assertColors(kind, expected) {
+  const result = await compileModel($('#source-editor').value, kind);
+  const items = compiledItems(result, kind);
+  check(items.filter((item) => item.id !== 'hidden').every((item) => item.color === expected), `${kind}: color updates every selected item in compiled source`);
+  check(items.find((item) => item.id === 'hidden')?.color === '#bd8c79', `${kind}: color leaves hidden unselected items unchanged`);
+}
+
+try {
+  for (const doc of [sketch, model]) {
+    const kind = doc.kind;
+    $(`[data-document-id="${doc.id}"]`).click(); await frame(); await frame();
+    marquee();
+    check(selected().join(',') === 'a,b,c', `${kind}: area selection finds all visible geometry`);
+    assertSelection(kind);
+    check($('#inspector-content').textContent.includes('MIXED COLORS'), `${kind}: inspector identifies mixed colors`);
+    clickItem('a', true); assertSelection(kind, 2);
+    clickItem('a', true); assertSelection(kind);
+    marquee(false, true, true); assertSelection(kind);
+    marquee(false, false, true);
+    check(selected().length === 0, `${kind}: empty area replaces the selection`);
+    marquee(true); assertSelection(kind);
+    clickItem('a');
+    check(selected().join(',') === 'a', `${kind}: plain click replaces a multiple selection`);
+    // Begin with one item and add the remaining area, rather than only testing
+    // that an additive gesture retains items already selected.
+    marquee(false, true); assertSelection(kind);
+    $('#inspector-content [data-color="#d9a76e"]').click();
+    assertSelection(kind); await assertColors(kind, '#d9a76e');
+    check($('#inspector-content').textContent.includes('ALL SELECTED'), `${kind}: inspector recognizes a common color`);
+    $('#undo').click();
+    check(selected().length === 0, `${kind}: undo clears selection consistently`);
+    marquee();
+    check($('#inspector-content').textContent.includes('MIXED COLORS'), `${kind}: undo restores the original mixed colors`);
+    const custom = $('#selection-color'); custom.value = '#123456'; custom.dispatchEvent(new Event('change', { bubbles:true }));
+    assertSelection(kind); await assertColors(kind, '#123456');
+    check($('#selection-color').value === '#123456', `${kind}: inspector displays the new shared custom color`);
+    // Selection survives switching files, including each mode's own selection.
+    const other = doc === model ? sketch : model;
+    $(`[data-document-id="${other.id}"]`).click();
+    $(`[data-document-id="${doc.id}"]`).click(); assertSelection(kind);
+    $('#duplicate-box').click(); assertSelection(kind);
+    check(ids().length === 7, `${kind}: duplicate copies all three selected components`);
+    check([...document.querySelectorAll('.sketch-selected-components .selection-component-name')].every((item) => item.textContent.endsWith(' copy')), `${kind}: duplication selects the copies`);
+    $('#undo').click(); marquee();
+    $('#delete-box').click();
+    check(ids().join(',') === 'hidden', `${kind}: delete removes only selected components`);
+    $('#undo').click(); marquee(); assertSelection(kind);
+    $(kind === 'sketch' ? '#add-sketch-group' : '#add-group').click();
+    const grouped = await compileModel($('#source-editor').value, kind);
+    check(grouped.groups.length === 1 && compiledItems(grouped, kind).filter((item) => item.id !== 'hidden').every((item) => item.groupId === grouped.groups[0].id), `${kind}: grouping uses the complete selection`);
+    $('#undo').click(); marquee();
+    // A pending source draft disables edits to all selected components.
+    const editor = $('#source-editor'); editor.value += '\n// pending draft'; editor.dispatchEvent(new Event('input', { bubbles:true }));
+    check($('#selection-color').disabled && $('#delete-box').disabled && $('#duplicate-box').disabled, `${kind}: pending drafts consistently disable bulk edits`);
+    $('#run-code').click();
+    const deadline = performance.now() + 3000;
+    while ($('#run-code').disabled && performance.now() < deadline) await frame();
+    check($('#editor-error').hidden && !$('#run-code').disabled, `${kind}: fixture source still compiles after bulk changes`);
+    marquee(); assertSelection(kind);
+  }
+} catch (error) { errors.push(String(error)); }
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `${checks} shared 2D/3D selection checks passed`;
+$('#test-failures').textContent = errors.join('\n');
+</script>

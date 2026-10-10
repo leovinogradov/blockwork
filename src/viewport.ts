@@ -7,6 +7,7 @@ import { createMeasurementAnnotation } from './measurement-annotation';
 import { parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
+import { modelObjectsInBox } from './model-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
 import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
 import { autoMeasurementAxis, dominantMeasurementAxis, measurementLine, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementAxisLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementAxis, type MeasurementAxisChoice, type MeasurementSegment } from './measurements';
@@ -65,6 +66,7 @@ export function createViewport(
   onMeasure?: (start: MeasurementAnchor, end: MeasurementAnchor, offset: number, axis: MeasurementAxis, distanceAxis?: MeasurementAxis) => void,
   onMeasureStage?: (stage: 'first' | 'second' | 'placement' | 'invalid' | 'same', axis?: MeasurementAxis) => void,
   onMeasureModeChange?: (axisMode: boolean) => void,
+  onModelSelect?: (ids: string[], action: SelectionAction) => void,
 ): Viewport {
   let disposed = false;
   let selectedId: string | null = null;
@@ -473,8 +475,8 @@ export function createViewport(
     controls.rotateSpeed = 0.686;
     controls.screenSpacePanning = true;
     controls.mouseButtons = sketchMode
-      ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN }
-      : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+      ? { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN }
+      : { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
     controls.minDistance = 0.5;
     controls.maxDistance = 5000;
     controls.minZoom = 0.08;
@@ -694,8 +696,8 @@ export function createViewport(
     if (controls) {
       controls.enableRotate = !sketchMode;
       controls.mouseButtons = sketchMode
-        ? { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN }
-        : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+        ? { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN }
+        : { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
     }
     perspectiveCamera.up.set(0, sketchMode ? 1 : 0, sketchMode ? 0 : 1);
     orthographicCamera.up.copy(perspectiveCamera.up);
@@ -877,7 +879,7 @@ export function createViewport(
       return;
     }
     const drawing = sketchMode && sketchTool !== 'select' && event.button === 0;
-    const selecting = sketchMode && sketchTool === 'select' && event.button === 0;
+    const selecting = !drawing && event.button === 0;
     const snap = drawing ? sketchPointAtPointer(event) : null;
     if (drawing) { event.preventDefault(); event.stopImmediatePropagation(); renderer?.domElement.focus({ preventScroll: true }); positionSketchOverlay(event, snap); renderer?.domElement.setPointerCapture(event.pointerId); }
     if (selecting) { event.preventDefault(); event.stopImmediatePropagation(); renderer?.domElement.focus({ preventScroll: true }); renderer?.domElement.setPointerCapture(event.pointerId); }
@@ -910,7 +912,7 @@ export function createViewport(
     if (Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) {
       pointerDown.dragged = true;
     }
-    if (sketchMode && sketchTool === 'select' && pointerDown.button === 0) {
+    if ((!sketchMode || sketchTool === 'select') && pointerDown.button === 0) {
       event.stopImmediatePropagation();
       if (pointerDown.dragged && renderer) {
         const bounds = renderer.domElement.getBoundingClientRect();
@@ -968,24 +970,28 @@ export function createViewport(
     }
     if (!down || down.pointerId !== event.pointerId || down.button !== event.button) return;
     pointerDown = null;
+    if (event.button === 0) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+    }
     if (event.button === 0 && !down.dragged && Math.hypot(event.clientX - down.x, event.clientY - down.y) <= 4) {
       const measurementId = measurementLabelAtPointer(event);
       if (measurementId) {
         selectionBox.hidden = true;
-        // Model clicks also reach OrbitControls on pointer-down. Let its
-        // pointer-up handler finish the gesture, as for every other object.
-        if (sketchMode) {
-          event.preventDefault(); event.stopImmediatePropagation();
-          if (renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
-        }
         select(measurementId); onSelect(measurementId); return;
       }
     }
+    const dragged = down.dragged || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4;
+    if (!sketchMode && event.button === 0 && dragged && renderer) {
+      selectionBox.hidden = true;
+      const ids = modelObjectsInBox(objects.values(), camera, [down.x, down.y], [event.clientX, event.clientY], renderer.domElement.getBoundingClientRect(), hiddenIds);
+      if (onModelSelect) onModelSelect(ids, down.additive ? 'add' : 'replace');
+      else selectMany(down.additive ? [...selectedIds, ...ids] : ids);
+      return;
+    }
     if (sketchMode && sketchTool === 'select' && event.button === 0) {
-      event.preventDefault(); event.stopImmediatePropagation(); selectionBox.hidden = true;
-      if (renderer?.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+      selectionBox.hidden = true;
       let ids: string[];
-      const dragged = down.dragged || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4;
       if (dragged && renderer) {
         const bounds = renderer.domElement.getBoundingClientRect();
         ids = sketchShapesInBox(sketchRectangles, [down.x, down.y], [event.clientX, event.clientY], ([x, y]) => {
@@ -1000,12 +1006,15 @@ export function createViewport(
       else { select(ids[0] ?? null); onSelect(ids[0] ?? null); }
       return;
     }
-    if (down.dragged || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+    if (dragged) return;
 
     const hit = faceAtPointer(event);
     if (event.button === 0) {
-      select(hit?.boxId ?? null, hit?.face ?? null);
-      onSelect(hit?.boxId ?? null, hit?.face ?? null);
+      if (down.additive && onModelSelect) onModelSelect(hit ? [hit.boxId] : [], 'toggle');
+      else {
+        select(hit?.boxId ?? null, hit?.face ?? null);
+        onSelect(hit?.boxId ?? null, hit?.face ?? null);
+      }
     } else if (event.button === 2) {
       select(hit?.boxId ?? null, hit?.face ?? null);
       onSelect(hit?.boxId ?? null, hit?.face ?? null);
@@ -1018,8 +1027,12 @@ export function createViewport(
     event.preventDefault();
   };
   const onSketchKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape' && sketchMode && sketchTool === 'select') {
-      pointerDown = null; selectionBox.hidden = true; onSketchSelect?.([], 'replace'); return;
+    if (event.key === 'Escape' && (!sketchMode || sketchTool === 'select')) {
+      if (pointerDown && renderer?.domElement.hasPointerCapture(pointerDown.pointerId)) renderer.domElement.releasePointerCapture(pointerDown.pointerId);
+      pointerDown = null; selectionBox.hidden = true;
+      if (sketchMode) onSketchSelect?.([], 'replace');
+      else onModelSelect?.([], 'replace');
+      return;
     }
     if (event.key !== 'Tab' || event.shiftKey || !sketchMode || sketchTool === 'select' || !sketchFirst) return;
     event.preventDefault();

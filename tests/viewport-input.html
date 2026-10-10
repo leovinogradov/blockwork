@@ -1,0 +1,134 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Viewport selection and navigation checks</title>
+<style>
+  body{font:16px system-ui;background:#10171e;color:#ddd;padding:24px}
+  #viewport{width:600px;height:400px;position:relative;overflow:hidden}
+  .sketch-selection-box{position:absolute;pointer-events:none;border:1px solid #ffba4b;background:#e7ad6020}
+</style>
+<h1>Viewport selection and navigation checks</h1>
+<p id="result">Running input checks…</p>
+<pre id="failures"></pre>
+<div id="viewport"></div>
+<script type="module">
+// Run pnpm dev and open /tests/viewport-input.html for real-browser checks.
+import { createViewport } from '/src/viewport.ts';
+
+const host = document.querySelector('#viewport');
+const errors = [];
+let checks = 0, selected = null, context = null, selectedIds = [];
+function check(condition, message) { checks++; if (!condition) errors.push(message); }
+const viewport = createViewport(host, (id) => { selected = id; selectedIds = id ? [id] : []; }, (hit) => { context = hit; },
+  undefined, undefined, undefined, undefined, undefined, undefined, (ids, action) => {
+    selectedIds = action === 'add' ? [...new Set([...selectedIds, ...ids])] : action === 'toggle'
+      ? [...new Set([...selectedIds.filter((id) => !ids.includes(id)), ...ids.filter((id) => !selectedIds.includes(id))])] : ids;
+    selected = selectedIds.length === 1 ? selectedIds[0] : null;
+    viewport.selectMany(selectedIds);
+  });
+viewport.setBoxes([{ id:'box', name:'Box', size:[12,8,4], position:[0,0,0], color:'#86a9a3' }]);
+viewport.setGrid(false);
+const canvas = host.querySelector('canvas');
+// Synthetic pointers have no hardware capture; keep the actual input handlers.
+canvas.setPointerCapture = () => {};
+canvas.releasePointerCapture = () => {};
+canvas.hasPointerCapture = () => false;
+const gl = canvas.getContext('webgl2');
+function pixels() { return new Promise((resolve) => requestAnimationFrame(() => {
+  const image = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+  gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  resolve(image);
+})); }
+const same = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+function pointer(type, button = 0, dx = 0, dy = 0, shiftKey = false) {
+  const bounds = canvas.getBoundingClientRect();
+  const buttons = type === 'pointerup' ? 0 : [1,4,2][button];
+  canvas.dispatchEvent(new PointerEvent(type, { bubbles:true, pointerType:'mouse', pointerId:1,
+    button, buttons, shiftKey, clientX:bounds.left + bounds.width / 2 + dx, clientY:bounds.top + bounds.height / 2 + dy }));
+}
+try {
+  for (const projection of ['perspective', 'orthographic']) {
+    viewport.setProjection(projection); viewport.setView('iso');
+    await pixels();
+    pointer('pointerdown'); pointer('pointerup');
+    check(selected === 'box', `${projection}: left click selects geometry`);
+    const selectedImage = await pixels();
+    pointer('pointerdown'); pointer('pointermove', 0, 60, 30);
+    check(same(selectedImage, await pixels()), `${projection}: left drag keeps the camera still`);
+    pointer('pointerup', 0, 60, 30);
+    check(selected === 'box', `${projection}: a left drag selects intersecting geometry`);
+    pointer('pointerdown', 0, -290, -190); pointer('pointerup', 0, -290, -190);
+    check(selected === null, `${projection}: empty-space click clears selection`);
+    for (const button of [1]) {
+      viewport.setView('iso');
+      const before = await pixels();
+      selected = null; context = null;
+      pointer('pointerdown', button); pointer('pointermove', button, 60, 30); pointer('pointerup', button, 60, 30);
+      const after = await pixels();
+      check(!same(before, after), `${projection}/button ${button}: drag orbits`);
+      check(selected === null && context === null, `${projection}/button ${button}: orbit does not select or open a menu`);
+      pointer('pointermove', button, 100, 60);
+      check(same(after, await pixels()), `${projection}/button ${button}: orbit stops on release`);
+      viewport.setView('iso');
+      const beforePan = await pixels();
+      pointer('pointerdown', button, 0, 0, true); pointer('pointermove', button, 60, 30, true); pointer('pointerup', button, 60, 30, true);
+      const middlePan = await pixels();
+      check(!same(beforePan, middlePan), `${projection}/button ${button}: Shift-drag pans`);
+      viewport.setView('iso'); await pixels();
+      selected = null; context = null;
+      pointer('pointerdown', 2); pointer('pointermove', 2, 60, 30); pointer('pointerup', 2, 60, 30);
+      const rightPan = await pixels();
+      check(same(middlePan, rightPan), `${projection}: right drag matches Shift-middle pan without rotating`);
+      check(selected === null && context === null, `${projection}: right drag does not select or open a menu`);
+      pointer('pointermove', 2, 100, 60);
+      check(same(rightPan, await pixels()), `${projection}: right pan stops on release`);
+    }
+    viewport.setView('iso'); await pixels();
+    pointer('pointerdown', 2); pointer('pointerup', 2);
+    check(selected === 'box' && context?.boxId === 'box', `${projection}: stationary right click retains face actions`);
+  }
+  for (const projection of ['perspective', 'orthographic']) {
+    viewport.setProjection(projection);
+    viewport.setBoxes([
+      { id:'left', name:'Left', size:[4,4,4], position:[-6,0,0], color:'#86a9a3' },
+      { id:'right', name:'Right', size:[4,4,4], position:[2,0,0], color:'#86a9a3' },
+      { id:'hidden', name:'Hidden', size:[4,4,4], position:[0,0,0], color:'#86a9a3' },
+    ], { hiddenIds:['hidden'], sketches:[{ id:'sketch', name:'Sketch', axis:'z', size:[2,2], position:[0,0,6], color:'#86a9a3', shapes:[] }] });
+    viewport.setView('iso'); await pixels();
+    pointer('pointerdown', 0, -290, -190);
+    pointer('pointermove', 0, 290, 190);
+    check(!host.querySelector('.sketch-selection-box').hidden, `${projection}: dragging shows the marquee`);
+    pointer('pointerup', 0, 290, 190);
+    check(selectedIds.join(',') === 'left,right,sketch', `${projection}: marquee selects boxes and mounted sketches, excluding hidden items`);
+    check(host.querySelector('.sketch-selection-box').hidden, `${projection}: release hides the marquee`);
+    pointer('pointerdown', 0, 290, 190); pointer('pointermove', 0, -290, -190); pointer('pointerup', 0, -290, -190);
+    check(selectedIds.join(',') === 'left,right,sketch', `${projection}: reversed drag selects the same items`);
+    pointer('pointerdown', 0, -290, -190, true); pointer('pointermove', 0, -275, -175, true); pointer('pointerup', 0, -275, -175, true);
+    check(selectedIds.length === 3, `${projection}: Shift-drag adds rather than replacing`);
+    pointer('pointerdown', 0, -290, -190); pointer('pointermove', 0, -275, -175); pointer('pointerup', 0, -275, -175);
+    check(selectedIds.length === 0, `${projection}: an empty marquee clears selection`);
+    pointer('pointerdown', 0, -290, -190); pointer('pointermove', 0, 290, 190); pointer('pointercancel');
+    check(selectedIds.length === 0 && host.querySelector('.sketch-selection-box').hidden, `${projection}: cancelling a drag hides the marquee without selecting`);
+  }
+  viewport.setMode('sketch');
+  viewport.setRectangles([{ id:'shape', name:'Rectangle', size:[12,8], position:[0,0], color:'#86a9a3' }]);
+  await pixels(); pointer('pointerdown'); pointer('pointerup');
+  check(selected === 'shape', 'sketch: left click still selects');
+  viewport.setMode('model'); viewport.setBoxes([{ id:'box', name:'Box', size:[12,8,4], position:[0,0,0], color:'#86a9a3' }]);
+  viewport.setView('iso');
+  await pixels(); pointer('pointerdown'); pointer('pointerup');
+  const before = await pixels();
+  pointer('pointerdown'); pointer('pointermove', 0, 60, 30);
+  check(same(before, await pixels()), 'returning from sketch: left drag keeps the camera still');
+  pointer('pointerup', 0, 60, 30);
+  const beforePan = await pixels();
+  pointer('pointerdown', 2); pointer('pointermove', 2, 60, 30); pointer('pointerup', 2, 60, 30);
+  const rightPan = await pixels();
+  check(!same(beforePan, rightPan), 'returning from sketch: right drag pans');
+  viewport.setView('iso'); await pixels();
+  pointer('pointerdown', 1, 0, 0, true); pointer('pointermove', 1, 60, 30, true); pointer('pointerup', 1, 60, 30, true);
+  check(same(rightPan, await pixels()), 'returning from sketch: right drag matches Shift-middle pan');
+} catch (error) { errors.push(String(error)); }
+viewport.dispose();
+document.querySelector('#result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `${checks} checks passed`;
+document.querySelector('#failures').textContent = errors.join('\n');
+</script>

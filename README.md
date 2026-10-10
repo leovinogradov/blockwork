@@ -157,6 +157,22 @@ measurement({
 
 Measurement labels are clipped to the camera view, including in THROUGH mode. Labels crossing the camera's depth clipping planes or becoming nearly edge-on hide briefly and return when the view permits. See [Measurement label clipping](docs/measurement-label-clipping.md) for the perspective distortion fix and regression checks.
 
-Drag with the middle mouse button to orbit. Hold Shift while dragging with the middle button, or use the right mouse button, to pan. Scroll the wheel to zoom. The viewport also shows these controls while you work. The toolbar provides isometric, front, right, and top views, perspective or orthographic projection, grid toggle, and fit-to-model. Keyboard shortcuts: **1** front, **3** right, **7** top, **F** fit, and **Delete** remove the selected box. Undo and redo use Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z when focus is outside text fields.
+| Input | 3D model | 2D sketch (Select tool) |
+| --- | --- | --- |
+| Left-click | Select one item; click empty space to clear selection | Same |
+| Left-click and drag | Select items overlapping the dragged area | Same |
+| Shift + left-drag | Add the dragged area to the current selection | Same |
+| Shift + left-click | Add or remove an item | Same |
+| Middle-click and drag / two-finger touchpad drag configured as middle click | Rotate (orbit) | Pan |
+| Right-click and drag | Pan | Pan |
+| Shift + middle-drag | Pan | Pan |
+| Scroll wheel | Zoom toward the cursor | Same |
+| Escape | Clear selection | Clear selection or return to the Select tool |
+
+For two-finger touchpad rotation in 3D, configure the gesture to send the middle mouse button. A two-finger secondary click that sends the right mouse button pans. A stationary right-click on a 3D box face opens its actions menu.
+
+Area selection works in either drag direction and excludes hidden items. In 3D it selects boxes and mounted sketches; in 2D it selects rectangles and lines. Selected components are highlighted in the viewport and tree. The shared selection inspector shows mixed or common colors and applies a palette or custom color to every selected component. You can also group, duplicate, or delete the selection together. Source drafts disable these edits until you run the code.
+
+The viewport displays the current controls while you work. The toolbar provides isometric, front, right, and top views, perspective or orthographic projection, grid toggle, and fit-to-model. Keyboard shortcuts: **1** front, **3** right, **7** top, **F** fit, and **Delete** remove the selected components. Undo and redo use Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z when focus is outside text fields.
 
 3D models contain boxes and mounted sketches; 2D sketch files contain rectangles and lines. Blockwork does not currently create boolean operations or export CAD formats.
