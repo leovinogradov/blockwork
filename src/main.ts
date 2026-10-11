@@ -46,6 +46,7 @@ root.innerHTML = `
         <span class="top-divider"></span>
         <button class="button button-quiet" id="files">Files</button><button class="button button-quiet" id="open-file">Import .js</button>
         <button class="button button-quiet" id="download" title="Export .js (Ctrl/Cmd+S)">Export .js</button>
+        <button class="button button-quiet" id="export-glb" type="button" title="Export applied visible boxes and cylinders for Blender">Export .glb</button>
         <input id="backup-input" type="file" accept=".json,application/json" hidden /><input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" multiple hidden />
       </div>
     </header>
@@ -172,6 +173,7 @@ let cylinderFacePlacement: { boxId: string; face: FaceName } | null = null;
 let contextFace: { boxId: string; face: FaceName; clientX: number; clientY: number } | null = null;
 let contextGroupMemberId: string | null = null;
 let draftDirty = false;
+let exportingGlb = false;
 let appliedSource = '';
 let runEpoch = 0;
 let documents: ModelDocument[] = [];
@@ -278,6 +280,7 @@ function updateLineNumbers() { $('#line-numbers').textContent = Array.from({ len
 function setEditor(source: string, dirty = false) { editor.value = source; draftDirty = dirty; updateLineNumbers(); syncDraftUI(); }
 function syncDraftUI() {
   renderDocumentTabs();
+  syncGlbExportUI();
   $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : `Edit the code, then run it to update the ${documentKind === 'sketch' ? 'sketch' : 'model'}.`;
   $('#draft-note').classList.toggle('warning-note', draftDirty);
   $('#add-box').toggleAttribute('disabled', draftDirty);
@@ -290,6 +293,13 @@ function syncDraftUI() {
   $('#delete-box').toggleAttribute('disabled', draftDirty || !(selectedComponentIds.size || selectedBox() || selectedModelSketch() || selectedRectangle() || selectedMeasurement() || selectedVariable || selectedGroup()));
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !(selectedComponentIds.size || selectedBox() || selectedModelSketch() || selectedRectangle() || selectedMeasurement() || selectedGroup()));
   renderList(); renderInspector();
+}
+function syncGlbExportUI() {
+  const button = $('#export-glb');
+  button.toggleAttribute('disabled', exportingGlb || !openDocumentIds.length || documentKind !== 'model' || !boxes.length);
+  button.title = documentKind === 'sketch'
+    ? 'GLB export is available for 3D models'
+    : `Export applied visible boxes and cylinders for Blender${draftDirty ? ' · Unrun draft is excluded' : ''}${sketches.length || measurements.length ? ' · Sketches and measurements are excluded' : ''}`;
 }
 function selectedBox() { return boxes.find((box) => box.id === selectedId) ?? null; }
 function selectedModelSketch() { return sketches.find((sketch) => sketch.id === selectedId) ?? null; }
@@ -983,6 +993,7 @@ function renderLineInspector(host: HTMLElement, line: SketchShape) {
 }
 function isDescendant(candidateId: string, ancestorId: string) { let current = boxes.find((box) => box.id === candidateId); const seen = new Set<string>(); while (current?.relative && !seen.has(current.id)) { if (current.relative.boxId === ancestorId) return true; seen.add(current.id); current = boxes.find((box) => box.id === current!.relative!.boxId); } return false; }
 function renderAll() {
+  syncGlbExportUI();
   if (selectedId && !selectedGroup() && sceneHiddenIds().has(selectedId)) { selectedId = null; selectedFace = null; }
   if (selectedGroup() || selectedMeasurement() || selectedVariable) selectedComponentIds.clear();
   else {
@@ -1233,7 +1244,7 @@ const fileManager = createFileManager(root, {
 });
 $('#files').addEventListener('click', () => fileManager.open());
 $('#source-name').addEventListener('click', () => renameTab(activeDocumentId));
-function downloadData(source: string, filename: string, type: string) {
+function downloadData(source: string | ArrayBuffer, filename: string, type: string) {
   const url = URL.createObjectURL(new Blob([source], { type }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename;
   document.body.append(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1500);
@@ -1639,6 +1650,29 @@ $('#file-input').addEventListener('change', async (event) => {
   else if (opened.length > 1) notify(`Opened ${opened.length} files`);
 });
 $('#download').addEventListener('click', () => { captureDocument(); void saveDocument(activeDocument()); });
+$('#export-glb').addEventListener('click', async () => {
+  if (exportingGlb || !openDocumentIds.length || documentKind !== 'model') return;
+  const name = activeDocument().name;
+  const snapshot = structuredClone({ boxes, variables, groups, sketches, measurements });
+  const hiddenIds = [...hiddenBoxIds];
+  const hasDraft = draftDirty;
+  exportingGlb = true;
+  syncGlbExportUI();
+  try {
+    const { exportModelGlb } = await import('./glb-export');
+    const result = await exportModelGlb(snapshot, { name, hiddenIds });
+    downloadData(result.buffer, result.filename, 'model/gltf-binary');
+    const notes = [...(hasDraft ? ['Unrun draft was excluded.'] : []), ...result.warnings];
+    const message = `Export requested · ${result.filename}${notes.length ? ` · ${notes.join(' ')}` : ''}`;
+    notify(message);
+    setStatus(message);
+  } catch (error) {
+    notify(error instanceof Error ? error.message : 'Could not export GLB', true);
+  } finally {
+    exportingGlb = false;
+    syncGlbExportUI();
+  }
+});
 $('#undo').addEventListener('click', () => undoRedo(-1)); $('#redo').addEventListener('click', () => undoRedo(1));
 editor.addEventListener('input', () => { if (measuring) activateMeasurementTool(false); if (documentKind === 'sketch' && sketchTool !== 'select') activateSketchTool('select'); draftDirty = true; updateLineNumbers(); syncDraftUI(); setStatus(`Draft changed · run to update ${documentKind === 'sketch' ? 'sketch' : 'model'}`); scheduleSave(); });
 editor.addEventListener('scroll', () => { $('#line-numbers').scrollTop = editor.scrollTop; });

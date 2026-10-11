@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GLB export browser checks</title>
+<div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:#fff;padding:8px;font:12px monospace;max-width:700px"><span id="test-result">Running GLB export checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+import { createDocument, createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+import { resolveModel, generateSource } from '/src/model.ts';
+// Private storage and intercepted downloads keep this fixture away from user data.
+const database = `glb-ui-test-${crypto.randomUUID()}`;
+const nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const model = resolveModel([
+  { id: 'panel', name: 'Applied panel', size: [12, 6, 3], position: [1, 2, 4], color: '#d9a76e', groupId: 'assembly' },
+  { id: 'hidden', name: 'Hidden part', size: [1, 1, 1], position: [0, 0, 0], color: '#ffffff', groupId: 'hidden-group' },
+], [], [
+  { id: 'assembly', name: 'Assembly', position: [10, 20, 30] },
+  { id: 'hidden-group', name: 'Hidden group', position: [0, 0, 0] },
+], [{ id: 'drawing', name: 'Drawing', axis: 'z', size: [12, 6], position: [0, 0, 0], color: '#ffffff', shapes: [] }]);
+const fixture = createDocument('Blender fixture', "throw new Error('Unrun draft must not execute');");
+Object.assign(fixture, model, { hiddenBoxIds: ['hidden-group'], appliedSource: generateSource(model.boxes, model.variables, model.groups, [], model.sketches), draftDirty: true });
+const sketch = createBlankDocument([fixture], 'sketch');
+const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([fixture, sketch], fixture.id)]]);
+Object.defineProperty(window, 'localStorage', { value: {
+  getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem: (key) => memory.delete(key),
+} });
+const blobs = [], downloads = [];
+const nativeURL = URL.createObjectURL.bind(URL);
+URL.createObjectURL = (blob) => { if (blob.type === 'model/gltf-binary') blobs.push(blob); return nativeURL(blob); };
+const nativeClick = HTMLAnchorElement.prototype.click;
+HTMLAnchorElement.prototype.click = function() { downloads.push(this.download); };
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const $ = (selector) => document.querySelector(selector);
+const wait = async (condition, message) => {
+  for (let i = 0; i < 250; i++) { if (condition()) return; await new Promise((resolve) => setTimeout(resolve, 20)); }
+  throw new Error(`Timed out: ${message}`);
+};
+const errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+try {
+  check(!$('#export-glb').disabled, 'applied model can export despite pending draft');
+  check($('#export-glb').title.includes('Unrun draft is excluded'), 'draft exclusion is visible before export');
+  $('#export-glb').click(); $('#export-glb').click();
+  await wait(() => blobs.length === 1 && !$('#export-glb').disabled, 'GLB download');
+  check(downloads.length === 1 && downloads[0] === 'Blender fixture.glb', 'one click creates one named binary download');
+  const buffer = await blobs[0].arrayBuffer(); const view = new DataView(buffer);
+  check(view.getUint32(0, true) === 0x46546c67, 'download is a real GLB');
+  const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 20, view.getUint32(12, true))));
+  check(json.meshes.length === 1, 'hidden group descendants and sketch helpers are omitted');
+  check(json.nodes.some((node) => node.name === 'Assembly'), 'assembly hierarchy is preserved');
+  check(json.nodes.some((node) => node.name === 'Applied panel'), 'applied geometry is exported');
+  check($('#source-editor').value === fixture.source && $('#editor-error').hidden, 'export leaves unrun source untouched and never executes it');
+  check($('#status-text').textContent.includes('Unrun draft was excluded.') && $('#status-text').textContent.includes('Sketches are not included.'), 'export status explains exclusions');
+  $('#source-editor').value = fixture.appliedSource; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true }));
+  $('#run-code').click();
+  await wait(() => !$('#run-code').disabled && !$('#draft-note').classList.contains('warning-note'), 'draft replaced by applied source');
+  $(`[data-visibility-id="panel"]`).click();
+  $('#export-glb').click();
+  await wait(() => $('#toast').classList.contains('is-error') && !$('#export-glb').disabled, 'all-hidden export error');
+  check($('#toast').textContent.includes('No visible boxes or cylinders') && downloads.length === 1, 'all-hidden export reports error without an empty download');
+  $(`.document-select[data-document-id="${sketch.id}"]`).click();
+  check($('#export-glb').disabled, 'GLB export is disabled in 2D sketch tabs');
+  $(`.document-select[data-document-id="${fixture.id}"]`).click();
+  check(!$('#export-glb').disabled, 'switching back restores GLB control');
+  $('#source-editor').value = ''; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true }));
+  $('#run-code').click();
+  await wait(() => !$('#run-code').disabled && !$('#draft-note').classList.contains('warning-note'), 'empty source applies');
+  check($('#export-glb').disabled, 'empty applied model disables export');
+  while ($('.document-close')) $('.document-close').click();
+  check($('#export-glb').disabled && !$('#empty-workspace').hidden, 'closing all tabs disables export');
+  // Leave a populated test model visible for inspecting the export control.
+  $('#files').click(); $(`[data-open="${fixture.id}"]`).click();
+  $('#source-editor').value = fixture.appliedSource; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true }));
+  $('#run-code').click();
+  await wait(() => !$('#run-code').disabled && !$('#draft-note').classList.contains('warning-note'), 'fixture restored');
+  if ($(`[data-visibility-id="panel"]`).getAttribute('aria-label').startsWith('Show')) $(`[data-visibility-id="panel"]`).click();
+  if ($(`[data-visibility-id="hidden-group"]`).getAttribute('aria-label').startsWith('Hide')) $(`[data-visibility-id="hidden-group"]`).click();
+  $('#fit').click();
+} catch (error) { errors.push(error.stack ?? String(error)); }
+HTMLAnchorElement.prototype.click = nativeClick;
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} GLB export UI checks`;
+$('#test-failures').textContent = errors.join('\n');
+</script>

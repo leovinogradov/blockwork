@@ -190,3 +190,11 @@ Area selection works in either drag direction and excludes hidden items. In 3D i
 The viewport displays the current controls while you work. The toolbar provides isometric, front, right, and top views, perspective or orthographic projection, grid toggle, and fit-to-model. Keyboard shortcuts: **1** front, **3** right, **7** top, **F** fit, and **Delete** remove the selected components. Undo and redo use Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z when focus is outside text fields.
 
 3D models contain boxes, cylinders and mounted sketches; 2D sketch files contain rectangles, circles and lines. Blockwork does not currently create boolean operations or export CAD formats.
+
+## Export to Blender
+
+Choose **Export .glb** in a 3D model, then import the downloaded file in Blender with **File → Import → glTF 2.0 (.glb/.gltf)**. Export uses the last successfully applied model; an unrun source draft is excluded and reported in the export status. Hidden parts and descendants of hidden groups are excluded. Boxes and cylinders retain their names, nested group hierarchy, colors, opacity, and physical dimensions. Inches are converted to meters and Z-up coordinates to glTF's Y-up coordinates.
+
+Sketches and measurement annotations are excluded and reported when present. Dimensions, expressions, placement relationships, and variables are stored as `blockwork` custom metadata in their original inch units; they do not become live Blender constraints. Cylinders use 96 radial segments by default.
+
+The export implementation is encapsulated in `src/glb-export.ts`: `exportModelGlb(model, { name, hiddenIds, cylinderSegments })` accepts model data and returns an `ArrayBuffer`, filename, solid count, and exclusion warnings. It builds and disposes a separate Three.js scene without accessing the viewport, editor, or browser download controls. The UI loads this module only when exporting.
