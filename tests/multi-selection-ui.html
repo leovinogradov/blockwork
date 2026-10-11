@@ -39,7 +39,12 @@ Object.defineProperty(window, 'localStorage', { value:{
   setItem: (key, value) => memory.set(key, value),
   removeItem: (key) => memory.delete(key),
 } });
-await import('/src/main.ts');
+// Give the new IndexedDB library a private database as well as isolated legacy storage.
+const nativeOpen = indexedDB.open.bind(indexedDB);
+const fixtureDatabase = `selection-test-${crypto.randomUUID()}`;
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? fixtureDatabase : name, version);
+const app = await import('/src/main.ts');
+await app.workspaceReady;
 
 const $ = (selector) => document.querySelector(selector);
 const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));

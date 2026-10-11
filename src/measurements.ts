@@ -9,7 +9,7 @@ export type MeasurementAxis = 'x' | 'y' | 'z';
 export type MeasurementAxisChoice = 'auto' | MeasurementAxis;
 export type Measurement = { id: string; name?: string; groupId?: string; start: MeasurementAnchor; end: MeasurementAnchor; offset?: number; lineHeight?: number; axis?: MeasurementAxis; distanceAxis?: MeasurementAxis };
 export type MeasurementGeometry = { boxes?: BoxSpec[]; rectangles?: SketchShape[]; sketches?: ModelSketch[]; groups?: GroupSpec[] };
-export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnchor; a: Vector3; b: Vector3; pointKind?: 'center' | 'edge'; curveCenter?: Vector3; curveAxes?: [number, number] };
+export type MeasurementSegment = { start: MeasurementAnchor; end: MeasurementAnchor; a: Vector3; b: Vector3; pointKind?: 'center' | 'edge'; curveCenter?: Vector3; curveAxes?: [number, number]; selfOcclusionObjectId?: string };
 
 /** Shared defaults and all annotation sizes use inches, just like geometry. */
 export const DEFAULT_MEASUREMENT_OFFSET = 2;
@@ -167,7 +167,7 @@ export function measurementSegments(geometry: MeasurementGeometry, hidden: Set<s
         };
         const center = coords(0.5, 0.5);
         const curveCenter = resolveMeasurementAnchor(anchor(center), geometry)!;
-        push(center, center, { pointKind: 'center' });
+        push(center, center, { pointKind: 'center', ...(item.kind === 'cylinder' ? { selfOcclusionObjectId: objectId } : {}) });
         const steps = 96;
         const rim = (i: number) => coords(0.5 + Math.cos(i * Math.PI * 2 / steps) / 2, 0.5 + Math.sin(i * Math.PI * 2 / steps) / 2);
         for (let i = 0; i < steps; i++) push(rim(i), rim(i + 1), { pointKind: 'edge', curveCenter, curveAxes: radialAxes });
@@ -193,18 +193,30 @@ export function measurementSegments(geometry: MeasurementGeometry, hidden: Set<s
 }
 
 /** Projected picking uses pixels and corrects the edge fraction for perspective. */
-export function snapMeasurement(cursor: [number, number], segments: MeasurementSegment[], project: (p: Vector3) => { x: number; y: number; w: number; visible: boolean }, isVisible: (p: Vector3) => boolean = () => true, tolerance = 12) {
+export function snapMeasurement(cursor: [number, number], segments: MeasurementSegment[], project: (p: Vector3) => { x: number; y: number; w: number; visible: boolean; depth?: number }, isVisible: (p: Vector3, selfOcclusionObjectId?: string) => boolean = () => true, tolerance = 12) {
   type Snap = { anchor: MeasurementAnchor; point: Vector3; kind: 'corner' | 'edge' | 'center' };
-  let corner: Snap | null = null;
-  let edge: Snap | null = null;
-  let cornerDistance = (tolerance * 0.75) ** 2, edgeDistance = tolerance ** 2;
+  let best: { snap: Snap; distance: number; depth?: number } | null = null;
+  const rims = new Map<Vector3, { snap: Snap; distance: number; depth?: number }>();
+  const cornerDistance = (tolerance * 0.75) ** 2, edgeDistance = tolerance ** 2;
+  const offer = (snap: Snap, distance: number, depth?: number) => {
+    if (best) {
+      // In 3D, a foreground reference wins over a center behind its own solid.
+      if (depth !== undefined && best.depth !== undefined && Math.abs(depth - best.depth) > 1e-6) {
+        if (depth >= best.depth) return;
+      } else {
+        const priority = snap.kind === 'edge' ? 1 : 0, bestPriority = best.snap.kind === 'edge' ? 1 : 0;
+        if (priority > bestPriority || priority === bestPriority && distance >= best.distance) return;
+      }
+    }
+    best = { snap, distance, depth };
+  };
   for (const segment of segments) {
     const a = project(segment.a), b = project(segment.b);
     for (const [p, anchor, point] of [[a, segment.start, segment.a], [b, segment.end, segment.b]] as const) {
       // Rim tessellation vertices are edges, not discrete corner snap targets.
       if (segment.pointKind === 'edge') continue;
       const distance = (cursor[0] - p.x) ** 2 + (cursor[1] - p.y) ** 2;
-      if (p.visible && distance <= cornerDistance && isVisible(point)) { cornerDistance = distance; corner = { anchor, point, kind: segment.pointKind ?? 'corner' }; }
+      if (p.visible && distance <= cornerDistance && isVisible(point, segment.selfOcclusionObjectId)) offer({ anchor, point, kind: segment.pointKind ?? 'corner' }, distance, p.depth);
     }
     if (!a.visible || !b.visible) continue;
     const dx = b.x - a.x, dy = b.y - a.y, length = dx * dx + dy * dy;
@@ -226,8 +238,14 @@ export function snapMeasurement(cursor: [number, number], segments: MeasurementS
       coordinates[v] = 0.5 + (coordinates[v] - 0.5) / (2 * fractionRadius);
     }
     if (!isVisible(point)) continue;
-    edgeDistance = distance;
-    edge = { point, kind: 'edge', anchor: { ...segment.start, coordinates } };
+    const candidate = { snap: { point, kind: 'edge' as const, anchor: { ...segment.start, coordinates } }, distance, depth: project(point).depth };
+    if (segment.curveCenter) {
+      // A tessellated rim is one continuous reference: first find its nearest
+      // screen point, then compare that reference's depth with other targets.
+      const previous = rims.get(segment.curveCenter);
+      if (!previous || distance < previous.distance - 1e-6 || Math.abs(distance - previous.distance) <= 1e-6 && (candidate.depth ?? 0) < (previous.depth ?? 0)) rims.set(segment.curveCenter, candidate);
+    } else offer(candidate.snap, distance, candidate.depth);
   }
-  return corner ?? edge;
+  for (const candidate of rims.values()) offer(candidate.snap, candidate.distance, candidate.depth);
+  return best ? (best as { snap: Snap }).snap : null;
 }

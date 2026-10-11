@@ -22,8 +22,8 @@ test('new blank tabs get unique names and start ready for editing', () => {
   const existing = createDocument('Untitled.js', 'existing');
   const first = createBlankDocument([existing]);
   const second = createBlankDocument([existing, first]);
-  assert.equal(first.name, 'Untitled 2.js');
-  assert.equal(second.name, 'Untitled 3.js');
+  assert.equal(first.name, 'Untitled 2');
+  assert.equal(second.name, 'Untitled 3');
   assert.equal(first.source, '');
   assert.equal(first.draftDirty, false);
   assert.deepEqual(first.history, [{ boxes: [], variables: [], source: '', hiddenIds: [] }]);
@@ -42,7 +42,7 @@ test('reload retains every file, active tab, pending draft, last good model, and
   const b = createDocument('panel.js', 'new draft');
   const restored = restoreWorkspace(serializeWorkspace([a, b], b.id));
   assert.equal(restored.activeId, b.id);
-  assert.deepEqual(restored.documents.map((document) => document.name), ['workbench.js', 'panel.js']);
+  assert.deepEqual(restored.documents.map((document) => document.name), ['workbench', 'panel']);
   const saved = restored.documents[0];
   assert.equal(saved.source, 'broken draft');
   assert.equal(saved.draftDirty, true);

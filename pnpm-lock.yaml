@@ -17,6 +17,9 @@ importers:
       '@atlaskit/pragmatic-drag-and-drop-hitbox':
         specifier: ^3.0.0
         version: 3.0.0
+      idb:
+        specifier: ^8.0.4
+        version: 8.0.4
       lucide:
         specifier: ^1.49.0
         version: 1.49.0
@@ -30,6 +33,9 @@ importers:
       '@types/three':
         specifier: ^0.180.0
         version: 0.180.0
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
       tsx:
         specifier: ^4.20.5
         version: 4.23.15
@@ -388,6 +394,10 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  fake-indexeddb@6.2.5:
+    resolution: {integrity: sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==}
+    engines: {node: '>=18'}
+
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
     engines: {node: '>=12.0.0'}
@@ -404,6 +414,9 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  idb@8.0.4:
+    resolution: {integrity: sha512-jd0ITCrN+Zah4J7R/Z2jnR3W7A4BXDAjmo62MwWuSjxCiueUAf7X5rbodEdidWzeknwXHmLpdZkoiiCppNi30Q==}
 
   lucide@1.49.0:
     resolution: {integrity: sha512-Dyl20SJao+7GUAYqa1Wz/x5wiIYzVRlDXwtFDvf44HULQObsb8YjXE81YGv24WMFQQYLqlxHu86ikEAqG4Mbww==}
@@ -730,6 +743,8 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
 
+  fake-indexeddb@6.2.5: {}
+
   fdir@6.5.0(picomatch@4.0.7):
     optionalDependencies:
       picomatch: 4.0.7
@@ -738,6 +753,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  idb@8.0.4: {}
 
   lucide@1.49.0: {}
 

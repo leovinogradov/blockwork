@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Browser file library checks</title>
+<div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:#fff;padding:8px;font:12px monospace;max-width:650px"><span id="test-result">Running file library checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+// This page uses private IndexedDB and legacy localStorage fixtures, never the user's library.
+import { createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+import { FileLibrary } from '/src/file-library.ts';
+import { IndexedDBStorage } from '/src/indexeddb-storage.ts';
+const database = `library-ui-test-${crypto.randomUUID()}`;
+const nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const first = createBlankDocument([]); first.name = 'Plan.js'; first.source = 'unfinished original'; first.draftDirty = true;
+const other = createBlankDocument([]); other.name = 'plan.JS';
+const legacy = serializeWorkspace([first, other], first.id);
+const memory = new Map([['blockwork.workspace.v2', legacy]]);
+Object.defineProperty(window, 'localStorage', { value: {
+  getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem: (key) => memory.delete(key),
+} });
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const inspector = new FileLibrary(new IndexedDBStorage(database));
+const $ = (selector) => document.querySelector(selector);
+const wait = async (condition, message) => {
+  for (let i = 0; i < 250; i++) { if (condition()) return; await new Promise((resolve) => setTimeout(resolve, 20)); }
+  throw new Error(`Timed out: ${message}`);
+};
+const saved = () => wait(() => $('#save-state').textContent === 'Saved locally', 'autosave');
+const click = (selector) => { const element = $(selector); if (!element) throw new Error(`Missing: ${selector}`); element.click(); };
+const fill = (selector, value) => { $(selector).value = value; $(selector).dispatchEvent(new Event('input', { bubbles: true })); };
+const tabCount = () => document.querySelectorAll('.document-tab').length;
+const errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+async function rename(name) {
+  click('#source-name'); fill('#file-name-input', name); $('#file-name-form').requestSubmit();
+  await wait(() => !$('#file-name-dialog').open, 'rename');
+}
+async function chooseFile(source, name = 'myfile.js') {
+  const transfer = new DataTransfer(); transfer.items.add(new File([source], name, { type: 'text/javascript' }));
+  $('#file-input').files = transfer.files; $('#file-input').dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(() => $('#document-kind-dialog').open, 'file kind');
+  click('#document-kind-dialog button[value=model]');
+}
+try {
+  check(tabCount() === 2, 'legacy tabs migrate');
+  check($('.document-select').textContent.includes('Plan') && !$('.document-select').textContent.includes('.js'), 'tabs omit extensions');
+  check($('#source-editor').value === 'unfinished original', 'migration keeps pending draft');
+  check(memory.get('blockwork.workspace.v2') === legacy, 'migration preserves old recovery snapshot');
+  await rename('myfile.js');
+  check($('#source-name').textContent === 'myfile', 'rename normalizes .js');
+  check((await inspector.load()).documents.find((doc) => doc.id === first.id).name === 'myfile', 'rename persists with same ID');
+  fill('#source-editor', 'latest unrun draft');
+  click(`[data-document-id="${first.id}"].document-close`); await saved();
+  const closed = await inspector.load();
+  check(closed.documents.find((doc) => doc.id === first.id).source === 'latest unrun draft', 'close before debounce preserves newest text');
+  check(!closed.workspace.openIds.includes(first.id), 'close removes only tab membership');
+  click('#files'); click(`[data-open="${first.id}"]`); await saved();
+  check($('#source-editor').value === 'latest unrun draft', 'reopen recovers draft');
+  await chooseFile('latest unrun draft'); await saved();
+  check(!$('#import-collision-dialog').open && tabCount() === 2, 'identical import reuses existing tab');
+  await chooseFile('different imported draft'); await wait(() => $('#import-collision-dialog').open, 'collision');
+  click('#import-compare'); check($('#import-browser-source').value === 'latest unrun draft', 'comparison uses current draft');
+  click('#import-collision-dialog button[value=both]'); await wait(() => tabCount() === 3, 'keep both'); await saved();
+  check((await inspector.load()).documents.some((doc) => doc.name === 'myfile (imported)'), 'keep both creates distinct named file');
+  await chooseFile('replacement draft'); await wait(() => $('#import-collision-dialog').open, 'replacement collision');
+  click('#import-collision-dialog button[value=cancel]'); await wait(() => !$('#import-collision-dialog').open, 'cancel collision');
+  check((await inspector.load()).documents.find((doc) => doc.id === first.id).source === 'latest unrun draft', 'cancel keeps original');
+  await chooseFile('replacement draft'); await wait(() => $('#import-collision-dialog').open, 'replacement collision');
+  click('#import-collision-dialog button[value=replace]'); await wait(() => $('#source-editor').value === 'replacement draft', 'replacement'); await saved();
+  check((await inspector.load()).documents.find((doc) => doc.id === first.id).source === 'replacement draft', 'replace keeps ID and new source');
+  check((await inspector.load()).documents.length === 3, 'replace does not duplicate file');
+  click('#files'); click('#library-folder'); fill('#file-name-input', 'Models'); $('#file-name-form').requestSubmit();
+  await wait(() => !$('#file-name-dialog').open, 'new folder');
+  const folder = (await inspector.load()).folders[0];
+  const move = $(`[data-move="${first.id}"]`); move.value = folder.id; move.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(() => !$(`[data-open="${first.id}"]`), 'move file');
+  check((await inspector.load()).documents.find((doc) => doc.id === first.id).parentId === folder.id, 'move persists folder membership');
+  click(`[data-open="${folder.id}"]`);
+  check($('#file-breadcrumbs').textContent.includes('Models'), 'folder navigation shows breadcrumb');
+  click(`[data-open="${first.id}"]`); await saved();
+  while (tabCount()) click('.document-close'); await saved();
+  check(!$('#empty-workspace').hidden, 'closing last tab shows empty state');
+  check((await inspector.load()).documents.length === 3, 'closing last tab does not create phantom files');
+  click('#files'); click(`[data-open="${first.id}"]`); await saved();
+  check($('#source-editor').value === 'replacement draft', 'reopening after all tabs close restores content');
+  // Capture a real backup Blob without triggering a browser download in this fixture.
+  let backupBlob; const createURL = URL.createObjectURL.bind(URL); URL.createObjectURL = (blob) => { backupBlob = blob; return createURL(blob); };
+  const nativeAnchorClick = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function() {};
+  click('#files'); click('#library-backup');
+  HTMLAnchorElement.prototype.click = nativeAnchorClick;
+  const backup = await backupBlob.text(); check(JSON.parse(backup).documents.length === 3, 'backup includes closed files');
+  click('#library-done'); await rename('changed after backup');
+  window.confirm = () => true;
+  const transfer = new DataTransfer(); transfer.items.add(new File([backup], 'backup.json', { type: 'application/json' }));
+  $('#backup-input').files = transfer.files; $('#backup-input').dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(() => $('#source-name').textContent === 'myfile', 'restore backup');
+  check((await inspector.load()).documents.find((doc) => doc.id === first.id).name === 'myfile', 'restore replaces metadata and keeps identities');
+} catch (error) { errors.push(error.stack ?? String(error)); }
+await inspector.close();
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} file library UI checks`;
+$('#test-failures').textContent = errors.join('\n');
+</script>

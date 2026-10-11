@@ -7,7 +7,7 @@ const noFallback = {
   download: () => { throw new Error('Unexpected download'); },
 };
 
-test('native save adopts the chosen filename only after the write closes and persists it', async () => {
+test('native export suggests a .js name and never renames the browser file', async () => {
   const document = createDocument('Untitled.js', 'unrun source draft', 'sketch');
   const id = document.id;
   const pickFile: SaveFilePicker = async (options) => {
@@ -17,16 +17,16 @@ test('native save adopts the chosen filename only after the write closes and per
       createWritable: async () => ({
         write: async (source) => {
           assert.equal(source, 'unrun source draft');
-          assert.equal(document.name, 'Untitled.js');
+          assert.equal(document.name, 'Untitled');
         },
-        close: async () => { assert.equal(document.name, 'Untitled.js'); },
+        close: async () => { assert.equal(document.name, 'Untitled'); },
       }),
     };
   };
   assert.equal(await saveDocumentFile(document, { ...noFallback, pickFile }), 'saved');
   const restored = restoreWorkspace(serializeWorkspace([document], id));
   assert.equal(restored.activeId, id);
-  assert.equal(restored.documents[0].name, 'Plan.js');
+  assert.equal(restored.documents[0].name, 'Untitled');
   assert.equal(restored.documents[0].kind, 'sketch');
   assert.equal(restored.documents[0].draftDirty, true);
   assert.equal(restored.documents[0].source, 'unrun source draft');
@@ -54,7 +54,7 @@ test('write failures leave the name unchanged and are reported instead of downlo
       },
     });
     await assert.rejects(saveDocumentFile(document, { ...noFallback, pickFile }), /Save failed/);
-    assert.equal(document.name, 'Untitled.js');
+    assert.equal(document.name, 'Untitled');
   }
 });
 
@@ -75,7 +75,7 @@ test('failing a download does not rename the document', async () => {
   await assert.rejects(saveDocumentFile(document, {
     download: () => { throw new Error('Download failed'); },
   }), /Download failed/);
-  assert.equal(document.name, 'Untitled.js');
+  assert.equal(document.name, 'Untitled');
 });
 
 test('fallback filenames normalize source extensions and reject paths or empty names', () => {

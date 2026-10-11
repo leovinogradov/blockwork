@@ -3,6 +3,7 @@ import { generateSource, resolveModel, type BoxSpec, type FaceName, type Variabl
 import { generateSketchSource, validateSketchShapes, type SketchShape } from './sketch';
 import { normalizeTreeOrder } from './component-tree';
 import type { ModelSketch } from './model-sketch';
+import { fileName, uniqueFileName } from './file-names';
 
 import { DEFAULT_MEASUREMENT_OFFSET, validateMeasurements, type Measurement } from './measurements';
 
@@ -15,6 +16,7 @@ export type ModelDocument = {
   id: string;
   name: string;
   kind: DocumentKind;
+  parentId: string | null;
   sketchTargets?: SketchTarget[];
   groups: GroupSpec[];
   collapsedGroupIds: string[];
@@ -56,7 +58,7 @@ export function resolveSnapshot(snapshot: Snapshot, kind: DocumentKind) {
 
 export function createDocument(name: string, source: string, kind: DocumentKind = 'model'): ModelDocument {
   return {
-    id: crypto.randomUUID(), name, kind, source, appliedSource: '', draftDirty: true,
+    id: crypto.randomUUID(), name: fileName(name), kind, parentId: null, source, appliedSource: '', draftDirty: true,
     groups: [], collapsedGroupIds: [], treeOrder: [], boxes: [], sketches: [], rectangles: [], measurements: [], variables: [], hiddenBoxIds: [], viewMode: kind === 'sketch' ? 'top' : 'iso', projectionMode: kind === 'sketch' ? 'orthographic' : 'perspective', gridVisible: true,
     history: [], historyAt: -1, selectedId: null, selectedSketchIds: [], selectedModelIds: [], selectedVariable: null, selectedFace: null, error: '',
     scrollTop: 0, scrollLeft: 0, selectionStart: 0, selectionEnd: 0,
@@ -64,9 +66,7 @@ export function createDocument(name: string, source: string, kind: DocumentKind 
 }
 
 export function createBlankDocument(documents: ModelDocument[], kind: DocumentKind = 'model'): ModelDocument {
-  const names = new Set(documents.map((document) => document.name.toLowerCase()));
-  let name = 'Untitled.js';
-  for (let number = 2; names.has(name.toLowerCase()); number++) name = `Untitled ${number}.js`;
+  const name = uniqueFileName('Untitled', documents.map((document) => document.name));
   const document = createDocument(name, kind === 'sketch' ? generateSketchSource([]) : '', kind);
   document.draftDirty = false;
   document.appliedSource = document.source;
@@ -75,16 +75,20 @@ export function createBlankDocument(documents: ModelDocument[], kind: DocumentKi
   return document;
 }
 
-export function serializeWorkspace(documents: ModelDocument[], activeId: string, preferences: WorkspacePreferences = { measurementsThroughObjects: true }): string {
-  return JSON.stringify({ measurementUnits: 'inches', activeId, preferences, documents: documents.map((document) => ({
-    id: document.id, name: document.name, kind: document.kind, sketchTargets: document.sketchTargets, source: document.source, appliedSource: document.appliedSource,
+export function serializeDocument(document: Omit<ModelDocument, 'history' | 'historyAt' | 'selectedId' | 'selectedSketchIds' | 'selectedModelIds' | 'selectedVariable' | 'selectedFace' | 'scrollTop' | 'scrollLeft' | 'selectionStart' | 'selectionEnd'>) {
+  return {
+    id: document.id, name: document.name, kind: document.kind, parentId: document.parentId, sketchTargets: document.sketchTargets, source: document.source, appliedSource: document.appliedSource,
     draftDirty: document.draftDirty, groups: document.groups, collapsedGroupIds: document.collapsedGroupIds, treeOrder: document.treeOrder, boxes: document.boxes, sketches: document.sketches, rectangles: document.rectangles, measurements: document.measurements, variables: document.variables,
     hiddenBoxIds: document.hiddenBoxIds, viewMode: document.viewMode,
     projectionMode: document.projectionMode, gridVisible: document.gridVisible, error: document.error,
-  })) });
+  };
 }
 
-function restoreDocument(value: unknown, legacyPixelMeasurements = false): ModelDocument {
+export function serializeWorkspace(documents: ModelDocument[], activeId: string, preferences: WorkspacePreferences = { measurementsThroughObjects: true }): string {
+  return JSON.stringify({ measurementUnits: 'inches', activeId, preferences, documents: documents.map(serializeDocument) });
+}
+
+export function restoreDocument(value: unknown, legacyPixelMeasurements = false): ModelDocument {
   if (!value || typeof value !== 'object') throw new Error('Invalid document');
   const data = value as Partial<ModelDocument>;
   if (typeof data.source !== 'string' || !Array.isArray(data.boxes)) throw new Error('Invalid document');
@@ -94,6 +98,7 @@ function restoreDocument(value: unknown, legacyPixelMeasurements = false): Model
   const rectangles = kind === 'sketch' ? validateSketchShapes(data.rectangles ?? [], groups) : [];
   const document = createDocument(typeof data.name === 'string' ? data.name : 'Recovered local model', data.source, kind);
   if (typeof data.id === 'string' && data.id) document.id = data.id;
+  if (typeof data.parentId === 'string') document.parentId = data.parentId;
   if (kind === 'sketch' && Array.isArray(data.sketchTargets)) {
     document.sketchTargets = data.sketchTargets.filter((target) => target && typeof target.documentId === 'string' && typeof target.sketchId === 'string' && Array.isArray(target.origin) && target.origin.length === 2 && target.origin.every((n) => typeof n === 'number' && Number.isFinite(n))).map((target) => structuredClone(target));
   }

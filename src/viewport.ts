@@ -3,6 +3,7 @@ import { NavigationControls } from './navigation-controls';
 import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
 import { createFaceHighlight } from './face-highlight';
+import { measurementPointVisible } from './measurement-visibility';
 import { createMeasurementAnnotation } from './measurement-annotation';
 import { cylinderAxes, parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
@@ -237,8 +238,9 @@ export function createViewport(
     });
   };
   const projectMeasurementPoint = (p: [number, number, number]) => {
-    const clip = new THREE.Vector4(...p, 1).applyMatrix4(camera.matrixWorldInverse).applyMatrix4(camera.projectionMatrix);
-    return { x: (clip.x / clip.w + 1) * host.clientWidth / 2, y: (1 - clip.y / clip.w) * host.clientHeight / 2, w: clip.w, visible: clip.w > 0 && Math.abs(clip.z / clip.w) <= 1 };
+    const view = new THREE.Vector4(...p, 1).applyMatrix4(camera.matrixWorldInverse);
+    const clip = view.clone().applyMatrix4(camera.projectionMatrix);
+    return { x: (clip.x / clip.w + 1) * host.clientWidth / 2, y: (1 - clip.y / clip.w) * host.clientHeight / 2, w: clip.w, visible: clip.w > 0 && Math.abs(clip.z / clip.w) <= 1, ...(!sketchMode ? { depth: -view.z } : {}) };
   };
   const planeRaycaster = new THREE.Raycaster();
   const pointOnAnnotationPlane = (frame: ReturnType<typeof measurementAxisLayout>, point: [number, number]) => {
@@ -860,13 +862,10 @@ export function createViewport(
     if (!renderer) return null;
     const rect = renderer.domElement.getBoundingClientRect();
     camera.updateMatrixWorld(); boxRoot.updateMatrixWorld(true);
-    return snapMeasurement([event.clientX - rect.left, event.clientY - rect.top], measurementEdges, projectMeasurementPoint, (point) => {
+    const occluders = [...objects.values()].filter((object) => !object.sketch && !hiddenIds.has(object.id)).map((object) => object.mesh);
+    return snapMeasurement([event.clientX - rect.left, event.clientY - rect.top], measurementEdges, projectMeasurementPoint, (point, selfOcclusionObjectId) => {
       if (sketchMode) return true;
-      const p = new THREE.Vector3(...point).project(camera);
-      raycaster.setFromCamera(new THREE.Vector2(p.x, p.y), camera);
-      const hit = raycaster.intersectObjects([...objects.values()].filter((object) => !object.sketch && !hiddenIds.has(object.id)).map((object) => object.mesh), false)[0];
-      const distance = new THREE.Vector3(...point).sub(raycaster.ray.origin).dot(raycaster.ray.direction);
-      return !hit || hit.distance >= distance - Math.max(0.001, boundsRadius() * 1e-5);
+      return measurementPointVisible(point, camera, occluders, raycaster, Math.max(0.001, boundsRadius() * 1e-5), selfOcclusionObjectId);
     });
   };
 

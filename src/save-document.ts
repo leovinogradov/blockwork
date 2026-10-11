@@ -1,4 +1,5 @@
 import type { ModelDocument } from './documents';
+import { fileName } from './file-names';
 
 export type SaveFileHandle = {
   name: string;
@@ -11,14 +12,10 @@ export type SaveFilePicker = (options: {
 }) => Promise<SaveFileHandle>;
 
 export function javascriptFilename(value: string): string {
-  const name = value.trim();
-  if (!name || /[\\/\x00-\x1f]/.test(name) || name === '.' || name === '..') {
-    throw new Error('Enter a filename without folders.');
-  }
-  return name.replace(/\.(m?js|txt)$/i, '') + '.js';
+  return fileName(value) + '.js';
 }
 
-/** Adopt the native picker's filename only after its write succeeds. */
+/** Export a snapshot without renaming or linking the browser file. */
 export async function saveDocumentFile(modelDocument: ModelDocument, options: {
   pickFile?: SaveFilePicker;
   download(source: string, filename: string): void;
@@ -35,7 +32,6 @@ export async function saveDocumentFile(modelDocument: ModelDocument, options: {
       const writable = await handle.createWritable();
       await writable.write(source);
       await writable.close();
-      modelDocument.name = handle.name;
       return 'saved';
     }
     // Ordinary downloads expose no final filename to the app.

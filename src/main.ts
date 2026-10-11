@@ -11,13 +11,17 @@ import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, createCylinderFromFace, cylinderAxes, cylinderAxisOrder, cylinderSize, reorientCylinder, formatInches, generateSource, getFaceFrame, parseInches, removeVariable, reparentBox, resolveModel, validateBoxes, type BoxSpec, type CylinderAxis, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
 import { createViewport, type SketchTool } from './viewport';
 import { updateSketchSelection, type SelectionAction } from './sketch-selection';
-import { createBlankDocument, createDocument, restoreWorkspace, resolveSnapshot, serializeWorkspace, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
+import { createBlankDocument, createDocument, resolveSnapshot, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
 import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
 import { sketchReference, sketchReferenceOrigin, type ModelSketch, type SketchAxis } from './model-sketch';
 import { findSketchEditor, linkSketchEditor, openSketchEditor, resolveLinkedSketches, synchronizeSketchReferences } from './sketch-editor';
 import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementAxis, type MeasurementAxisChoice } from './measurements';
 import { saveDocumentFile, type SaveFilePicker } from './save-document';
 import { openDocumentFile } from './open-document';
+import { FileLibrary, exportLibrary, restoreLibrary, migrateWorkspace, importCollision, siblingNames, validateLibrary, type Folder, type LibraryState } from './file-library';
+import { IndexedDBStorage } from './indexeddb-storage';
+import { createFileManager } from './file-manager-ui';
+import { fileName, uniqueFileName } from './file-names';
 
 const STORAGE_KEY = 'blockwork.workspace.v2';
 const LEGACY_STORAGE_KEY = 'blockwork.project.v1';
@@ -40,11 +44,12 @@ root.innerHTML = `
         <button class="icon-button" id="undo" title="Undo (Ctrl/Cmd+Z)" aria-label="Undo">↶</button>
         <button class="icon-button" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo">↷</button>
         <span class="top-divider"></span>
-        <button class="button button-quiet" id="open-file">Open .js</button>
-        <button class="button button-quiet" id="download" title="Save .js (Ctrl/Cmd+S)">Save .js</button>
-        <input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" multiple hidden />
+        <button class="button button-quiet" id="files">Files</button><button class="button button-quiet" id="open-file">Import .js</button>
+        <button class="button button-quiet" id="download" title="Export .js (Ctrl/Cmd+S)">Export .js</button>
+        <input id="backup-input" type="file" accept=".json,application/json" hidden /><input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" multiple hidden />
       </div>
     </header>
+    <div id="empty-workspace" class="empty-workspace" hidden>No file is open. Choose <b>Files</b> to reopen a saved file, or <b>＋</b> to create one.</div>
     <div class="workspace">
       <aside id="tools-panel" class="sidebar panel">
         <section class="sketch-tools-section" aria-labelledby="sketch-tools-title">
@@ -102,7 +107,7 @@ root.innerHTML = `
       </aside>
       <section class="code-panel panel">
         <div class="code-header">
-          <div class="code-title"><div class="eyebrow">SOURCE</div><div class="heading-title"><span class="code-dot">●</span> <span id="source-name">model.js</span> <span class="code-mode">JAVASCRIPT</span></div></div>
+          <div class="code-title"><div class="eyebrow">SOURCE</div><div class="heading-title"><span class="code-dot">●</span> <button id="source-name" class="source-name-button" type="button" title="Rename file">model</button> <span class="code-mode">JAVASCRIPT</span></div></div>
           <div class="code-header-note" id="draft-note">Edit the code, then run it to update the model.</div>
           <div class="code-actions"><button class="button button-quiet button-small" id="reset-code">Reset example</button><button class="button button-run" id="run-code"><span>▶</span> Run <kbd>⌘↵</kbd></button></div>
         </div>
@@ -130,7 +135,7 @@ root.innerHTML = `
     <dialog id="cylinder-dialog" class="variable-dialog" aria-labelledby="cylinder-dialog-title"><form id="cylinder-form"><div class="eyebrow">3D COMPONENT</div><h2 id="cylinder-dialog-title">Add cylinder</h2><label class="field-label" for="cylinder-radius">RADIUS · INCHES</label><input id="cylinder-radius" class="text-field" inputmode="decimal" autocomplete="off" required/><label class="field-label expression-label" for="cylinder-length">LENGTH · INCHES</label><input id="cylinder-length" class="text-field" inputmode="decimal" autocomplete="off" required/><label class="field-label expression-label" for="cylinder-axis">LENGTH AXIS</label><select id="cylinder-axis" class="text-field"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select><div id="cylinder-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="cylinder-cancel">Cancel</button><button type="submit" class="button button-run">Add cylinder</button></div></form></dialog>
     <dialog id="variable-dialog" class="variable-dialog"><form id="variable-form"><div class="eyebrow">MODEL VARIABLE</div><h2 id="variable-dialog-title">Add variable</h2><label class="field-label" for="variable-name">NAME</label><input id="variable-name" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-value">VALUE · INCHES</label><input id="variable-value" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-description">DESCRIPTION · OPTIONAL</label><textarea id="variable-description" class="text-field variable-description" rows="3"></textarea><div id="variable-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="variable-cancel">Cancel</button><button type="submit" class="button button-run" id="variable-submit">Create variable</button></div></form></dialog>
     <dialog id="delete-variable-dialog" class="variable-dialog"><form method="dialog"><div class="eyebrow">VARIABLE IN USE</div><h2>Replace references?</h2><p id="delete-variable-message" class="delete-variable-message"></p><div class="dialog-actions"><button value="cancel" class="button button-quiet">Cancel</button><button value="delete" class="button button-run">Delete and replace</button></div></form></dialog>
-    <dialog id="close-document-dialog" class="variable-dialog close-document-dialog" aria-labelledby="close-document-title" aria-describedby="close-document-message"><form method="dialog"><div class="eyebrow">CLOSE FILE</div><h2 id="close-document-title">Close <span id="close-document-name"></span>?</h2><p id="close-document-message">Closing removes this tab and its local recovery copy. Save and close saves the current source as a .js file.</p><p id="close-document-draft" class="close-document-draft" hidden>This tab has an unrun source draft. Close without saving will discard it.</p><div class="dialog-actions close-document-actions"><button id="close-document-cancel" value="cancel" class="button button-quiet">Cancel</button><button id="close-document-save" type="button" class="button button-run">Save and close</button><button value="close" class="button button-danger">Close without saving</button></div></form></dialog>
+    <dialog id="close-document-dialog" class="variable-dialog close-document-dialog" aria-labelledby="close-document-title" aria-describedby="close-document-message"><form method="dialog"><div class="eyebrow">CLOSE FILE</div><h2 id="close-document-title">Close <span id="close-document-name"></span>?</h2><p id="close-document-message">Closing keeps this file and its current draft in your browser library. Export and close also saves a .js copy to your computer.</p><p id="close-document-draft" class="close-document-draft" hidden>This tab has an unrun source draft. The draft is kept in your browser library.</p><div class="dialog-actions close-document-actions"><button id="close-document-cancel" value="cancel" class="button button-quiet">Cancel</button><button id="close-document-save" type="button" class="button button-run">Export and close</button><button value="close" class="button button-danger">Close tab</button></div></form></dialog>
     <div id="face-menu" class="face-menu" role="menu" aria-label="Component face actions" hidden><div class="face-menu-caption" id="face-menu-caption"></div><div class="face-menu-actions"><button id="new-from-face" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">＋</span><span>New box from face</span></button><button id="new-cylinder-from-face" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">＋</span><span>New cylinder from face</span></button><button id="duplicate-from-menu" class="face-menu-action" role="menuitem" type="button"><span aria-hidden="true">⧉</span><span>Duplicate</span></button></div><div class="face-menu-reason" id="face-menu-reason"></div></div>
     <div id="group-member-menu" class="face-menu" role="menu" aria-label="Group member actions" hidden><div class="face-menu-caption" id="group-member-menu-caption"></div><div class="face-menu-actions"><button id="remove-group-member" class="face-menu-action" role="menuitem" type="button">Remove from group</button></div><div class="face-menu-reason">Removes this item from all groups and keeps it in place.</div></div>
   </main>`;
@@ -170,6 +175,13 @@ let draftDirty = false;
 let appliedSource = '';
 let runEpoch = 0;
 let documents: ModelDocument[] = [];
+let openDocumentIds: string[] = [];
+let folders: Folder[] = [];
+let library: FileLibrary | null = null;
+let storageReady = false;
+let persistenceGeneration = 0;
+let importParentId: string | null = null;
+const emptyDocument = createBlankDocument([]);
 let activeDocumentId = '';
 let pendingCloseDocumentId: string | null = null;
 let history: Snapshot[] = [];
@@ -870,6 +882,7 @@ function renderModelSketchInspector(sketch: ModelSketch) {
   host.querySelector('#edit-model-sketch')!.addEventListener('click', () => {
     captureDocument();
     const doc = openSketchEditor(documents, activeDocument(), sketch.id);
+    doc.name = uniqueFileName(doc.name, siblingNames(documents, folders, doc.parentId, doc.id));
     synchronizeSketchReferences(documents, doc);
     loadDocument(doc); scheduleSave();
     setStatus('Edit sketch contents · applied changes automatically update the model');
@@ -994,7 +1007,7 @@ function computedMeasurement(expression: string | undefined, value: number): str
 
 function escapeHTML(s: string) { return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!); }
 function escapeAttr(s: string) { return escapeHTML(s); }
-function activeDocument() { return documents.find((document) => document.id === activeDocumentId)!; }
+function activeDocument() { return documents.find((document) => document.id === activeDocumentId) ?? emptyDocument; }
 function captureDocument() {
   const document = activeDocument();
   if (!document) return;
@@ -1009,14 +1022,14 @@ function renderDocumentTabs() {
   const host = $('#document-tabs');
   const focused = host.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.documentId : undefined;
   const closing = host.contains(document.activeElement) && (document.activeElement as HTMLElement).classList.contains('document-close');
-  host.innerHTML = documents.map((document) => {
+  host.innerHTML = openDocumentIds.map((id) => documents.find((document) => document.id === id)!).map((document) => {
     const active = document.id === activeDocumentId;
     const pending = active ? draftDirty : document.draftDirty;
     return `<div class="document-tab ${active ? 'active' : ''}"><button class="document-select" data-document-id="${escapeAttr(document.id)}" ${active ? 'aria-current="page"' : ''} title="${escapeAttr(document.name)} · ${document.kind === 'sketch' ? '2D sketch' : '3D model'}${pending ? ' · pending draft' : ''}"><span class="document-kind-mark" aria-hidden="true"><i data-lucide="${document.kind === 'sketch' ? 'square' : 'box'}"></i></span><span>${escapeHTML(document.name)}</span>${pending ? '<span class="document-draft" aria-label="Pending draft">●</span>' : ''}</button><button class="document-close" data-document-id="${escapeAttr(document.id)}" aria-label="Close ${escapeAttr(document.name)}" title="Close file">×</button></div>`;
   }).join('');
   renderIcons(host);
-  host.querySelectorAll<HTMLButtonElement>('.document-select').forEach((button) => button.addEventListener('click', () => switchDocument(button.dataset.documentId!)));
-  host.querySelectorAll<HTMLButtonElement>('.document-close').forEach((button) => button.addEventListener('click', () => closeDocument(button.dataset.documentId!)));
+  host.querySelectorAll<HTMLButtonElement>('.document-select').forEach((button) => { button.addEventListener('click', () => switchDocument(button.dataset.documentId!)); button.addEventListener('dblclick', () => renameTab(button.dataset.documentId!)); });
+  host.querySelectorAll<HTMLButtonElement>('.document-close').forEach((button) => { button.addEventListener('click', () => closeDocument(button.dataset.documentId!)); button.addEventListener('contextmenu', (event) => { event.preventDefault(); showCloseDocumentDialog(button.dataset.documentId!); }); });
   if (focused) Array.from(host.querySelectorAll<HTMLButtonElement>(closing ? '.document-close' : '.document-select')).find((button) => button.dataset.documentId === focused)?.focus();
 }
 function loadDocument(document: ModelDocument) {
@@ -1025,6 +1038,12 @@ function loadDocument(document: ModelDocument) {
   $('#run-code').toggleAttribute('disabled', false);
   closeFaceMenu(); closeFaceColorPicker();
   activeDocumentId = document.id;
+  if (documents.includes(document) && !openDocumentIds.includes(document.id)) openDocumentIds.push(document.id);
+  const empty = !openDocumentIds.length;
+  $('#empty-workspace').hidden = !empty;
+  $('.workspace').toggleAttribute('inert', empty);
+  $('#download').toggleAttribute('disabled', empty);
+  $('#source-name').toggleAttribute('disabled', empty);
   groups = structuredClone(document.groups); collapsedGroupIds = new Set(document.collapsedGroupIds); treeOrder = [...document.treeOrder];
   documentKind = document.kind; boxes = cloneBoxes(document.boxes); sketches = structuredClone(document.sketches); rectangles = cloneRectangles(document.rectangles); variables = cloneVariables(document.variables);
   sketches = structuredClone(document.sketches ?? []); measurements = structuredClone(document.measurements ?? []); measuring = false;
@@ -1067,6 +1086,9 @@ function switchDocument(id: string) {
   captureDocument(); loadDocument(document); scheduleSave();
 }
 function closeDocument(id: string) {
+  removeDocument(id);
+}
+function showCloseDocumentDialog(id: string) {
   captureDocument();
   const document = documents.find((item) => item.id === id);
   if (!document) return;
@@ -1079,16 +1101,12 @@ function closeDocument(id: string) {
   $('#close-document-cancel').focus();
 }
 function removeDocument(id: string) {
-  const index = documents.findIndex((document) => document.id === id);
+  captureDocument();
+  const index = openDocumentIds.indexOf(id);
   if (index < 0) return;
-  documents.splice(index, 1);
-  if (!documents.length) {
-    documents.push(createBlankDocument(documents, documentKind));
-  }
-  if (id === activeDocumentId) loadDocument(documents[Math.min(index, documents.length - 1)]);
+  openDocumentIds.splice(index, 1);
+  if (id === activeDocumentId) loadDocument(documents.find((doc) => doc.id === openDocumentIds[Math.min(index, openDocumentIds.length - 1)]) ?? emptyDocument);
   else renderDocumentTabs();
-  const nextId = documents[Math.min(index, documents.length - 1)].id;
-  Array.from($('#document-tabs').querySelectorAll<HTMLButtonElement>('.document-select')).find((button) => button.dataset.documentId === nextId)?.focus();
   scheduleSave();
 }
 function downloadSource(source: string, filename: string) {
@@ -1102,7 +1120,7 @@ function downloadSource(source: string, filename: string) {
 }
 let savingDocument = false;
 async function saveDocument(modelDocument: ModelDocument): Promise<boolean> {
-  if (savingDocument) return false;
+  if (savingDocument || !documents.includes(modelDocument)) return false;
   savingDocument = true;
   $('#download').toggleAttribute('disabled', true);
   $('#close-document-save').toggleAttribute('disabled', true);
@@ -1114,15 +1132,15 @@ async function saveDocument(modelDocument: ModelDocument): Promise<boolean> {
     });
     if (!result) return false;
     if (modelDocument.id === activeDocumentId) $('#source-name').textContent = modelDocument.name;
-    renderDocumentTabs(); saveWorkspace();
-    notify(result === 'saved' ? `Saved ${modelDocument.name}` : `Save requested · ${modelDocument.name}`);
+    renderDocumentTabs(); void saveWorkspace();
+    notify(result === 'saved' ? `Exported ${modelDocument.name}.js` : `Export requested · ${modelDocument.name}.js`);
     return true;
   } catch (error) {
     notify(error instanceof Error ? error.message : 'Could not save file', true);
     return false;
   } finally {
     savingDocument = false;
-    $('#download').toggleAttribute('disabled', false);
+    $('#download').toggleAttribute('disabled', !openDocumentIds.length);
     $('#close-document-save').toggleAttribute('disabled', false);
   }
 }
@@ -1140,15 +1158,101 @@ closeDocumentDialog.addEventListener('close', () => {
   if (!id || closeDocumentDialog.returnValue !== 'close') return;
   removeDocument(id);
 });
-function saveWorkspace() {
+function libraryState(): LibraryState {
+  return { documents, folders, workspace: { openIds: [...openDocumentIds], activeId: openDocumentIds.includes(activeDocumentId) ? activeDocumentId : '', preferences: { measurementsThroughObjects } } };
+}
+async function saveWorkspace(): Promise<boolean> {
+  if (!storageReady) return false;
+  window.clearTimeout(saveTimer);
   captureDocument();
-  try { localStorage.setItem(STORAGE_KEY, serializeWorkspace(documents, activeDocumentId, { measurementsThroughObjects })); $('#save-state').textContent = 'Saved locally'; }
-  catch { $('#save-state').textContent = 'Local only'; }
+  const generation = ++persistenceGeneration;
+  $('#save-state').textContent = 'Saving…';
+  try {
+    if (!library) throw new Error('Browser storage is unavailable. Export files or back up the library to keep your work.');
+    const state = libraryState();
+    await library.save(state.documents, state.folders, state.workspace);
+    if (generation === persistenceGeneration) $('#save-state').textContent = 'Saved locally';
+    return true;
+  } catch (error) {
+    if (generation === persistenceGeneration) $('#save-state').textContent = 'Not saved';
+    notify(error instanceof Error ? error.message : 'Could not save to browser storage. Back up your work.', true);
+    return false;
+  }
 }
 function scheduleSave() {
+  if (!storageReady) return;
+  persistenceGeneration++;
   $('#save-state').textContent = 'Saving…'; window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(saveWorkspace, 350);
+  saveTimer = window.setTimeout(() => void saveWorkspace(), 350);
 }
+function renameTab(id: string) {
+  const doc = documents.find((doc) => doc.id === id);
+  if (doc) fileManager.rename(id, doc.name);
+}
+async function persistLibraryChange(nextDocuments: ModelDocument[], nextFolders: Folder[], nextOpenIds = openDocumentIds) {
+  if (!library) throw new Error('Browser storage is unavailable. Export or back up your work.');
+  validateLibrary(nextDocuments, nextFolders);
+  window.clearTimeout(saveTimer); captureDocument();
+  const generation = ++persistenceGeneration;
+  $('#save-state').textContent = 'Saving…';
+  const nextActive = nextOpenIds.includes(activeDocumentId) ? activeDocumentId : nextOpenIds[0] ?? '';
+  try { await library.save(nextDocuments, nextFolders, { openIds: nextOpenIds, activeId: nextActive, preferences: { measurementsThroughObjects } }); }
+  catch (error) { if (generation === persistenceGeneration) $('#save-state').textContent = 'Not saved'; throw error; }
+  documents = nextDocuments; folders = nextFolders; openDocumentIds = [...nextOpenIds];
+  if (!documents.some((doc) => doc.id === activeDocumentId && openDocumentIds.includes(doc.id))) loadDocument(documents.find((doc) => doc.id === nextActive) ?? emptyDocument);
+  else { $('#source-name').textContent = activeDocument().name; renderDocumentTabs(); renderInspector(); }
+  if (generation === persistenceGeneration) $('#save-state').textContent = 'Saved locally';
+}
+const fileManager = createFileManager(root, {
+  state: () => { captureDocument(); return libraryState(); },
+  open: (id) => switchDocument(id),
+  async rename(id, value) {
+    captureDocument();
+    const name = fileName(value);
+    const nextDocuments = documents.map((doc) => doc.id === id ? { ...doc, name } : doc);
+    const nextFolders = folders.map((folder) => folder.id === id ? { ...folder, name } : folder);
+    await persistLibraryChange(nextDocuments, nextFolders);
+    const renamed = documents.find((doc) => doc.id === id);
+    if (renamed?.kind === 'sketch') { synchronizeSketchReferences(documents, renamed); if (openDocumentIds.length) loadDocument(activeDocument()); scheduleSave(); }
+  },
+  async move(id, parentId) {
+    captureDocument();
+    await persistLibraryChange(documents.map((doc) => doc.id === id ? { ...doc, parentId } : doc), folders.map((folder) => folder.id === id ? { ...folder, parentId } : folder));
+  },
+  async remove(id) {
+    captureDocument();
+    if ([...folders, ...documents].some((entry) => entry.parentId === id)) throw new Error('Move or delete the folder’s contents first.');
+    const nextDocuments = documents.filter((doc) => doc.id !== id).map((doc) => doc.sketchTargets?.some((target) => target.documentId === id) ? { ...doc, sketchTargets: doc.sketchTargets.filter((target) => target.documentId !== id) } : doc);
+    await persistLibraryChange(nextDocuments, folders.filter((folder) => folder.id !== id), openDocumentIds.filter((openId) => openId !== id));
+  },
+  async createFolder(parentId, name) { await persistLibraryChange(documents, [...folders, { id: crypto.randomUUID(), parentId, name: fileName(name) }]); },
+  createFile: (parentId) => { void newTab(parentId); },
+  importFiles: (parentId) => { importParentId = parentId; ($('#file-input') as HTMLInputElement).click(); },
+  backup: () => { captureDocument(); downloadData(exportLibrary(libraryState()), 'blockwork-library.json', 'application/json'); },
+  restore: () => ($('#backup-input') as HTMLInputElement).click(),
+});
+$('#files').addEventListener('click', () => fileManager.open());
+$('#source-name').addEventListener('click', () => renameTab(activeDocumentId));
+function downloadData(source: string, filename: string, type: string) {
+  const url = URL.createObjectURL(new Blob([source], { type }));
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename;
+  document.body.append(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+$('#backup-input').addEventListener('change', async (event) => {
+  const input = event.currentTarget as HTMLInputElement; const file = input.files?.[0]; input.value = '';
+  if (!file) return;
+  try {
+    const restored = restoreLibrary(await file.text());
+    if (!window.confirm('Replace your browser library with this backup? Back up the current library first if you want to keep it.')) return;
+    if (!library) throw new Error('Browser storage is unavailable.');
+    window.clearTimeout(saveTimer); captureDocument();
+    await library.save(restored.documents, restored.folders, restored.workspace);
+    documents = restored.documents; folders = restored.folders; openDocumentIds = restored.workspace.openIds;
+    measurementsThroughObjects = restored.workspace.preferences.measurementsThroughObjects; syncMeasurementThroughPreference();
+    loadDocument(documents.find((doc) => doc.id === restored.workspace.activeId) ?? emptyDocument);
+    $('#save-state').textContent = 'Saved locally'; notify('Library restored');
+  } catch (error) { notify(error instanceof Error ? error.message : 'Could not restore backup.', true); }
+});
 function cloneVariables(value: VariableSpec[]) { return value.map((item) => ({ ...item })); }
 function recordAfterChange(source = editor.value) { treeOrder = normalizeTreeOrder(treeOrder, groups, objectItems()); history = history.slice(0, historyAt + 1); history.push({ groups: structuredClone(groups), treeOrder: [...treeOrder], boxes: cloneBoxes(boxes), sketches: structuredClone(sketches), measurements: structuredClone(measurements), rectangles: cloneRectangles(rectangles), variables: cloneVariables(variables), source, hiddenIds: [...hiddenBoxIds] }); historyAt = history.length - 1; if (history.length > 80) { history.shift(); historyAt--; } syncLinkedSketches(); }
 function syncLinkedSketches() {
@@ -1479,34 +1583,59 @@ function chooseDocumentKind(title: string, allowOpenExisting = false): Promise<D
   dialog.returnValue = 'cancel'; dialog.showModal();
   return new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'model' || dialog.returnValue === 'sketch' ? dialog.returnValue : null), { once: true }));
 }
-async function newTab() {
+async function newTab(parentId: string | null = null) {
+  importParentId = parentId;
   const kind = await chooseDocumentKind('Open or create a file', true);
   if (!kind) return;
   captureDocument();
-  const document = createBlankDocument(documents, kind);
+  const document = createBlankDocument(documents.filter((doc) => doc.parentId === parentId), kind);
+  document.parentId = parentId;
+  document.name = uniqueFileName(document.name, siblingNames(documents, folders, parentId));
   documents.push(document);
   loadDocument(document);
   scheduleSave();
   editor.focus();
 }
-$('#new-tab').addEventListener('click', newTab);
+$('#new-tab').addEventListener('click', () => void newTab());
 $('#open-existing-file').addEventListener('click', () => {
   ($('#document-kind-dialog') as HTMLDialogElement).close('cancel');
   ($('#file-input') as HTMLInputElement).click();
 });
-$('#open-file').addEventListener('click', () => ($('#file-input') as HTMLInputElement).click());
+$('#open-file').addEventListener('click', () => { importParentId = activeDocument().parentId; ($('#file-input') as HTMLInputElement).click(); });
 $('#file-input').addEventListener('change', async (event) => {
   const input = event.currentTarget as HTMLInputElement; const files = Array.from(input.files ?? []); input.value = '';
   if (!files.length) return;
-  const opened: ModelDocument[] = []; const failed: string[] = [];
+  const parentId = importParentId; importParentId = null;
+  const opened: string[] = []; const failed: string[] = [];
   for (const file of files) {
     const kind = await chooseDocumentKind(`Open ${file.name} as…`);
     if (!kind) continue;
-    try { opened.push(await openDocumentFile(file.name, await file.text(), kind)); }
-    catch { failed.push(file.name); }
+    try {
+      const source = await file.text(); const name = fileName(file.name);
+      captureDocument();
+      const { existing, identical } = importCollision(documents, parentId, name, source, kind);
+      if (identical && existing) { switchDocument(existing.id); opened.push(existing.id); continue; }
+      const choice = existing ? await fileManager.collision(name, existing.source, source) : 'both';
+      if (choice === 'cancel') continue;
+      const imported = await openDocumentFile(name, source, kind); imported.parentId = parentId;
+      captureDocument();
+      if (choice === 'replace' && existing) {
+        imported.id = existing.id;
+        if (imported.kind === 'sketch' && existing.kind === 'sketch') imported.sketchTargets = existing.sketchTargets;
+        documents = documents.map((doc) => doc.id === existing.id ? imported : doc);
+        // Drop links whose model sketch no longer exists after replacement.
+        for (const doc of documents) if (doc.sketchTargets) doc.sketchTargets = doc.sketchTargets.filter((target) => documents.some((model) => model.id === target.documentId && model.kind === 'model' && model.sketches.some((sketch) => sketch.id === target.sketchId)));
+        if (imported.kind === 'sketch' && !imported.draftDirty) synchronizeSketchReferences(documents, imported);
+      } else {
+        imported.name = uniqueFileName(existing ? `${name} (imported)` : name, siblingNames(documents, folders, parentId));
+        documents.push(imported);
+      }
+      loadDocument(imported); opened.push(imported.id);
+      await saveWorkspace();
+    } catch { failed.push(file.name); }
   }
-  if (opened.length) { captureDocument(); documents.push(...opened); loadDocument(opened[0]); scheduleSave(); }
-  if (failed.length) notify(`Could not read: ${failed.join(', ')}`, true);
+  if (opened.length) { switchDocument(opened[0]); scheduleSave(); }
+  if (failed.length) notify(`Could not import: ${failed.join(', ')}`, true);
   else if (opened.length > 1) notify(`Opened ${opened.length} files`);
 });
 $('#download').addEventListener('click', () => { captureDocument(); void saveDocument(activeDocument()); });
@@ -1520,10 +1649,12 @@ $('#grid-toggle').addEventListener('click', () => { gridVisible = !gridVisible; 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !$('#group-member-menu').hidden) { event.preventDefault(); event.stopPropagation(); closeGroupMemberMenu(true); return; }
   if (event.key === 'Escape' && !$('#face-menu').hidden) { event.preventDefault(); event.stopPropagation(); closeFaceMenu(); return; }
-  if (($('#document-kind-dialog') as HTMLDialogElement).open || ($('#variable-dialog') as HTMLDialogElement).open || ($('#delete-variable-dialog') as HTMLDialogElement).open || closeDocumentDialog.open) return;
+  if (root.querySelector('dialog[open]')) return;
   const target = event.target as HTMLElement; const textEditing = target instanceof HTMLTextAreaElement || target.isContentEditable; const editing = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || textEditing;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); newTab(); }
   else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); captureDocument(); void saveDocument(activeDocument()); }
+  else if (!openDocumentIds.length) return;
+  else if (!editing && event.key === 'F2') { event.preventDefault(); renameTab(activeDocumentId); }
   else if (measuring && event.key === 'Escape' && !editing) { event.preventDefault(); activateMeasurementTool(false); }
   else if (!editing && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'm') { event.preventDefault(); activateMeasurementTool(!measuring); }
   else if (event.key === 'Escape' && !editing) { event.preventDefault(); if (documentKind === 'sketch' && sketchTool !== 'select') activateSketchTool('select'); else if (documentKind === 'sketch') selectSketchShapes([], 'replace'); else selectModelItems([], 'replace'); }
@@ -1537,20 +1668,45 @@ document.addEventListener('keydown', (event) => {
   else if (!editing && (event.key === 'Delete' || event.key === 'Backspace')) { event.preventDefault(); deleteBox(); }
 });
 
-function restoreLocal() {
-  for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
-    try {
-      const raw = localStorage.getItem(key); if (!raw) continue;
-      const restored = restoreWorkspace(raw); documents = restored.documents;
-      measurementsThroughObjects = restored.preferences.measurementsThroughObjects;
-      syncMeasurementThroughPreference();
-      loadDocument(documents.find((document) => document.id === restored.activeId)!);
-      $('#save-state').textContent = 'Recovered'; return true;
-    } catch { /* Try the original single-model save if available. */ }
+async function initializeWorkspace() {
+  $('.app-shell').toggleAttribute('inert', true);
+  $('#save-state').textContent = 'Loading…';
+  let state: LibraryState | null = null;
+  let initialized = false;
+  try {
+    library = new FileLibrary(new IndexedDBStorage());
+    state = await library.load();
+    initialized = !!state;
+  } catch (error) {
+    library = null;
+    notify(error instanceof Error ? error.message : 'Browser storage is unavailable.', true);
   }
-  return false;
+  if (!state) {
+    for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+      try { const raw = localStorage.getItem(key); if (raw) { state = migrateWorkspace(raw); break; } }
+      catch { /* Preserve the original recovery data and try the older format. */ }
+    }
+  }
+  if (state) {
+    documents = state.documents; folders = state.folders; openDocumentIds = state.workspace.openIds;
+    measurementsThroughObjects = state.workspace.preferences.measurementsThroughObjects; syncMeasurementThroughPreference();
+    loadDocument(documents.find((doc) => doc.id === state!.workspace.activeId) ?? emptyDocument);
+  } else {
+    const example = createDocument('Workbench example', DEFAULT_SOURCE); documents.push(example); loadDocument(example);
+  }
+  storageReady = true;
+  $('.app-shell').toggleAttribute('inert', false);
+  if (!initialized) {
+    await saveWorkspace();
+    if (!state) void runSource();
+  } else $('#save-state').textContent = 'Recovered';
+  renderAll();
 }
-if (!restoreLocal()) { const example = createDocument('Workbench example.js', DEFAULT_SOURCE); documents.push(example); loadDocument(example); void runSource(); }
-renderAll();
-window.addEventListener('pagehide', saveWorkspace);
-window.addEventListener('beforeunload', () => { saveWorkspace(); viewport.dispose(); });
+export const workspaceReady = initializeWorkspace();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void saveWorkspace(); });
+window.addEventListener('pagehide', () => void saveWorkspace());
+window.addEventListener('beforeunload', (event) => {
+  // IndexedDB cannot guarantee an async commit during shutdown. Save continuously,
+  // and ask the browser to keep this page open while a save is pending or failed.
+  if (storageReady && ['Saving…', 'Not saved'].includes($('#save-state').textContent ?? '')) { event.preventDefault(); event.returnValue = ''; }
+});

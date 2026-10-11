@@ -3,6 +3,12 @@ import { pruneMeasurements } from './measurements';
 import { generateSource, resolveModel } from './model';
 import { flattenSketchShapes, sketchReferenceOrigin, type ModelSketch } from './model-sketch';
 import { generateSketchSource } from './sketch';
+import { fileName, uniqueFileName } from './file-names';
+
+function sketchFileName(name: string): string {
+  try { return fileName(name.replace(/[\\/\x00-\x1f]/g, ' ')); }
+  catch { return 'Sketch'; }
+}
 
 export function findSketchEditor(documents: ModelDocument[], modelId: string, sketchId: string): ModelDocument | undefined {
   return documents.find((doc) => doc.kind === 'sketch' && doc.sketchTargets?.some((target) => target.documentId === modelId && target.sketchId === sketchId));
@@ -31,15 +37,14 @@ export function openSketchEditor(documents: ModelDocument[], model: ModelDocumen
   const existing = findSketchEditor(documents, model.id, sketchId);
   if (existing) return existing;
   // Adopt an unambiguous tab created by the original copy-based workflow.
-  const legacy = documents.filter((doc) => doc.kind === 'sketch' && !doc.sketchTargets?.length && doc.name === (sketch.referenceName ?? `${sketch.name}.js`));
+  const legacy = documents.filter((doc) => doc.kind === 'sketch' && !doc.sketchTargets?.length && fileName(doc.name) === sketchFileName(sketch.referenceName ?? sketch.name));
   if (legacy.length === 1) {
     linkSketchEditor(documents, model.id, sketchId, legacy[0].id, sketch.referenceName ? sketchReferenceOrigin(legacy[0].rectangles, legacy[0].groups) : [0, 0]);
     return legacy[0];
   }
   const doc = createBlankDocument(documents, 'sketch');
-  const names = new Set(documents.map((item) => item.name.toLowerCase()));
-  doc.name = `${sketch.name}.js`;
-  for (let number = 2; names.has(doc.name.toLowerCase()); number++) doc.name = `${sketch.name} ${number}.js`;
+  doc.parentId = model.parentId;
+  doc.name = uniqueFileName(sketchFileName(sketch.name), documents.filter((item) => item.parentId === doc.parentId).map((item) => item.name));
   doc.rectangles = structuredClone(sketch.shapes);
   doc.source = doc.appliedSource = generateSketchSource(doc.rectangles);
   doc.history = [{ boxes: [], rectangles: structuredClone(doc.rectangles), variables: [], source: doc.source, hiddenIds: [] }];

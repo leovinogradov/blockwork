@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Cylinder center snapping checks</title>
+<style>
+body{font:16px system-ui;background:#10171e;color:#ddd;padding:24px}
+#viewport{width:800px;height:500px;position:relative;overflow:hidden}
+.measurement-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+</style>
+<h1>Cylinder center snapping checks</h1>
+<p id="result">Running checks…</p>
+<pre id="failures"></pre>
+<div id="viewport"></div>
+<script type="module">
+import * as THREE from '/node_modules/three/build/three.module.js';
+import {createViewport} from '/src/viewport.ts';
+const host=document.querySelector('#viewport'), errors=[];
+let checks=0, stage, measured;
+const check=(condition,message)=>{checks++;if(!condition)errors.push(message);};
+const viewport=createViewport(host,()=>{},undefined,undefined,undefined,undefined,
+  (start,end)=>{measured={start,end};}, value=>{stage=value;});
+viewport.setGrid(false);
+const cylinder={id:'c',name:'Cylinder',kind:'cylinder',size:[4,4,12],position:[-2,-2,-6],color:'#86a9a3'};
+const canvas=host.querySelector('canvas');
+canvas.setPointerCapture=()=>{};canvas.releasePointerCapture=()=>{};canvas.hasPointerCapture=()=>false;
+const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+function click(point){
+  const rect=canvas.getBoundingClientRect();
+  for(const type of ['pointerdown','pointerup'])canvas.dispatchEvent(new PointerEvent(type,{bubbles:true,pointerType:'mouse',pointerId:1,button:0,buttons:type==='pointerdown'?1:0,clientX:rect.left+point[0],clientY:rect.top+point[1]}));
+}
+function testCamera(projection,view='iso',solid=cylinder){
+  const radius=Math.hypot(...solid.size)/2,aspect=host.clientWidth/host.clientHeight;
+  const camera=projection==='perspective'?new THREE.PerspectiveCamera(42,aspect,0.1,10000):new THREE.OrthographicCamera(-20*aspect,20*aspect,20,-20,0.1,10000);
+  camera.up.set(0,0,1);
+  const distance=projection==='perspective'?radius/Math.sin(Math.PI*42/360)*1.22:Math.max(radius*4,20);
+  camera.position.copy((view==='iso'?new THREE.Vector3(1,-1,0.8):new THREE.Vector3(0,-1,0)).normalize().multiplyScalar(distance));
+  if(projection==='orthographic')camera.zoom=Math.min(40*aspect/(radius*2*1.28),40/(radius*2*1.28));
+  camera.lookAt(0,0,0);camera.updateProjectionMatrix();camera.updateMatrixWorld(true);
+  return camera;
+}
+const pixel=(point,camera)=>{const p=new THREE.Vector3(...point).project(camera);return[(p.x+1)*host.clientWidth/2,(1-p.y)*host.clientHeight/2];};
+try{
+  await frame();
+  for(const projection of ['perspective','orthographic']){
+    viewport.setProjection(projection);viewport.setBoxes([cylinder]);viewport.setView('iso');await frame();
+    const camera=testCamera(projection),far=[0,0,-6],near=[0,0,6];
+    viewport.setMeasurementTool(true);measured=null;
+    click(pixel(far,camera));check(stage==='second',`${projection}: self-occluded end center starts a measurement`);
+    click(pixel(near,camera));check(stage==='placement',`${projection}: visible end center ends the measurement`);
+    click([650,250]);
+    check(measured?.start.objectId==='c'&&measured.start.coordinates.every((n,i)=>n===[0.5,0.5,0][i]),`${projection}: first endpoint is the hidden end center`);
+    check(measured?.end.coordinates.every((n,i)=>n===[0.5,0.5,1][i]),`${projection}: second endpoint is the near end center`);
+    const direction=new THREE.Vector3(...far).sub(camera.position).normalize();
+    for(const before of [4,1]){
+      const position=new THREE.Vector3(...far).addScaledVector(direction,-before).addScalar(-1.2).toArray();
+      const blocker={id:'blocker',name:'Blocker',size:[2.4,2.4,2.4],position,color:'#d9a76e'};
+      viewport.setBoxes([cylinder,blocker],{preserveView:true});viewport.setMeasurementTool(true);
+      measured=null;click(pixel(far,camera));
+      if(stage==='second'){click(pixel(near,camera));click([650,250]);}
+      const blocked=stage==='invalid'||measured&&!(measured.start.objectId==='c'&&measured.start.coordinates.every((n,i)=>n===[0.5,0.5,0][i]));
+      check(blocked,`${projection}: another object ${before} inches before the center blocks that center (stage ${stage}, picked ${JSON.stringify(measured?.start)})`);
+      viewport.setVisibility('blocker',false);viewport.setMeasurementTool(true);
+      click(pixel(far,camera));check(stage==='second',`${projection}: hiding the blocker restores snapping`);
+    }
+    const narrow={...cylinder,size:[1,1,12],position:[-0.5,-0.5,-6]};
+    viewport.setBoxes([narrow]);viewport.setView('front');await frame();viewport.setMeasurementTool(true);measured=null;
+    const frontCamera=testCamera(projection,'front',narrow);
+    click(pixel(far,frontCamera));click(pixel(near,frontCamera));click([650,250]);
+    check(measured?.start.coordinates[1]<0.001,`${projection}: the front rim wins over the end center at the same screen position`);
+    check(measured?.start.coordinates[2]===0,`${projection}: the foreground rim remains attached to the correct end`);
+  }
+  viewport.setBoxes([cylinder]);viewport.setProjection('perspective');viewport.setView('iso');viewport.setMeasurementTool(true);
+  const camera=testCamera('perspective');click(pixel([0,0,-6],camera));click(pixel([0,0,6],camera));click([650,250]);
+  viewport.setMeasurementTool(false);
+  viewport.setMeasurements([{id:'proof',name:'End centers',start:measured.start,end:measured.end,axis:'x',offset:2}]);
+  await frame();
+}catch(error){errors.push(error.stack??String(error));}
+document.querySelector('#result').textContent=errors.length?`${errors.length} failures / ${checks} checks`:`All ${checks} checks passed`;
+document.querySelector('#failures').textContent=errors.join('\n');
+</script>

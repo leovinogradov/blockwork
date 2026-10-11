@@ -169,7 +169,7 @@ test('legacy editor reuse is unambiguous and separately created sketches with th
   model.sketches.push({ ...structuredClone(drawing), id: 'second' });
   const second = openSketchEditor(documents, model, 'second');
   assert.notEqual(second.id, old.id);
-  assert.equal(second.name, 'Panel 2.js');
+  assert.equal(second.name, 'Panel 2');
   assert.equal(findSketchEditor(documents, model.id, drawing.id), old);
   assert.equal(findSketchEditor(documents, model.id, 'second'), second);
 });
@@ -196,4 +196,16 @@ test('invalid accumulated sketch content leaves each model unchanged', () => {
   const before = structuredClone(model);
   assert.throws(() => synchronizeSketchReferences(documents, editor), /positive/);
   assert.deepEqual(model, before);
+});
+
+test('generated browser filenames handle component names with path characters and keep the model folder', () => {
+  for (const name of ['Panel / detail', 'Panel\\detail', '.', '.js']) {
+    const { documents, model } = fixture();
+    model.parentId = 'models'; model.sketches[0].name = name;
+    const editor = openSketchEditor(documents, model, drawing.id);
+    assert.equal(editor.parentId, model.parentId);
+    assert.ok(editor.name.length > 0 && editor.name !== '.');
+    assert.ok(!/[\\/]/.test(editor.name));
+    assert.equal(findSketchEditor(documents, model.id, drawing.id), editor);
+  }
 });

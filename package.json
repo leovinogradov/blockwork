@@ -12,12 +12,14 @@
     "@atlaskit/pragmatic-drag-and-drop": "^4.0.0",
     "@atlaskit/pragmatic-drag-and-drop-auto-scroll": "^3.2.1",
     "@atlaskit/pragmatic-drag-and-drop-hitbox": "^3.0.0",
+    "idb": "^8.0.4",
     "lucide": "^1.49.0",
     "three": "^0.180.0",
     "vanilla-picker": "^2.12.3"
   },
   "devDependencies": {
     "@types/three": "^0.180.0",
+    "fake-indexeddb": "^6.2.5",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vite": "^7.1.7"
