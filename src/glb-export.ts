@@ -36,6 +36,7 @@ export async function exportModelGlb(input: ModelSpec, options: GlbExportOptions
   const snapshot = structuredClone(input);
   const model = resolveModel(snapshot.boxes, snapshot.variables, snapshot.groups, snapshot.sketches, snapshot.measurements);
   const groups = model.groups ?? [];
+  const partMaterials = new Map<string, THREE.MeshStandardMaterial>();
   const hidden = effectiveHiddenIds(groups, model.boxes, options.hiddenIds ?? []);
   const solids = model.boxes.filter((solid) => !hidden.has(solid.id));
   if (!solids.length) throw new Error('No visible boxes or cylinders to export.');
@@ -61,7 +62,7 @@ export async function exportModelGlb(input: ModelSpec, options: GlbExportOptions
       const node = new THREE.Group();
       node.name = group.name;
       node.position.fromArray(group.position).multiplyScalar(METERS_PER_INCH);
-      node.userData.blockwork = { ...group, kind: 'group', units: 'inches' };
+      node.userData.blockwork = { ...group, kind: group.kind ?? 'group', units: 'inches' };
       groupNodes.set(group.id, node);
     }
     // Two passes allow children to precede parents in the model array.
@@ -84,20 +85,26 @@ export async function exportModelGlb(input: ModelSpec, options: GlbExportOptions
       }
       geometryResources.push(geometry);
       const faceColor = parseFaceColor(solid.color);
-      const material = new THREE.MeshStandardMaterial({
-        color: faceColor.color,
-        metalness: 0.03,
-        roughness: 0.74,
-        transparent: faceColor.opacity < 1,
-        opacity: faceColor.opacity,
-        depthWrite: faceColor.opacity === 1,
-      });
-      materialResources.push(material);
+      const owner = groups.find((group) => group.id === solid.groupId && group.kind === 'part');
+      let material = owner ? partMaterials.get(owner.id) : undefined;
+      if (!material) {
+        material = new THREE.MeshStandardMaterial({
+          color: faceColor.color,
+          metalness: 0.03,
+          roughness: 0.74,
+          transparent: faceColor.opacity < 1,
+          opacity: faceColor.opacity,
+          depthWrite: faceColor.opacity === 1,
+        });
+        materialResources.push(material);
+        if (owner) partMaterials.set(owner.id, material);
+      }
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.name = solid.name;
+      mesh.name = solid.name || (solid.kind === 'cylinder' ? 'Cylinder' : 'Box');
       mesh.position.fromArray(solid.position).multiplyScalar(METERS_PER_INCH);
       mesh.position.add(new THREE.Vector3(width / 2, depth / 2, height / 2));
-      mesh.userData.blockwork = { ...solid, kind: solid.kind ?? 'box', units: 'inches' };
+      const { color, ...subcomponent } = solid;
+      mesh.userData.blockwork = { ...(owner ? { ...subcomponent, colorOwner: owner.id } : solid), kind: solid.kind ?? 'box', units: 'inches' };
       (solid.groupId ? groupNodes.get(solid.groupId)! : root).add(mesh);
     }
     scene.updateMatrixWorld(true);

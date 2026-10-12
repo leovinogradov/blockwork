@@ -1,4 +1,4 @@
-import { generateGroupedSource, groupOffset, reparentPosition, validateGroups, validateGroupMembers, worldPosition, type GroupSpec } from './groups';
+import { DEFAULT_PART_COLOR, generateGroupedSource, groupOffset, reparentPosition, validateGroups, validateGroupMembers, worldPosition, type GroupSpec } from './groups';
 import { serializeModelSketch, validateModelSketches, type ModelSketch } from './model-sketch';
 import { serializeMeasurement, validateMeasurements, type Measurement } from './measurements';
 
@@ -27,6 +27,7 @@ export type BoxSpec = {
   size: [number, number, number];
   /** Minimum corner in X, Y, Z. */
   position: [number, number, number];
+  /** Resolved face color; Part members inherit it from their Part. */
   color: string;
   groupId?: string;
   relative?: RelativePlacement;
@@ -348,8 +349,10 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = [], gr
     if (typeof raw.id !== "string" || !raw.id.trim()) throw new Error(`Box ${index + 1} needs an ID.`);
     if (ids.has(raw.id)) throw new Error(`Duplicate box ID: ${raw.id}`);
     ids.add(raw.id);
-    if (typeof raw.name !== "string" || !raw.name.trim()) throw new Error(`Box ${raw.id} needs a name.`);
-    if (typeof raw.color !== "string" || !raw.color.trim()) throw new Error(`Box ${raw.id} needs a color.`);
+    if (typeof raw.name !== "string" || !raw.name.trim() && !groups.some((g) => g.id === raw.groupId && g.kind === 'part')) throw new Error(`Box ${raw.id} needs a name.`);
+    const owner = groups.find((g) => g.id === raw.groupId && g.kind === 'part');
+    const color = owner ? owner.color ?? DEFAULT_PART_COLOR : raw.color;
+    if (typeof color !== "string" || !color.trim()) throw new Error(`Box ${raw.id} needs a color.`);
     if (raw.groupId !== undefined && (typeof raw.groupId !== 'string' || !raw.groupId.trim())) throw new Error('Box groupId must be a group ID.');
     const hasRelative = raw.relative !== undefined;
     const expressions = expressionMap(raw.expressions, raw.id, hasRelative);
@@ -382,7 +385,7 @@ export function validateBoxes(input: unknown, variables: VariableSpec[] = [], gr
     if (raw.kind !== undefined && raw.kind !== 'cylinder') throw new Error('Unknown solid kind.');
     if (raw.kind === 'cylinder' && size[radialAxes[0]] !== size[radialAxes[1]]) throw new Error('Cylinder radial dimensions must have the same diameter.');
     const relative = normalizeRelative(raw.relative, raw.id, expressions, resolver);
-    return { id: raw.id, name: raw.name, size, position, color: raw.color, ...(raw.kind === 'cylinder' ? { kind: 'cylinder' as const } : {}), ...(axis && axis !== 'z' ? { axis } : {}), ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(relative ? { relative } : {}), ...(Object.keys(expressions).length ? { expressions } : {}) };
+    return { id: raw.id, name: raw.name, size, position, color, ...(raw.kind === 'cylinder' ? { kind: 'cylinder' as const } : {}), ...(axis && axis !== 'z' ? { axis } : {}), ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(relative ? { relative } : {}), ...(Object.keys(expressions).length ? { expressions } : {}) };
   });
   validateGroupMembers(boxes, groups);
   const byId = new Map(boxes.map((box) => [box.id, box]));
@@ -427,7 +430,9 @@ export function reparentBox(box: BoxSpec, groups: GroupSpec[], nextGroup?: strin
     const key = `position.${i}` as NumericField, expression = expressions[key];
     if (expression) expressions[key] = `(${expression}) + (${position[i] - box.position[i]})`;
   }
-  return { ...box, position, expressions, groupId: nextGroup };
+  const needsName = !box.name.trim() && groups.find((g) => g.id === nextGroup)?.kind !== 'part';
+  const name = needsName ? groups.find((g) => g.id === box.groupId)?.name ?? 'Box' : box.name;
+  return { ...box, name, position, expressions, groupId: nextGroup };
 }
 
 /**
@@ -508,7 +513,8 @@ export function generateSource(boxes: BoxSpec[], variables: VariableSpec[] = [],
       : "";
     const { lengthAxis, radialAxes } = cylinderAxes(box);
     const dimensions = box.kind === 'cylinder' ? `radius: ${field('radius', box.size[radialAxes[0]] / 2)}, length: ${field(`size.${lengthAxis}` as NumericField, box.size[lengthAxis])}${box.axis ? `, axis: ${JSON.stringify(box.axis)}` : ''}` : `size: ${vec(box.size, "size")}`;
-    return `${box.kind ?? 'box'}({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, ${dimensions}, position: ${vec(box.position, "position")}, color: ${JSON.stringify(box.color)}${relative} })`;
+    const color = model.groups?.some((g) => g.id === box.groupId && g.kind === 'part') ? '' : `, color: ${JSON.stringify(box.color)}`;
+    return `${box.kind ?? 'box'}({ id: ${JSON.stringify(box.id)}, name: ${JSON.stringify(box.name)}, ${dimensions}, position: ${vec(box.position, "position")}${color}${relative} })`;
   }, order));
   return `${lines.join("\n")}\n`;
 }

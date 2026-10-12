@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Context menu dismissal checks</title><div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:white;padding:8px;font:12px monospace"><span id="test-result">Running context menu checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+// Run pnpm dev and open /tests/context-menu-ui.html. Keep fixture storage isolated.
+import { createDocument, serializeWorkspace } from '/src/documents.ts';
+import { generateSource } from '/src/model.ts';
+const fixture = createDocument('Context menu fixture', '');
+fixture.boxes = [{ id:'box', name:'Box', size:[12,8,4], position:[0,0,0], color:'#86a9a3', groupId:'group' }];
+fixture.groups = [{ id:'group', name:'Group', position:[0,0,0] }];
+fixture.source = fixture.appliedSource = generateSource(fixture.boxes, [], fixture.groups);
+fixture.draftDirty = false;
+const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([fixture], fixture.id)]]);
+Object.defineProperty(window, 'localStorage', { value:{ getItem:key=>memory.get(key)??null, setItem:(key,value)=>memory.set(key,value), removeItem:key=>memory.delete(key) } });
+const database = `context-menu-ui-${crypto.randomUUID()}`, nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const $ = selector => document.querySelector(selector), errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const canvas = $('#viewport canvas');
+canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {}; canvas.hasPointerCapture = () => false;
+const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+function pointer(target, type, button = 0, empty = false) {
+  const bounds = canvas.getBoundingClientRect();
+  target.dispatchEvent(new PointerEvent(type, { bubbles:true, cancelable:true, pointerType:'mouse', pointerId:1, button,
+    buttons:type === 'pointerup' ? 0 : button === 2 ? 2 : 1,
+    clientX:bounds.left + (empty ? 3 : bounds.width / 2), clientY:bounds.top + (empty ? 3 : bounds.height / 2) }));
+}
+const clickCanvas = (button = 0, empty = false) => { pointer(canvas, 'pointerdown', button, empty); pointer(canvas, 'pointerup', button, empty); };
+function openMemberMenu() {
+  $('[data-id="group"]').click();
+  $('[data-member-id="box"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles:true, cancelable:true, clientX:20, clientY:20 }));
+  check(!$('#group-member-menu').hidden, 'group member right click opens menu');
+}
+try {
+  await frame(); await frame();
+  for (const empty of [false, true]) {
+    clickCanvas(2);
+    check(!$('#face-menu').hidden, 'face right click opens menu');
+    pointer($('#face-menu-caption'), 'pointerdown');
+    check(!$('#face-menu').hidden, 'pointer inside face menu keeps it open');
+    clickCanvas(0, empty);
+    check($('#face-menu').hidden, `face menu closes on ${empty ? 'empty' : 'geometry'} viewport click`);
+    openMemberMenu();
+    pointer($('#group-member-menu-caption'), 'pointerdown');
+    check(!$('#group-member-menu').hidden, 'pointer inside group member menu keeps it open');
+    clickCanvas(0, empty);
+    check($('#group-member-menu').hidden, `group member menu closes on ${empty ? 'empty' : 'geometry'} viewport click`);
+  }
+  clickCanvas(2); pointer($('#source-editor'), 'pointerdown');
+  check($('#face-menu').hidden, 'face menu closes on outside panel click');
+  clickCanvas(2); pointer($('#duplicate-from-menu'), 'pointerdown'); $('#duplicate-from-menu').click();
+  check($('#face-menu').hidden && document.querySelectorAll('.box-row').length === 2, 'inside menu action still duplicates and closes');
+  $('#undo').click();
+  openMemberMenu(); pointer($('#remove-group-member'), 'pointerdown'); $('#remove-group-member').click();
+  check($('#group-member-menu').hidden && !$('#source-editor').value.includes('groupId:'), 'inside group member action still removes membership and closes');
+} catch (error) { errors.push(error.stack ?? String(error)); }
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} context menu UI checks`;
+$('#test-failures').textContent = errors.join('\n');
+</script>

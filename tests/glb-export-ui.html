@@ -25,9 +25,10 @@ const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([fixture, 
 Object.defineProperty(window, 'localStorage', { value: {
   getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem: (key) => memory.delete(key),
 } });
-const blobs = [], downloads = [];
+const blobs = [], sourceBlobs = [], downloads = [];
+window.showSaveFilePicker = undefined;
 const nativeURL = URL.createObjectURL.bind(URL);
-URL.createObjectURL = (blob) => { if (blob.type === 'model/gltf-binary') blobs.push(blob); return nativeURL(blob); };
+URL.createObjectURL = (blob) => { if (blob.type === 'model/gltf-binary') blobs.push(blob); if (blob.type === 'text/javascript') sourceBlobs.push(blob); return nativeURL(blob); };
 const nativeClick = HTMLAnchorElement.prototype.click;
 HTMLAnchorElement.prototype.click = function() { downloads.push(this.download); };
 const app = await import('/src/main.ts'); await app.workspaceReady;
@@ -39,10 +40,31 @@ const wait = async (condition, message) => {
 const errors = []; let checks = 0;
 const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
 try {
+  check($('#export-menu').hidden && !$('#export-menu-button').disabled, 'one enabled export trigger with a closed dropdown');
+  $('#export-menu-button').click();
+  check(!$('#export-menu').hidden && $('#export-menu-button').getAttribute('aria-expanded') === 'true', 'export trigger opens accessible menu');
+  check($('#download').textContent === 'Blockwork .js' && $('#export-glb').textContent === '.glb', 'menu lists both export formats');
+  check(document.activeElement === $('#download'), 'opening menu focuses first format');
+  $('#download').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  check(document.activeElement === $('#export-glb'), 'arrow key navigates formats');
+  $('#export-glb').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check($('#export-menu').hidden && document.activeElement === $('#export-menu-button'), 'Escape closes menu and restores focus');
+  $('#export-menu-button').click();
+  $('#viewport').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  check($('#export-menu').hidden, 'outside pointer closes dropdown');
+  $('#export-menu-button').click(); $('#viewport').focus();
+  check($('#export-menu').hidden, 'moving keyboard focus outside closes dropdown');
+  $('#export-menu-button').click(); $('#download').click();
+  await wait(() => sourceBlobs.length === 1 && !$('#download').disabled, 'Blockwork source download');
+  check(await sourceBlobs[0].text() === fixture.source && downloads[0] === 'Blender fixture.js', 'Blockwork source option exports current draft');
+  check($('#export-menu').hidden && document.activeElement === $('#export-menu-button'), 'source export closes menu and restores focus');
+  downloads.length = 0;
+  $('#export-menu-button').click();
   check(!$('#export-glb').disabled, 'applied model can export despite pending draft');
   check($('#export-glb').title.includes('Unrun draft is excluded'), 'draft exclusion is visible before export');
   $('#export-glb').click(); $('#export-glb').click();
   await wait(() => blobs.length === 1 && !$('#export-glb').disabled, 'GLB download');
+  check($('#export-menu').hidden, 'GLB export closes dropdown');
   check(downloads.length === 1 && downloads[0] === 'Blender fixture.glb', 'one click creates one named binary download');
   const buffer = await blobs[0].arrayBuffer(); const view = new DataView(buffer);
   check(view.getUint32(0, true) === 0x46546c67, 'download is a real GLB');
@@ -56,11 +78,14 @@ try {
   $('#run-code').click();
   await wait(() => !$('#run-code').disabled && !$('#draft-note').classList.contains('warning-note'), 'draft replaced by applied source');
   $(`[data-visibility-id="panel"]`).click();
+  $('#export-menu-button').click();
   $('#export-glb').click();
   await wait(() => $('#toast').classList.contains('is-error') && !$('#export-glb').disabled, 'all-hidden export error');
   check($('#toast').textContent.includes('No visible boxes or cylinders') && downloads.length === 1, 'all-hidden export reports error without an empty download');
   $(`.document-select[data-document-id="${sketch.id}"]`).click();
   check($('#export-glb').disabled, 'GLB export is disabled in 2D sketch tabs');
+  $('#export-menu-button').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+  check(!$('#export-menu').hidden && document.activeElement === $('#download'), 'sketch menu skips disabled GLB option');
   $(`.document-select[data-document-id="${fixture.id}"]`).click();
   check(!$('#export-glb').disabled, 'switching back restores GLB control');
   $('#source-editor').value = ''; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true }));
@@ -69,6 +94,7 @@ try {
   check($('#export-glb').disabled, 'empty applied model disables export');
   while ($('.document-close')) $('.document-close').click();
   check($('#export-glb').disabled && !$('#empty-workspace').hidden, 'closing all tabs disables export');
+  check($('#export-menu-button').disabled && $('#export-menu').hidden, 'empty workspace disables and closes export dropdown');
   // Leave a populated test model visible for inspecting the export control.
   $('#files').click(); $(`[data-open="${fixture.id}"]`).click();
   $('#source-editor').value = fixture.appliedSource; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true }));

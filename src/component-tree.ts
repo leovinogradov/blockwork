@@ -9,6 +9,19 @@ export function normalizeTreeOrder(order: unknown, groups: GroupSpec[], items: T
   return [...new Set([...(Array.isArray(order) ? order.filter((id): id is string => typeof id === 'string' && valid.has(id)) : []), ...ids])];
 }
 
+/** Siblings in saved tree order; expand each group at its position in its parent. */
+export function treeChildren(groups: GroupSpec[], items: TreeItem[], order: unknown): Map<string | undefined, string[]> {
+  const parents = new Map([...groups.map((group) => [group.id, group.parentId] as const), ...items.map((item) => [item.id, item.groupId] as const)]);
+  const children = new Map<string | undefined, string[]>();
+  for (const id of normalizeTreeOrder(order, groups, items)) {
+    const parent = parents.get(id);
+    const siblings = children.get(parent) ?? [];
+    siblings.push(id);
+    children.set(parent, siblings);
+  }
+  return children;
+}
+
 /** Plan a sibling reorder or reparent without changing geometry or accepting cycles. */
 export function planTreeMove(groups: GroupSpec[], items: TreeItem[], order: string[], id: string, drop: TreeDrop) {
   const group = groups.find((entry) => entry.id === id), item = items.find((entry) => entry.id === id);
@@ -20,6 +33,7 @@ export function planTreeMove(groups: GroupSpec[], items: TreeItem[], order: stri
   if (drop.placement === 'inside' && drop.targetId && !targetGroup) throw new Error('Only groups can contain components.');
   if (!drop.targetId && drop.placement !== 'inside') throw new Error('Choose a component to reorder beside.');
   const parentId = drop.placement === 'inside' ? targetGroup?.id : targetGroup?.parentId ?? targetItem?.groupId;
+  if (group && groups.find((entry) => entry.id === parentId)?.kind === 'part') throw new Error('A Part contains subcomponents, not groups or other Parts.');
   if (group && parentId && groupDescendants(groups, id).has(parentId)) throw new Error('A group cannot contain itself or a descendant.');
   const previousParent = group ? group.parentId : item?.groupId;
   const currentOrder = normalizeTreeOrder(order, groups, items);

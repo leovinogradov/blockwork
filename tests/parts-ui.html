@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Part UI checks</title><div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:white;padding:8px;font:12px monospace"><span id="test-result">Running Part checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+import { createDocument, createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+import { resolveModel, generateSource } from '/src/model.ts';
+import { compileModel } from '/src/compiler.ts';
+import { exportModelCutlist } from '/src/cutlist-export.ts';
+const database = `part-ui-${crypto.randomUUID()}`, nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const fixture = createDocument('Part fixture', '');
+const model = resolveModel([
+  { id:'panel',name:'Panel',size:[0.75,20,83.25],position:[0,0,0],color:'#d9a76e',groupId:'cabinet' },
+  { id:'top',name:'Top',size:[0.75,8,11.5],position:[0,0,83.25],color:'#8798b5',groupId:'cabinet' },
+], [], [{ id:'cabinet',name:'Cabinet',position:[12,0,0] }]);
+Object.assign(fixture,model,{ treeOrder:['cabinet','panel','top'], draftDirty: false });
+fixture.source=fixture.appliedSource=generateSource(model.boxes,[],model.groups,fixture.treeOrder);
+const sketch=createBlankDocument([fixture],'sketch');
+const memory=new Map([['blockwork.workspace.v2',serializeWorkspace([fixture,sketch],fixture.id)]]);
+Object.defineProperty(window,'localStorage',{value:{getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value),removeItem:key=>memory.delete(key)}});
+const app=await import('/src/main.ts'); await app.workspaceReady;
+const $=selector=>document.querySelector(selector), errors=[];let checks=0;
+const check=(condition,message)=>{checks++;if(!condition)errors.push(message)};
+const change=(selector,value)=>{const input=$(selector);input.value=value;input.dispatchEvent(new Event('change',{bubbles:true}))};
+const select=id=>{const row=$(`[data-id="${id}"]`);row.click();if(row.closest('.part-row')&&$('.part-row.selected .part-collapse').getAttribute('aria-expanded')==='false')$('.part-row.selected .part-collapse').click()};
+const create=name=>{change('#part-name',name);$('#part-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))};
+const cutlist=()=>{$('#export-menu-button').click();$('#export-cutlist').click()};
+try{
+  check(!$('#add-part'),'tools omit Create Part button');
+  select('panel');$('[data-id="top"]').dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}));
+  check(!!$('#selection-make-part'),'multi-selection offers Combine into a Part');
+  $('#selection-make-part').click();check($('#part-dialog').open,'creation opens name modal');
+  create('Notched panel');check(!$('#part-dialog').open,'creation closes modal');
+  const partId=$('.part-row [data-id]').dataset.id;
+  check($('.part-tag').textContent==='PART'&&$('.part-row').dataset.bodyCount==='1','tree identifies Part and one body');
+  check($('#inspector-content').textContent.includes('PART · SINGLE BODY')&&$('#inspector-content').textContent.includes('One manufactured piece'),'Part inspector emphasizes a single manufactured piece');
+  check($('#inspector-content').textContent.includes('3/4 × 20 × 94 3/4'),'overall stock bounds shown');
+  check($('[data-id="panel"] .row-name').textContent==='Panel'&&$('[data-id="top"] .row-name').textContent==='Top','tree displays short subcomponent names');
+  check(!$('.part-subcomponent-row [data-visibility-id]')&&!$('.part-subcomponent-row [style*="--cube"]'),'subcomponent rows have no color indicators or visibility toggles');
+  check(!!$('.part-row .part-collapse'),'Part row has a small subtitle triangle');
+  $('.part-row .part-collapse').click();check(!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false','Part subtitle triangle collapses subcomponents');$('.part-collapse').click();check(!!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='true','Part subtitle triangle expands subcomponents');
+  select('panel');const sourceBeforeNameClick=$('#source-editor').value;
+  $('.part-name').click();check(!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false'&&$('.object-name').textContent==='Notched panel','single click on Part name selects the Part and collapses subcomponents');
+  $('.part-name').click();check(!!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='true','single click on Part name expands subcomponents');
+  check($('#source-editor').value===sourceBeforeNameClick,'Part name expansion leaves model source unchanged');
+  for(const selector of ['.part-row .row-cube','.part-row .row-size','.part-row .part-tag','.part-row .component-select','.part-row']){
+    $(selector).click();check(!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false',`${selector} click collapses the Part once`);
+    $(selector).click();check(!!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='true',`${selector} click expands the Part once`);
+  }
+  check($('#source-editor').value.includes('part('),'GUI emits part() source');
+  $('#undo').click();check(!$('.part-row'),'undo restores separate boxes');$('#redo').click();check(!!$('.part-row'),'redo restores Part');
+  select(partId);change('#group-name','MC1');
+  check($('[data-id="panel"] .row-name').textContent==='Panel'&&$('#inspector-content').textContent.includes('MC1 > Panel'),'Part rename updates inspector paths while tree stays short');
+  $('[data-part-color="#86a9a3"]').click();
+  const colorModel=await compileModel($('#source-editor').value);
+  check(colorModel.groups.find(g=>g.id===partId).color==='#86a9a3'&&colorModel.boxes.every(b=>b.color==='#86a9a3'),'Part owns one inherited color for all solids');
+  check(!/color:/.test($('#source-editor').value),'source omits color on solid subcomponents');
+  select('panel');check(!$('#box-color')&&!$('#inspector-content [data-color]')&&!$('#inspector-content .object-swatch'),'subcomponent has no independent color controls');
+  check(!$('#item-group')&&$('.part-membership-card').dataset.ownerPart===partId&&$('#inspect-owner-part').textContent==='MC1'&&!!$('#remove-from-part'),'subcomponent replaces membership dropdown with owning Part card');
+  check($('#inspector-content').lastElementChild===$('.part-membership-card')&&$('.part-membership-card').textContent.includes('PART MATERIAL')&&$('.part-membership-card').textContent.includes('Material applies to the whole Part.'),'Part material controls appear in a card at the bottom');
+  $('[data-part-color="#bd8c79"]').click();
+  const memberColorModel=await compileModel($('#source-editor').value);
+  check($('.object-name').textContent==='MC1 > Panel'&&memberColorModel.groups.find(g=>g.id===partId).color==='#bd8c79'&&memberColorModel.boxes.every(b=>b.color==='#bd8c79'),'subcomponent material selection updates the whole Part and keeps subcomponent selected');
+  $('#undo').click();select('panel');check($('[data-part-color="#86a9a3"]').getAttribute('aria-pressed')==='true','undo restores the Part material in the subcomponent selector');
+  $('#remove-from-part').click();
+  const removedModel=await compileModel($('#source-editor').value),removedPanel=removedModel.boxes.find(b=>b.id==='panel');
+  check(!removedPanel.groupId&&removedPanel.position[0]===12&&removedPanel.color==='#86a9a3'&&!!$('#box-color')&&!!$('#item-group')&&!$('.part-membership-card'),'remove from Part preserves world position and material and restores standalone controls');
+  check($('label[for="item-group"]').textContent==='GROUP'&&[...$('#item-group').options].map(option=>option.value).join(',')===',cabinet','standalone membership selector lists only groups and no group');
+  $('#undo').click();select('panel');check($('.part-membership-card').dataset.ownerPart===partId&&!$('#item-group'),'undo restores Part membership and its card');
+  select('top');$('[data-id="panel"]').dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}));
+  check(!$('#selection-color')&&!!$('[data-inspect-part]'),'multiple subcomponents direct color editing to their Part');
+  select('panel');check($('.object-name').textContent==='MC1 > Panel'&&$('#box-name').value==='Panel','inspector displays full path but edits local name');
+  check(!!$('#inspect-owner-part')&&$('.part-membership-card').dataset.ownerPart===partId,'membership identifies the Part and provides return action');
+  change('#box-name','');check($('.object-name').textContent==='MC1'&&$('[data-id="panel"] .row-name').textContent==='Box','unnamed subcomponent displays the Part name only in inspector');change('#box-name','Panel');
+  $('#inspect-owner-part').click();check($('.object-name').textContent==='MC1','return action selects the parent Part');
+  const showToggle=$('.part-row [data-visibility-id]');showToggle.click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>row.classList.contains('hidden-object')),'Part visibility hides the whole body');$('.part-row [data-visibility-id]').click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>!row.classList.contains('hidden-object')),'Part visibility restores every subcomponent');
+  check($('.part-collapse').getAttribute('aria-expanded')==='true','Part visibility button does not toggle expansion');
+  const compiled=await compileModel($('#source-editor').value);
+  check(compiled.groups.find(g=>g.id===partId).kind==='part','source preserves Part kind');
+  const rows=exportModelCutlist(compiled).rows;
+  check(rows.length===1&&rows[0].name==='Cabinet > MC1'&&rows[0].length===94.75,'connected Part exports one stock row');
+  cutlist();check($('#cutlist-summary').textContent==='1 piece to export · 0 ignored','cutlist modal counts one Part');$('#cutlist-cancel').click();
+  select('top');change('[data-kind="position"][data-index="2"]','100');await new Promise(resolve=>requestAnimationFrame(resolve));select(partId);
+  check($('.part-body-warning').textContent.includes('2 disconnected bodies')&&$('.part-row').dataset.bodyCount==='2','disconnected edit remains allowed with body warning');
+  cutlist();check($('#cutlist-download').disabled&&$('#cutlist-ignored').textContent.includes('Cabinet > MC1')&&$('#cutlist-ignored').textContent.includes('Disconnected Part'),'disconnected Part appears in ignored list and cannot export');$('#cutlist-cancel').click();
+  select('top');change('[data-kind="position"][data-index="2"]','83 1/4');await new Promise(resolve=>requestAnimationFrame(resolve));select(partId);check(!$('.part-body-warning'),'reconnecting clears warning');
+  $('#duplicate-box').click();check(document.querySelectorAll('.part-row').length===2&&$('[data-id="panel"] .row-name').textContent==='Panel','duplication copies Part without altering original');
+  $('#undo').click();check(document.querySelectorAll('.part-row').length===1,'duplication undo restores one Part');
+  select(partId);$('#part-add-box').click();
+  check($('.object-name').textContent.startsWith('MC1 > Box')&&$('.part-membership-card').dataset.ownerPart===partId,'adding a box from Part inspector creates a subcomponent');$('#undo').click();
+  select(partId);$('#ungroup').click();check(!$('.part-row')&&$('[data-id="panel"]').textContent.includes('Panel'),'dissolving keeps separate subcomponents');$('#undo').click();select(partId);
+  select('cabinet');$('#add-group').click();$('#make-part').click();create('Empty piece');check($('.part-body-warning').textContent.includes('Add material'),'empty group conversion creates a Part that guides adding material');
+  cutlist();check($('#cutlist-ignored').textContent.includes('Empty piece')&&$('#cutlist-ignored').textContent.includes('Empty Part'),'empty Part is ignored in modal');$('#cutlist-cancel').click();$('#undo').click();$('#undo').click();
+  // Convert an ordinary group after dissolving its only nested Part.
+  select(partId);$('#ungroup').click();select('cabinet');$('#make-part').click();create('MC1');
+  check($('.part-row [data-id]').dataset.id==='cabinet'&&$('.object-id').textContent.includes('SINGLE BODY'),'group converts in place into a Part');
+  check(!$('#group-parent').querySelector('option[value="cabinet"]'),'Part cannot parent itself');
+  select('panel');$('#source-editor').value+='\n// pending material edit';$('#source-editor').dispatchEvent(new Event('input',{bubbles:true}));
+  check($('#remove-from-part').disabled&&$('#part-color').disabled&&[...document.querySelectorAll('[data-part-color]')].every(button=>button.disabled)&&!$('#item-group'),'source draft disables removal and Part material controls in subcomponent card');
+  $('#run-code').click();for(let i=0;i<250&&$('#add-box').disabled;i++) await new Promise(resolve=>setTimeout(resolve,20));select('cabinet');
+  $('#source-editor').value+='\n// pending edit';$('#source-editor').dispatchEvent(new Event('input',{bubbles:true}));check($('#part-add-box').disabled,'source draft disables Part mutation');
+  $('#run-code').click();
+  for(let i=0;i<250&&$('#add-box').disabled;i++) await new Promise(resolve=>setTimeout(resolve,20));
+  $(`.document-select[data-document-id="${sketch.id}"]`).click();check(!$('#add-part')&&!$('#make-part')&&!$('#selection-make-part'),'2D sketches cannot create Parts');
+  $(`.document-select[data-document-id="${fixture.id}"]`).click();select('cabinet');
+}catch(error){errors.push(error.stack??String(error))}
+$('#test-result').textContent=errors.length?`${errors.length} failures in ${checks} checks`:`Passed ${checks} Part UI checks`;
+$('#test-failures').textContent=errors.join('\n');
+</script>

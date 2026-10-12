@@ -30,6 +30,7 @@ const saved = () => wait(() => $('#save-state').textContent === 'Saved locally',
 const click = (selector) => { const element = $(selector); if (!element) throw new Error(`Missing: ${selector}`); element.click(); };
 const fill = (selector, value) => { $(selector).value = value; $(selector).dispatchEvent(new Event('input', { bubbles: true })); };
 const tabCount = () => document.querySelectorAll('.document-tab').length;
+const rowDepth = (id) => $(`#file-manager-list [data-tree-id="${id}"]`)?.style.getPropertyValue('--tree-depth');
 const errors = []; let checks = 0;
 const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
 async function rename(name) {
@@ -41,6 +42,19 @@ async function chooseFile(source, name = 'myfile.js') {
   $('#file-input').files = transfer.files; $('#file-input').dispatchEvent(new Event('change', { bubbles: true }));
   await wait(() => $('#document-kind-dialog').open, 'file kind');
   click('#document-kind-dialog button[value=model]');
+}
+async function dragEntry(id, targetSelector, placement = 'inside') {
+  const source = $(`#file-manager-list [data-tree-id="${id}"]`);
+  const transfer = new DataTransfer();
+  const sourceBounds = source.querySelector('.library-entry').getBoundingClientRect();
+  source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer, clientX: sourceBounds.x + sourceBounds.width / 2, clientY: sourceBounds.y + sourceBounds.height / 2 }));
+  await wait(() => $('#file-manager-list').classList.contains('tree-drag-active'), 'drag starts');
+  const target = $(targetSelector), bounds = target.getBoundingClientRect();
+  const clientX = bounds.x + bounds.width / 2;
+  const clientY = placement === 'before' ? bounds.top + 2 : placement === 'after' ? bounds.bottom - 2 : bounds.top + bounds.height / 2;
+  const event = (type) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer, clientX, clientY });
+  target.dispatchEvent(event('dragenter')); target.dispatchEvent(event('dragover'));
+  target.dispatchEvent(event('drop')); source.dispatchEvent(event('dragend'));
 }
 try {
   check(tabCount() === 2, 'legacy tabs migrate');
@@ -73,11 +87,50 @@ try {
   click('#files'); click('#library-folder'); fill('#file-name-input', 'Models'); $('#file-name-form').requestSubmit();
   await wait(() => !$('#file-name-dialog').open, 'new folder');
   const folder = (await inspector.load()).folders[0];
-  const move = $(`[data-move="${first.id}"]`); move.value = folder.id; move.dispatchEvent(new Event('change', { bubbles: true }));
-  await wait(() => !$(`[data-open="${first.id}"]`), 'move file');
+  check(!$('#file-manager-list select'), 'folder selectors are replaced with drag handles');
+  await dragEntry(first.id, `[data-tree-id="${folder.id}"]`);
+  await wait(() => rowDepth(first.id) === '1', 'move file');
   check((await inspector.load()).documents.find((doc) => doc.id === first.id).parentId === folder.id, 'move persists folder membership');
+  check(rowDepth(other.id) === '0', 'expanded folder keeps root files visible');
   click(`[data-open="${folder.id}"]`);
-  check($('#file-breadcrumbs').textContent.includes('Models'), 'folder navigation shows breadcrumb');
+  check($('#file-breadcrumbs').textContent.includes('Models'), 'folder selection sets new item destination');
+  click(`[data-folder-collapse="${folder.id}"]`); await saved();
+  check(!$(`[data-open="${first.id}"]`) && !!$(`[data-open="${other.id}"]`), 'collapse hides children while retaining root siblings');
+  check($(`[data-folder-collapse="${folder.id}"]`).getAttribute('aria-expanded') === 'false', 'folder arrow exposes collapsed state');
+  check((await inspector.load()).workspace.collapsedFolderIds.includes(folder.id), 'collapsed folder state persists');
+  click('#library-done'); click('#files');
+  check(!$(`[data-open="${first.id}"]`), 'collapse is retained when Files reopens');
+  click(`[data-folder-collapse="${folder.id}"]`);
+  check(rowDepth(first.id) === '1', 'expand restores child indentation');
+  click('#library-folder'); fill('#file-name-input', 'Details'); $('#file-name-form').requestSubmit();
+  await wait(() => !$('#file-name-dialog').open, 'nested folder');
+  const nested = (await inspector.load()).folders.find((entry) => entry.name === 'Details');
+  check(nested.parentId === folder.id && rowDepth(nested.id) === '1', 'new folder is created in selected folder inline');
+  await dragEntry(first.id, `[data-tree-id="${nested.id}"]`);
+  await wait(() => rowDepth(first.id) === '2', 'nested move');
+  click(`[data-folder-collapse="${nested.id}"]`);
+  click(`[data-folder-collapse="${folder.id}"]`);
+  check(!$(`[data-open="${nested.id}"]`), 'parent collapse hides nested folders');
+  click(`[data-folder-collapse="${folder.id}"]`);
+  check(!!$(`[data-open="${nested.id}"]`) && !$(`[data-open="${first.id}"]`), 'parent expansion retains nested collapsed state');
+  click(`[data-folder-collapse="${nested.id}"]`);
+  await dragEntry(first.id, '#file-breadcrumbs [data-folder=""]');
+  await wait(() => rowDepth(first.id) === '0', 'move back to root');
+  check((await inspector.load()).documents.find((doc) => doc.id === first.id).parentId === null, 'breadcrumb drop moves file out of folder');
+  click('#file-breadcrumbs [data-folder=""]');
+  await dragEntry(first.id, `[data-tree-id="${folder.id}"]`, 'before');
+  await saved();
+  const reordered = Array.from(document.querySelectorAll('#file-manager-list [data-tree-id]')).map((row) => row.dataset.treeId);
+  check(reordered.indexOf(first.id) === reordered.indexOf(folder.id) - 1, 'row drop reorders files and folders together');
+  const storedOrder = (await inspector.load()).workspace.entryOrder;
+  check(storedOrder.indexOf(first.id) === storedOrder.indexOf(folder.id) - 1, 'custom order persists');
+  click(`[data-folder-collapse="${folder.id}"]`);
+  await dragEntry(first.id, `[data-tree-id="${folder.id}"]`);
+  await wait(() => rowDepth(first.id) === '1', 'move file into folder again');
+  check($(`[data-folder-collapse="${folder.id}"]`).getAttribute('aria-expanded') === 'true', 'dropping into collapsed folder reveals moved file');
+  await dragEntry(folder.id, `[data-tree-id="${other.id}"]`, 'after'); await saved();
+  check(rowDepth(first.id) === '1' && rowDepth(nested.id) === '1', 'folder reorder retains its visible branch');
+  click(`[data-open="${folder.id}"]`);
   click(`[data-open="${first.id}"]`); await saved();
   while (tabCount()) click('.document-close'); await saved();
   check(!$('#empty-workspace').hidden, 'closing last tab shows empty state');

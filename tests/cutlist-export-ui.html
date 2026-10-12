@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CSV cutlist browser checks</title>
+<div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:#fff;padding:8px;font:12px monospace"><span id="test-result">Running cutlist checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+import { createDocument, createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+import { resolveModel, generateSource } from '/src/model.ts';
+const database = `cutlist-ui-test-${crypto.randomUUID()}`;
+const nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const part = (id, name, size, groupId) => ({ id, name, size, groupId, position: [0, 0, 0], color: '#d9a76e' });
+const model = resolveModel([
+  part('thick', 'Thick block', [8, 4, 6], 'child'),
+  part('limit', 'At limit', [12, 3, 24], 'child'),
+  { ...part('pin', 'Pin', [1, 1, 8], 'root'), kind: 'cylinder' },
+  part('panel', 'Shelf, "A"', [12, 24, 0.75], 'child'),
+], [], [
+  { id: 'root', name: 'Cabinet', position: [0, 0, 0] },
+  { id: 'child', name: 'Interior', parentId: 'root', position: [0, 0, 0] },
+]);
+const fixture = createDocument('Cutlist fixture', "throw new Error('Unrun draft must not execute');");
+const treeOrder = ['root', 'child', 'panel', 'limit', 'thick', 'pin'];
+Object.assign(fixture, model, { treeOrder, collapsedGroupIds: ['child'], appliedSource: generateSource(model.boxes, model.variables, model.groups, treeOrder), draftDirty: true, hiddenBoxIds: ['root'] });
+const sketch = createBlankDocument([fixture], 'sketch');
+const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([fixture, sketch], fixture.id)]]);
+Object.defineProperty(window, 'localStorage', { value: {
+  getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem: (key) => memory.delete(key),
+} });
+const blobs = [], downloads = [];
+const nativeURL = URL.createObjectURL.bind(URL);
+URL.createObjectURL = (blob) => { if (blob.type.startsWith('text/csv')) blobs.push(blob); return nativeURL(blob); };
+const nativeClick = HTMLAnchorElement.prototype.click;
+HTMLAnchorElement.prototype.click = function() { downloads.push(this.download); };
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const $ = (selector) => document.querySelector(selector);
+const errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const thickness = (value) => { $('#cutlist-thickness').value = value; $('#cutlist-thickness').dispatchEvent(new Event('input', { bubbles: true })); };
+const open = () => { $('#export-menu-button').click(); $('#export-cutlist').click(); };
+try {
+  check(!$('#export-cutlist').disabled && $('#export-cutlist').title.includes('Unrun draft is excluded'), 'applied model supports cutlist with draft');
+  open();
+  check($('#cutlist-dialog').open && $('#export-menu').hidden, 'option opens modal and closes dropdown');
+  check($('#cutlist-thickness').value === '3' && document.activeElement === $('#cutlist-thickness'), 'default 3 inches with input focus');
+  check($('#cutlist-summary').textContent === '2 boxes to export · 2 ignored', 'hidden boxes included and exactly 3-inch thickness accepted');
+  check($('#cutlist-ignored').textContent.includes('Cabinet > Interior > Thick block') && $('#cutlist-ignored').textContent.includes('Thickness 4 in exceeds 3 in'), 'ignored list has full path and thickness reason');
+  check($('#cutlist-ignored').textContent.includes('Cabinet > Pin') && $('#cutlist-ignored').textContent.includes('Cylinder'), 'cylinders explicitly listed as ignored');
+  check(!$('#cutlist-draft-note').hidden, 'unrun draft exclusion explained');
+  thickness('4');
+  check($('#cutlist-summary').textContent === '3 boxes to export · 1 ignored' && !$('#cutlist-ignored').textContent.includes('Thick block'), 'changing limit updates ignored list immediately');
+  thickness('1/2');
+  check($('#cutlist-download').disabled && $('#cutlist-error').textContent.includes('No boxes meet'), 'all filtered disables export');
+  for (const value of ['', 'nope', '0', '-1']) {
+    thickness(value);
+    check($('#cutlist-download').disabled && $('#cutlist-thickness').getAttribute('aria-invalid') === 'true' && $('#cutlist-error').textContent, `invalid limit ${value} blocks export`);
+  }
+  thickness('3/4"');
+  check(!$('#cutlist-download').disabled && $('#cutlist-summary').textContent === '1 box to export · 3 ignored', 'fraction limit recovers preview');
+  thickness('3');
+  const exported = new Promise((resolve) => $('#cutlist-dialog').addEventListener('close', resolve, { once: true }));
+  $('#cutlist-download').click();
+  await exported;
+  check(!$('#cutlist-dialog').open && downloads.length === 1 && downloads[0] === 'Cutlist fixture-cutlist.csv', 'exports one named CSV and closes modal');
+  check(document.activeElement === $('#export-menu-button'), 'closing restores export trigger focus');
+  check((await blobs[0].text()) === 'Item No.,Component,Quantity,Length (in),Width (in),Thickness (in)\r\n1,"Cabinet > Interior > Shelf, ""A""",1,24,12,0.75\r\n2,Cabinet > Interior > At limit,1,24,12,3\r\n', 'CSV follows saved tree order with full names and includes hidden boxes in collapsed groups');
+  check($('#source-editor').value === fixture.source && $('#editor-error').hidden && $('#status-text').textContent.includes('Unrun draft was excluded.'), 'export leaves draft intact and explains exclusions');
+  open();
+  check($('#cutlist-thickness').value === '3', 'reopening resets default');
+  $('#cutlist-cancel').click();
+  check(!$('#cutlist-dialog').open && downloads.length === 1, 'cancel does not download');
+  $(`.document-select[data-document-id="${sketch.id}"]`).click();
+  check($('#export-cutlist').disabled, '2D sketch disables cutlist');
+  $(`.document-select[data-document-id="${fixture.id}"]`).click();
+  check(!$('#export-cutlist').disabled, 'returning to model restores cutlist');
+  $('#source-editor').value = ''; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true })); $('#run-code').click();
+  for (let i = 0; i < 250 && $('#run-code').disabled; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  check($('#export-cutlist').disabled, 'empty applied model disables cutlist');
+  while ($('.document-close')) $('.document-close').click();
+  check($('#export-cutlist').disabled && $('#export-menu-button').disabled, 'closed workspace disables export');
+  // Restore a populated fixture for inspecting the modal.
+  $('#files').click(); $(`[data-open="${fixture.id}"]`).click();
+  $('#source-editor').value = fixture.appliedSource; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true })); $('#run-code').click();
+  for (let i = 0; i < 250 && $('#run-code').disabled; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  open();
+} catch (error) { errors.push(error.stack ?? String(error)); }
+HTMLAnchorElement.prototype.click = nativeClick;
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} CSV cutlist UI checks`;
+$('#test-failures').textContent = errors.join('\n');
+// Also show the test result inside the modal's top layer.
+const result = document.createElement('p'); result.textContent = $('#test-result').textContent + '\n' + errors.join('\n'); $('#cutlist-form').append(result);
+</script>

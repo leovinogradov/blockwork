@@ -1,12 +1,16 @@
 import type { LibraryState, Folder } from './file-library';
 import type { ModelDocument } from './documents';
+import { bindTreeDrag } from './component-tree-drag';
+import type { TreeDrop } from './component-tree';
+import { normalizeLibraryOrder, planLibraryMove } from './file-tree';
 
 const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 export type FileManagerActions = {
   state(): LibraryState;
+  setFolderCollapsed(id: string, collapsed: boolean): void;
   open(id: string): void;
   rename(id: string, name: string): Promise<void>;
-  move(id: string, parentId: string | null): Promise<void>;
+  move(id: string, drop: TreeDrop): Promise<void>;
   remove(id: string): Promise<void>;
   createFolder(parentId: string | null, name: string): Promise<void>;
   createFile(parentId: string | null): void;
@@ -20,9 +24,9 @@ export function createFileManager(host: HTMLElement, actions: FileManagerActions
   host.insertAdjacentHTML('beforeend', `
     <dialog id="file-manager-dialog" class="variable-dialog file-manager-dialog" aria-labelledby="file-manager-title">
       <div class="eyebrow">ON THIS DEVICE</div><h2 id="file-manager-title">Files</h2>
-      <nav id="file-breadcrumbs" class="file-breadcrumbs" aria-label="Folder path"></nav>
+      <nav id="file-breadcrumbs" class="file-breadcrumbs" aria-label="New item folder"></nav>
       <div class="file-manager-toolbar"><button class="button" id="library-new">New file</button><button class="button" id="library-folder">New folder</button><button class="button" id="library-import">Import .js</button></div>
-      <div id="file-manager-list" class="file-manager-list"></div><p id="file-manager-error" class="dialog-error" role="alert"></p>
+      <div id="file-manager-list" class="file-manager-list"></div><p class="file-drag-help">Use arrows to expand folders. Select a folder for new files. Drag between rows to reorder, onto folders to move in, or onto All files to move out.</p><p id="file-manager-error" class="dialog-error" role="alert"></p>
       <div class="dialog-actions"><button id="library-backup" class="button button-quiet">Back up library</button><button id="library-restore" class="button button-quiet">Restore backup</button><button id="library-done" class="button button-run">Done</button></div>
     </dialog>
     <dialog id="file-name-dialog" class="variable-dialog" aria-labelledby="file-name-title"><form id="file-name-form">
@@ -45,37 +49,43 @@ export function createFileManager(host: HTMLElement, actions: FileManagerActions
   let renameAction: ((name: string) => Promise<void>) | null = null;
   let pendingName = false;
   let pendingAction = false;
-  const path = (folder: Folder, folders: Folder[]): string => {
-    const parent = folders.find((entry) => entry.id === folder.parentId);
-    return parent ? `${path(parent, folders)} / ${folder.name}` : folder.name;
-  };
+  let dragCleanup = () => {};
   function render() {
-    const { documents, folders, workspace } = actions.state();
+    dragCleanup();
+    const state = actions.state();
+    const { documents, folders, workspace } = state;
     if (parentId && !folders.some((entry) => entry.id === parentId)) parentId = null;
     const ancestors: Folder[] = [];
     let ancestor = folders.find((entry) => entry.id === parentId);
     while (ancestor) { ancestors.unshift(ancestor); ancestor = folders.find((entry) => entry.id === ancestor!.parentId); }
-    $('#file-breadcrumbs').innerHTML = `<button data-folder="">All files</button>` + ancestors.map((folder) => `<span>/</span><button data-folder="${escape(folder.id)}">${escape(folder.name)}</button>`).join('');
+    $('#file-breadcrumbs').innerHTML = `<span>New items in:</span><button data-folder="" ${parentId === null ? 'aria-current="location"' : ''}>All files</button>` + ancestors.map((folder) => `<span>/</span><button data-folder="${escape(folder.id)}" ${parentId === folder.id ? 'aria-current="location"' : ''}>${escape(folder.name)}</button>`).join('');
     $('#file-breadcrumbs').querySelectorAll<HTMLButtonElement>('button').forEach((button) => button.addEventListener('click', () => { parentId = button.dataset.folder || null; render(); }));
-    const entries = [...folders.filter((folder) => folder.parentId === parentId).map((entry) => ({ entry, folder: true })), ...documents.filter((doc) => doc.parentId === parentId).map((entry) => ({ entry, folder: false }))].sort((a, b) => Number(b.folder) - Number(a.folder) || a.entry.name.localeCompare(b.entry.name));
-    $('#file-manager-list').innerHTML = entries.length ? entries.map(({ entry, folder }) => {
-      const destinations = folders.filter((candidate) => {
-        let current: Folder | undefined = candidate;
-        while (current) { if (current.id === entry.id) return false; current = folders.find((item) => item.id === current!.parentId); }
-        return true;
-      });
-      return `<div class="library-row"><button class="library-entry" data-open="${escape(entry.id)}"><span class="library-kind">${folder ? '▸' : (entry as ModelDocument).kind === 'sketch' ? '□' : '◇'}</span><span>${escape(entry.name)}<small>${folder ? 'Folder' : `${(entry as ModelDocument).kind === 'sketch' ? '2D sketch' : '3D model'}${workspace.openIds.includes(entry.id) ? ' · Open' : ''}${(entry as ModelDocument).draftDirty ? ' · Draft pending' : ''}`}</small></span></button><div class="library-row-actions"><button class="button button-quiet" data-rename="${escape(entry.id)}" aria-label="Rename ${escape(entry.name)}">Rename</button><select data-move="${escape(entry.id)}" aria-label="Move ${escape(entry.name)} to folder"><option value="" ${entry.parentId === null ? 'selected' : ''}>All files</option>${destinations.map((candidate) => `<option value="${escape(candidate.id)}" ${candidate.id === entry.parentId ? 'selected' : ''}>${escape(path(candidate, folders))}</option>`).join('')}</select><button class="button button-quiet" data-delete="${escape(entry.id)}" aria-label="Delete ${escape(entry.name)}">Delete</button></div></div>`;
-    }).join('') : '<div class="library-empty">This folder is empty. Create a file or import one to get started.</div>';
+    const order = normalizeLibraryOrder(workspace.entryOrder, documents, folders);
+    const entries = [...folders.map((entry) => ({ entry, folder: true })), ...documents.map((entry) => ({ entry, folder: false }))].sort((a, b) => order.indexOf(a.entry.id) - order.indexOf(b.entry.id));
+    const collapsed = new Set(workspace.collapsedFolderIds ?? []);
+    const branch = (containerId: string | null, depth: number): string => entries.filter(({ entry }) => entry.parentId === containerId).map(({ entry, folder }) => {
+      const count = entries.filter((candidate) => candidate.entry.parentId === entry.id).length;
+      const collapseButton = folder ? `<button class="group-collapse library-collapse" data-folder-collapse="${escape(entry.id)}" aria-expanded="${!collapsed.has(entry.id)}" aria-label="${collapsed.has(entry.id) ? 'Expand' : 'Collapse'} ${escape(entry.name)}">${collapsed.has(entry.id) ? '▸' : '▾'}</button>` : '<span class="library-collapse-spacer" aria-hidden="true"></span>';
+      const icon = folder ? '<svg class="library-kind" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7V5h6l2 2h10v12H3Z"/></svg>' : `<span class="library-kind" aria-hidden="true">${(entry as ModelDocument).kind === 'sketch' ? '□' : '◇'}</span>`;
+      const row = `<div class="library-row${folder ? ' library-folder' : ''}${folder && parentId === entry.id ? ' selected' : ''}" data-tree-id="${escape(entry.id)}" draggable="true" style="--tree-depth:${depth}">${collapseButton}<button class="library-entry" data-open="${escape(entry.id)}" ${folder && parentId === entry.id ? 'aria-current="location"' : ''} title="${folder ? 'Select folder for new items · Drag to move or reorder' : 'Open file · Drag to move or reorder'}">${icon}<span>${escape(entry.name)}<small>${folder ? `Folder · ${count} ${count === 1 ? 'item' : 'items'}` : `${(entry as ModelDocument).kind === 'sketch' ? '2D sketch' : '3D model'}${workspace.openIds.includes(entry.id) ? ' · Open' : ''}${(entry as ModelDocument).draftDirty ? ' · Draft pending' : ''}`}</small></span></button><div class="library-row-actions"><button class="button button-quiet" data-rename="${escape(entry.id)}" aria-label="Rename ${escape(entry.name)}">Rename</button><button class="button button-quiet" data-delete="${escape(entry.id)}" aria-label="Delete ${escape(entry.name)}">Delete</button></div></div>`;
+      return row + (folder && !collapsed.has(entry.id) ? branch(entry.id, depth + 1) : '');
+    }).join('');
+    $('#file-manager-list').innerHTML = entries.length ? branch(null, 0) : '<div class="library-empty">No files yet. Create a file or import one to get started.</div>';
+    $('#file-manager-list').insertAdjacentHTML('beforeend', '<div class="tree-root-drop" data-tree-root>Drop here to place last in All files</div>');
+    $('#file-manager-list').querySelectorAll<HTMLButtonElement>('[data-folder-collapse]').forEach((button) => button.addEventListener('click', () => {
+      const id = button.dataset.folderCollapse!;
+      actions.setFolderCollapsed(id, !collapsed.has(id)); render();
+      Array.from($('#file-manager-list').querySelectorAll<HTMLButtonElement>('[data-folder-collapse]')).find((next) => next.dataset.folderCollapse === id)?.focus();
+    }));
     $('#file-manager-list').querySelectorAll<HTMLButtonElement>('[data-open]').forEach((button) => button.addEventListener('click', () => {
       const id = button.dataset.open!;
-      if (folders.some((folder) => folder.id === id)) { parentId = id; render(); }
+      if (folders.some((folder) => folder.id === id)) { parentId = id; if (collapsed.has(id)) actions.setFolderCollapsed(id, false); render(); }
       else { actions.open(id); dialog.close(); }
     }));
     $('#file-manager-list').querySelectorAll<HTMLButtonElement>('[data-rename]').forEach((button) => button.addEventListener('click', () => {
       const entry = [...documents, ...folders].find((entry) => entry.id === button.dataset.rename)!;
       rename(entry.id, entry.name, folders.includes(entry as Folder));
     }));
-    $('#file-manager-list').querySelectorAll<HTMLSelectElement>('[data-move]').forEach((select) => select.addEventListener('change', () => void perform(() => actions.move(select.dataset.move!, select.value || null))));
     $('#file-manager-list').querySelectorAll<HTMLButtonElement>('[data-delete]').forEach((button) => button.addEventListener('click', async () => {
       const entry = [...documents, ...folders].find((entry) => entry.id === button.dataset.delete)!;
       const folder = folders.some((folder) => folder.id === entry.id);
@@ -86,6 +96,16 @@ export function createFileManager(host: HTMLElement, actions: FileManagerActions
       await new Promise<void>((resolve) => confirmation.addEventListener('close', () => resolve(), { once: true }));
       if (confirmation.returnValue === 'delete') void perform(() => actions.remove(entry.id));
     }));
+    dragCleanup = bindTreeDrag({
+      element: $('#file-manager-list'), handleSelector: '.library-entry', isContainer: (row) => row.classList.contains('library-folder'),
+      canEdit: () => dialog.open && !pendingAction && !pendingName,
+      canMove: (id, drop) => { try { return planLibraryMove(state, id, drop).changed; } catch { return false; } },
+      onMove: (id, drop) => { void perform(() => actions.move(id, drop)); },
+      rootTargets: [
+        { element: $('#file-manager-list [data-tree-root]') },
+        ...Array.from($('#file-breadcrumbs').querySelectorAll<HTMLButtonElement>('[data-folder]')).map((element) => ({ element, targetId: element.dataset.folder || undefined })),
+      ],
+    });
   }
   async function perform(action: () => Promise<void>) {
     if (pendingAction) return;
@@ -110,22 +130,24 @@ export function createFileManager(host: HTMLElement, actions: FileManagerActions
     event.preventDefault();
     if (pendingName || !renameAction) return;
     pendingName = true; const submit = $<HTMLButtonElement>('#file-name-form button[type=submit]'); submit.disabled = true;
-    try { await renameAction($<HTMLInputElement>('#file-name-input').value); nameDialog.close(); render(); }
+    try { await renameAction($<HTMLInputElement>('#file-name-input').value); nameDialog.close(); }
     catch (error) { $('#file-name-error').textContent = error instanceof Error ? error.message : 'Could not rename file.'; }
-    finally { pendingName = false; submit.disabled = false; }
+    finally { pendingName = false; submit.disabled = false; if (!nameDialog.open) render(); }
   });
   $('#file-name-cancel').addEventListener('click', () => { if (!pendingName) nameDialog.close(); });
   nameDialog.addEventListener('cancel', (event) => { if (pendingName) event.preventDefault(); });
-  $('#library-folder').addEventListener('click', () => editName('New folder', '', (name) => actions.createFolder(parentId, name)));
-  $('#library-new').addEventListener('click', () => { dialog.close(); actions.createFile(parentId); });
-  $('#library-import').addEventListener('click', () => { dialog.close(); actions.importFiles(parentId); });
+  function expandDestination() { if (parentId) actions.setFolderCollapsed(parentId, false); }
+  $('#library-folder').addEventListener('click', () => editName('New folder', '', async (name) => { expandDestination(); await actions.createFolder(parentId, name); }));
+  $('#library-new').addEventListener('click', () => { expandDestination(); dialog.close(); actions.createFile(parentId); });
+  $('#library-import').addEventListener('click', () => { expandDestination(); dialog.close(); actions.importFiles(parentId); });
   $('#library-backup').addEventListener('click', () => actions.backup());
   $('#library-restore').addEventListener('click', () => { dialog.close(); actions.restore(); });
   $('#library-done').addEventListener('click', () => { if (!pendingAction) dialog.close(); });
   dialog.addEventListener('cancel', (event) => { if (pendingAction) event.preventDefault(); });
+  dialog.addEventListener('close', () => { if (!dialog.open) dragCleanup(); });
   $('#import-compare').addEventListener('click', () => { $('#import-comparison').hidden = !$('#import-comparison').hidden; });
   return {
-    open() { render(); $('#file-manager-error').textContent = ''; dialog.showModal(); },
+    open() { dialog.showModal(); render(); $('#file-manager-error').textContent = ''; },
     rename,
     folder: () => parentId,
     async collision(name: string, browserSource: string, diskSource: string): Promise<'both' | 'replace' | 'cancel'> {

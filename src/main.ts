@@ -2,7 +2,7 @@ import './style.css';
 import Picker from 'vanilla-picker';
 import { Box, Circle, Cylinder, createIcons, Eye, EyeOff, FolderOpen, Group, MousePointer2, RectangleHorizontal, Ruler, Slash, Square } from 'lucide';
 import { groupDescendants, groupOffset, reparentPosition, validateGroups, worldPosition, type GroupSpec, type Vector3 } from './groups';
-import { normalizeTreeOrder, planTreeMove, type TreeDrop } from './component-tree';
+import { normalizeTreeOrder, planTreeMove, treeChildren, type TreeDrop } from './component-tree';
 import { duplicateGroupBranch, effectiveHiddenIds } from './group-actions';
 import { bindComponentTreeDrag } from './component-tree-drag';
 import { bindPanelResize } from './panel-resize';
@@ -17,6 +17,10 @@ import { sketchReference, sketchReferenceOrigin, type ModelSketch, type SketchAx
 import { findSketchEditor, linkSketchEditor, openSketchEditor, resolveLinkedSketches, synchronizeSketchReferences } from './sketch-editor';
 import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementAxis, type MeasurementAxisChoice } from './measurements';
 import { saveDocumentFile, type SaveFilePicker } from './save-document';
+import { bindExportMenu } from './export-menu';
+import { exportModelCutlist, type CutlistExportResult } from './cutlist-export';
+import { analyzePart, componentDisplayName } from './parts';
+import { normalizeLibraryOrder, planLibraryMove } from './file-tree';
 import { openDocumentFile } from './open-document';
 import { FileLibrary, exportLibrary, restoreLibrary, migrateWorkspace, importCollision, siblingNames, validateLibrary, type Folder, type LibraryState } from './file-library';
 import { IndexedDBStorage } from './indexeddb-storage';
@@ -45,8 +49,14 @@ root.innerHTML = `
         <button class="icon-button" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo">↷</button>
         <span class="top-divider"></span>
         <button class="button button-quiet" id="files">Files</button><button class="button button-quiet" id="open-file">Import .js</button>
-        <button class="button button-quiet" id="download" title="Export .js (Ctrl/Cmd+S)">Export .js</button>
-        <button class="button button-quiet" id="export-glb" type="button" title="Export applied visible boxes and cylinders for Blender">Export .glb</button>
+        <div class="export-dropdown">
+          <button class="button button-quiet" id="export-menu-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu">Export <span aria-hidden="true">▾</span></button>
+          <div class="export-menu" id="export-menu" role="menu" aria-label="Export format" hidden>
+            <button class="export-menu-item" id="download" type="button" role="menuitem" title="Export Blockwork source (Ctrl/Cmd+S)">Blockwork .js</button>
+            <button class="export-menu-item" id="export-glb" type="button" role="menuitem" title="Export applied visible boxes and cylinders for Blender">.glb</button>
+            <button class="export-menu-item" id="export-cutlist" type="button" role="menuitem" title="Export a CSV cutlist of applied boxes">CSV cutlist</button>
+          </div>
+        </div>
         <input id="backup-input" type="file" accept=".json,application/json" hidden /><input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" multiple hidden />
       </div>
     </header>
@@ -102,7 +112,7 @@ root.innerHTML = `
       </section>
       <div class="panel-resizer inspector-resizer" data-resize-panel="inspector" role="separator" tabindex="0" aria-label="Resize inspector" aria-orientation="vertical" aria-controls="inspector-panel" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div>
       <aside id="inspector-panel" class="inspector panel">
-        <div class="panel-heading inspector-heading"><div><div class="eyebrow">PROPERTIES</div><div class="heading-title">Inspector</div></div><div class="inspector-buttons"><button id="duplicate-box" class="icon-button" title="Duplicate selected" aria-label="Duplicate selected">⧉</button><button id="delete-box" class="icon-button danger-button" title="Delete selected (Delete)" aria-label="Delete selected">⌫</button></div></div>
+        <div class="panel-heading inspector-heading"><div><div class="eyebrow">PROPERTIES</div><div class="heading-title">Inspector</div></div><div class="inspector-buttons"><button id="visibility-selected" class="icon-button" type="button" title="Hide selected" aria-label="Hide selected"><i data-lucide="eye" aria-hidden="true"></i></button><button id="duplicate-box" class="icon-button" title="Duplicate selected" aria-label="Duplicate selected">⧉</button><button id="delete-box" class="icon-button danger-button" title="Delete selected (Delete)" aria-label="Delete selected">⌫</button></div></div>
         <div id="inspector-content" class="inspector-content"><div class="inspector-empty"><div class="empty-target">⊙</div><div>Select a box</div><small>Choose a component from the tree or viewport to inspect its dimensions.</small></div></div>
         <div class="inspector-foot"><span class="snap-icon">⌁</span><span>Values snap to <b>1/64 in</b></span></div>
       </aside>
@@ -133,6 +143,32 @@ root.innerHTML = `
         <div class="dialog-actions"><button type="submit" value="cancel" class="button button-quiet">Cancel</button></div>
       </form>
     </dialog>
+    <dialog id="part-dialog" class="variable-dialog" aria-labelledby="part-title" aria-describedby="part-description">
+      <form id="part-form">
+        <div class="eyebrow">SINGLE BODY</div><h2 id="part-title">Create Part</h2>
+        <p id="part-description" class="cutlist-description">A Part is one manufactured piece. Its subcomponents add material to the same body.</p>
+        <label class="field-label" for="part-name">PART NAME</label><input id="part-name" class="text-field" required autocomplete="off" />
+        <p id="part-selection-note" class="inspector-tip"></p><p id="part-error" class="dialog-error" role="alert"></p>
+        <div class="dialog-actions"><button id="part-cancel" type="button" class="button button-quiet">Cancel</button><button type="submit" class="button button-run">Create Part</button></div>
+      </form>
+    </dialog>
+    <dialog id="cutlist-dialog" class="variable-dialog cutlist-dialog" aria-labelledby="cutlist-title" aria-describedby="cutlist-description">
+      <form id="cutlist-form" novalidate>
+        <div class="eyebrow">CSV EXPORT</div><h2 id="cutlist-title">Export cutlist</h2>
+        <p id="cutlist-description" class="cutlist-description">One row per box or connected Part in component tree order, including hidden geometry and collapsed groups. Parts use their overall dimensions and full group path. Length is the largest dimension, thickness the smallest, in inches.</p>
+        <label class="field-label" for="cutlist-thickness">MAXIMUM THICKNESS · INCHES</label>
+        <input id="cutlist-thickness" class="text-field" inputmode="decimal" autocomplete="off" value="3" aria-describedby="cutlist-thickness-help cutlist-error" required />
+        <p id="cutlist-thickness-help" class="cutlist-description">Boxes and Parts thicker than this limit are ignored. Fractions such as 3 1/2 are accepted.</p>
+        <p id="cutlist-draft-note" class="cutlist-description" hidden>Uses the applied model. Your unrun source draft is excluded.</p>
+        <div id="cutlist-error" class="dialog-error" role="alert"></div>
+        <div id="cutlist-summary" class="cutlist-summary" role="status" aria-live="polite"></div>
+        <h3 class="field-label">IGNORED COMPONENTS</h3>
+        <ul id="cutlist-ignored" class="cutlist-ignored" aria-label="Ignored components"></ul>
+        <p id="cutlist-ignored-empty" class="cutlist-description">No components are ignored.</p>
+        <p class="cutlist-description">Standalone cylinders, sketches, and measurement annotations are excluded. Cylinders inside a Part contribute to its stock dimensions.</p>
+        <div class="dialog-actions"><button type="button" class="button button-quiet" id="cutlist-cancel">Cancel</button><button type="submit" class="button button-run" id="cutlist-download">Export CSV</button></div>
+      </form>
+    </dialog>
     <dialog id="cylinder-dialog" class="variable-dialog" aria-labelledby="cylinder-dialog-title"><form id="cylinder-form"><div class="eyebrow">3D COMPONENT</div><h2 id="cylinder-dialog-title">Add cylinder</h2><label class="field-label" for="cylinder-radius">RADIUS · INCHES</label><input id="cylinder-radius" class="text-field" inputmode="decimal" autocomplete="off" required/><label class="field-label expression-label" for="cylinder-length">LENGTH · INCHES</label><input id="cylinder-length" class="text-field" inputmode="decimal" autocomplete="off" required/><label class="field-label expression-label" for="cylinder-axis">LENGTH AXIS</label><select id="cylinder-axis" class="text-field"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select><div id="cylinder-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="cylinder-cancel">Cancel</button><button type="submit" class="button button-run">Add cylinder</button></div></form></dialog>
     <dialog id="variable-dialog" class="variable-dialog"><form id="variable-form"><div class="eyebrow">MODEL VARIABLE</div><h2 id="variable-dialog-title">Add variable</h2><label class="field-label" for="variable-name">NAME</label><input id="variable-name" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-value">VALUE · INCHES</label><input id="variable-value" class="text-field" autocomplete="off" required/><label class="field-label" for="variable-description">DESCRIPTION · OPTIONAL</label><textarea id="variable-description" class="text-field variable-description" rows="3"></textarea><div id="variable-error" class="dialog-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button button-quiet" id="variable-cancel">Cancel</button><button type="submit" class="button button-run" id="variable-submit">Create variable</button></div></form></dialog>
     <dialog id="delete-variable-dialog" class="variable-dialog"><form method="dialog"><div class="eyebrow">VARIABLE IN USE</div><h2>Replace references?</h2><p id="delete-variable-message" class="delete-variable-message"></p><div class="dialog-actions"><button value="cancel" class="button button-quiet">Cancel</button><button value="delete" class="button button-run">Delete and replace</button></div></form></dialog>
@@ -146,6 +182,7 @@ function renderIcons(scope: HTMLElement) { createIcons({ icons: lucideIcons, roo
 renderIcons(root);
 
 const $ = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
+const exportMenu = bindExportMenu($<HTMLButtonElement>('#export-menu-button'), $('#export-menu'));
 bindPanelResize($('.workspace'));
 const editor = $('#source-editor') as HTMLTextAreaElement;
 const viewportHost = $('#viewport');
@@ -174,11 +211,14 @@ let contextFace: { boxId: string; face: FaceName; clientX: number; clientY: numb
 let contextGroupMemberId: string | null = null;
 let draftDirty = false;
 let exportingGlb = false;
+let savingDocument = false;
 let appliedSource = '';
 let runEpoch = 0;
 let documents: ModelDocument[] = [];
 let openDocumentIds: string[] = [];
 let folders: Folder[] = [];
+let libraryEntryOrder: string[] = [];
+let collapsedFolderIds = new Set<string>();
 let library: FileLibrary | null = null;
 let storageReady = false;
 let persistenceGeneration = 0;
@@ -264,7 +304,8 @@ function modelItems() { return [...boxes, ...sketches]; }
 function documentItems() { return documentKind === 'sketch' ? rectangles : modelItems(); }
 function objectItems() { return [...documentItems(), ...measurements]; }
 function measurementName(item: Measurement) { return item.name ?? `Measurement ${measurements.findIndex((m) => m.id === item.id) + 1}`; }
-function itemName(item: BoxSpec | SketchShape | ModelSketch | Measurement) { return 'start' in item ? measurementName(item) : item.name; }
+function shortItemName(item: BoxSpec | SketchShape | ModelSketch | Measurement) { return ('start' in item ? measurementName(item) : item.name) || ('kind' in item && item.kind === 'cylinder' ? 'Cylinder' : 'Box'); }
+function itemName(item: BoxSpec | SketchShape | ModelSketch | Measurement) { return componentDisplayName({ name: 'start' in item ? measurementName(item) : item.name, groupId: item.groupId }, groups); }
 function selectedMeasurement() { return measurements.find((m) => m.id === selectedId) ?? null; }
 function shapeCount() { return documentItems().length; }
 function shapeLabel(count = shapeCount()) { return documentKind === 'sketch' ? count === 1 ? 'shape' : 'shapes' : count === 1 ? 'component' : 'components'; }
@@ -280,7 +321,7 @@ function updateLineNumbers() { $('#line-numbers').textContent = Array.from({ len
 function setEditor(source: string, dirty = false) { editor.value = source; draftDirty = dirty; updateLineNumbers(); syncDraftUI(); }
 function syncDraftUI() {
   renderDocumentTabs();
-  syncGlbExportUI();
+  syncExportUI();
   $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : `Edit the code, then run it to update the ${documentKind === 'sketch' ? 'sketch' : 'model'}.`;
   $('#draft-note').classList.toggle('warning-note', draftDirty);
   $('#add-box').toggleAttribute('disabled', draftDirty);
@@ -294,12 +335,19 @@ function syncDraftUI() {
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !(selectedComponentIds.size || selectedBox() || selectedModelSketch() || selectedRectangle() || selectedMeasurement() || selectedGroup()));
   renderList(); renderInspector();
 }
-function syncGlbExportUI() {
+function syncExportUI() {
+  $('#export-menu-button').toggleAttribute('disabled', !openDocumentIds.length);
+  $('#download').toggleAttribute('disabled', savingDocument || !openDocumentIds.length);
   const button = $('#export-glb');
   button.toggleAttribute('disabled', exportingGlb || !openDocumentIds.length || documentKind !== 'model' || !boxes.length);
   button.title = documentKind === 'sketch'
     ? 'GLB export is available for 3D models'
     : `Export applied visible boxes and cylinders for Blender${draftDirty ? ' · Unrun draft is excluded' : ''}${sketches.length || measurements.length ? ' · Sketches and measurements are excluded' : ''}`;
+  const cutlistButton = $('#export-cutlist');
+  cutlistButton.toggleAttribute('disabled', !openDocumentIds.length || documentKind !== 'model' || !boxes.length && !groups.some((g) => g.kind === 'part'));
+  cutlistButton.title = documentKind === 'sketch'
+    ? 'CSV cutlist export is available for 3D models'
+    : `Export a CSV cutlist of applied boxes and Parts${draftDirty ? ' · Unrun draft is excluded' : ''}`;
 }
 function selectedBox() { return boxes.find((box) => box.id === selectedId) ?? null; }
 function selectedModelSketch() { return sketches.find((sketch) => sketch.id === selectedId) ?? null; }
@@ -415,8 +463,8 @@ function groupItems(id: string) {
   const ids = groupDescendants(groups, id);
   return objectItems().filter((item) => item.groupId && ids.has(item.groupId));
 }
-function worldBoxes() { return boxes.map((b) => ({ ...b, groupId: undefined, position: worldPosition(b.position, groups, b.groupId) })); }
-function worldSketches() { return sketches.map((sketch) => ({ ...sketch, groupId: undefined, position: worldPosition(sketch.position, groups, sketch.groupId) })); }
+function worldBoxes() { return boxes.map((b) => ({ ...b, name: shortItemName(b), groupId: undefined, position: worldPosition(b.position, groups, b.groupId) })); }
+function worldSketches() { return sketches.map((sketch) => ({ ...sketch, name: shortItemName(sketch), groupId: undefined, position: worldPosition(sketch.position, groups, sketch.groupId) })); }
 function reparentSketch(sketch: ModelSketch, nextGroup?: string): ModelSketch { return { ...sketch, groupId: nextGroup, position: reparentPosition(sketch.position, groups, sketch.groupId, nextGroup) }; }
 function worldRectangles() { return rectangles.map((r) => ({ ...r, groupId: undefined, position: worldPosition(r.position, groups, r.groupId).slice(0, 2) as [number, number] })); }
 function refreshGeometry(preserveView = true) {
@@ -454,13 +502,54 @@ function addGroup() {
   try { commitGroups([...groups, group], nextBoxes, nextShapes, 'Group created · drag items into it in the tree', treeOrder, sketches.map((sketch) => ids.has(sketch.id) ? { ...reparentSketch(sketch, parentId), groupId: group.id } : sketch), measurements.map((m) => ids.has(m.id) ? { ...m, groupId: group.id } : m)); selectedId = group.id; selectedComponentIds.clear(); selectedVariable = null; selectedFace = null; renderAll(); }
   catch (error) { notify(error instanceof Error ? error.message : 'Could not create group', true); }
 }
+let pendingPart: { ids: Set<string>; parentId?: string; convertId?: string } | null = null;
+function openPartDialog() {
+  if (draftDirty || documentKind !== 'model') return;
+  const container = selectedGroup();
+  if (container && container.kind !== 'part' && groups.some((g) => g.parentId === container.id)) {
+    notify('A Part contains subcomponents directly. Move nested groups or Parts out before converting this group.', true); return;
+  }
+  const selected = selectedModelItems();
+  const firstParent = selected[0]?.groupId;
+  let parentId = container?.kind === 'part' ? container.parentId : selected.every((item) => item.groupId === firstParent) ? firstParent : undefined;
+  if (groups.find((g) => g.id === parentId)?.kind === 'part') parentId = groups.find((g) => g.id === parentId)!.parentId;
+  pendingPart = { ids: new Set(selected.map((item) => item.id)), parentId, convertId: container?.kind !== 'part' ? container?.id : undefined };
+  const count = pendingPart.convertId ? groupItems(pendingPart.convertId).filter((item) => boxes.some((b) => b.id === item.id)).length : selected.filter((item) => !('shapes' in item)).length;
+  $('#part-selection-note').textContent = count ? `${count} solid subcomponent${count === 1 ? '' : 's'} will describe this piece. Disconnected bodies stay editable but are ignored by the cutlist.` : 'Start with an empty Part, then add boxes or cylinders while it is selected. Sketches and measurements are construction references.';
+  $('#part-error').textContent = '';
+  $<HTMLInputElement>('#part-name').value = pendingPart.convertId ? container!.name : `Part ${groups.filter((g) => g.kind === 'part').length + 1}`;
+  $<HTMLDialogElement>('#part-dialog').showModal();
+  $<HTMLInputElement>('#part-name').focus(); $<HTMLInputElement>('#part-name').select();
+}
+$('#part-cancel').addEventListener('click', () => $<HTMLDialogElement>('#part-dialog').close());
+$('#part-dialog').addEventListener('close', () => { pendingPart = null; });
+$('#part-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!pendingPart || draftDirty || documentKind !== 'model') return;
+  const name = $<HTMLInputElement>('#part-name').value.trim();
+  if (!name) { $('#part-error').textContent = 'Give this Part a name.'; return; }
+  try {
+    const { ids, parentId, convertId } = pendingPart;
+    const id = convertId ?? crypto.randomUUID();
+    const color = boxes.find((b) => convertId ? b.groupId === convertId : ids.has(b.id))?.color ?? PALETTE[groups.filter((g) => g.kind === 'part').length % PALETTE.length];
+    const part: GroupSpec = { id, name, kind: 'part', color, position: [0, 0, 0], ...(parentId ? { parentId } : {}) };
+    const nextGroups = convertId ? groups.map((g) => g.id === id ? { ...g, name, kind: 'part' as const, color } : g) : [...groups, part];
+    const nextBoxes = convertId ? boxes : boxes.map((b) => ids.has(b.id) ? { ...reparentBox(b, groups, parentId), groupId: id } : b);
+    const nextSketches = convertId ? sketches : sketches.map((sketch) => ids.has(sketch.id) ? { ...reparentSketch(sketch, parentId), groupId: id } : sketch);
+    const order = [...treeOrder];
+    if (!convertId) { const first = order.findIndex((entry) => ids.has(entry)); order.splice(first < 0 ? order.length : first, 0, id); }
+    commitGroups(nextGroups, nextBoxes, rectangles, 'Part created · subcomponents describe one body', order, nextSketches);
+    selectedId = id; selectedComponentIds.clear(); selectedVariable = null; selectedFace = null;
+    $<HTMLDialogElement>('#part-dialog').close(); renderAll();
+  } catch (error) { $('#part-error').textContent = error instanceof Error ? error.message : 'Could not create Part.'; }
+});
 function duplicateGroup(group: GroupSpec) {
   if (draftDirty) return;
   try {
     const copy = duplicateGroupBranch({ groups, boxes, sketches, rectangles, measurements }, group.id, treeOrder);
     const hiddenIds = new Set(hiddenBoxIds);
     for (const [id, copiedId] of copy.ids) if (hiddenBoxIds.has(id)) hiddenIds.add(copiedId);
-    commitGroups([...groups, ...copy.groups], [...boxes, ...copy.boxes], [...rectangles, ...copy.rectangles], 'Group duplicated', copy.treeOrder, [...sketches, ...copy.sketches], [...measurements, ...copy.measurements], hiddenIds);
+    commitGroups([...groups, ...copy.groups], [...boxes, ...copy.boxes], [...rectangles, ...copy.rectangles], group.kind === 'part' ? 'Part duplicated' : 'Group duplicated', copy.treeOrder, [...sketches, ...copy.sketches], [...measurements, ...copy.measurements], hiddenIds);
     for (const [id, copiedId] of copy.ids) {
       if (collapsedGroupIds.has(id)) collapsedGroupIds.add(copiedId);
       if (!sketches.some((sketch) => sketch.id === id)) continue;
@@ -486,22 +575,53 @@ function changeItemGroup(id: string, groupId?: string) {
 }
 function membershipControl(item: BoxSpec | SketchShape | ModelSketch | Measurement) {
   const host = $('#inspector-content');
-  host.insertAdjacentHTML('beforeend', `<label class="field-label group-membership-label" for="item-group">GROUP</label><select id="item-group" class="text-field" aria-label="Object group" ${draftDirty ? 'disabled' : ''}><option value="">No group</option>${groups.map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === item.groupId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>${'start' in item ? '<div class="inspector-tip">Group membership organizes this measurement. Only its referenced geometry determines its position.</div>' : item.groupId ? '<div class="inspector-tip">Coordinates are relative to this group.</div>' : ''}`);
+  const owner = groups.find((g) => g.id === item.groupId);
+  if (owner?.kind === 'part') {
+    host.insertAdjacentHTML('beforeend', `<section class="part-membership-card" aria-label="Owning Part" data-owner-part="${escapeAttr(owner.id)}">
+      <div class="section-label"><span>PART</span></div>
+      <div class="part-membership-heading"><button id="inspect-owner-part" type="button" class="part-owner-name" title="Inspect Part">${escapeHTML(owner.name)}</button><button id="remove-from-part" type="button" class="small-action" aria-label="Remove from Part" title="Keep this subcomponent as a separate component" ${draftDirty ? 'disabled' : ''}>Remove</button></div>
+      ${'shapes' in item || 'start' in item ? '<p>Construction reference for this Part.</p>' : ''}
+      <div id="part-color-controls"></div><p class="part-material-help">Material applies to the whole Part.</p>
+    </section>`);
+    host.querySelector('#inspect-owner-part')!.addEventListener('click', () => { selectedId = owner.id; selectedComponentIds.clear(); selectedFace = null; renderAll(); });
+    host.querySelector('#remove-from-part')!.addEventListener('click', () => changeItemGroup(item.id));
+    renderPartColorControls(host.querySelector('#part-color-controls')!, owner.color!, (color) => {
+      if (draftDirty) return;
+      try { commitGroups(groups.map((g) => g.id === owner.id ? { ...g, color } : g), boxes, rectangles, 'Part material updated'); }
+      catch (error) { notify(error instanceof Error ? error.message : 'Could not update Part material', true); renderInspector(); }
+    }, 'PART MATERIAL');
+    return;
+  }
+  host.insertAdjacentHTML('beforeend', `<label class="field-label group-membership-label" for="item-group">GROUP</label><select id="item-group" class="text-field" aria-label="Object group" ${draftDirty ? 'disabled' : ''}><option value="">No group</option>${groups.filter((g) => g.kind !== 'part').map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === item.groupId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>${'start' in item ? '<div class="inspector-tip">Group membership organizes this measurement. Only its referenced geometry determines its position.</div>' : item.groupId ? '<div class="inspector-tip">Coordinates are relative to this group.</div>' : ''}`);
   host.querySelector<HTMLSelectElement>('#item-group')!.addEventListener('change', (event) => changeItemGroup(item.id, (event.currentTarget as HTMLSelectElement).value || undefined));
+}
+function renderPartColorControls(host: HTMLElement, color: string, onChange: (color: string) => void, label = 'PART COLOR') {
+  host.innerHTML = `<div class="section-label color-label"><span>${label}</span><span>WHOLE BODY</span></div><div class="color-row"><div class="swatch-grid">${COLOR_OPTIONS.map((value) => `<button class="swatch ${value.toLowerCase() === color.toLowerCase() ? 'chosen' : ''} ${value === TRANSPARENT_COLOR ? 'swatch-transparent' : ''}" data-part-color="${value}" style="--cube:${value === TRANSPARENT_COLOR ? '#8795a133' : value}" aria-label="${value === TRANSPARENT_COLOR ? 'Transparent Part' : `Part color ${value}`}" aria-pressed="${value.toLowerCase() === color.toLowerCase()}" ${draftDirty ? 'disabled' : ''}></button>`).join('')}</div><button id="part-color" type="button" class="face-color-trigger" style="--face-color:${escapeAttr(color === TRANSPARENT_COLOR ? '#8795a133' : color)}" aria-label="Choose a custom Part color" aria-haspopup="dialog" ${draftDirty ? 'disabled' : ''}></button></div>`;
+  host.querySelectorAll<HTMLButtonElement>('[data-part-color]').forEach((button) => button.addEventListener('click', () => onChange(button.dataset.partColor!)));
+  const trigger = host.querySelector<HTMLButtonElement>('#part-color')!;
+  faceColorPicker = new Picker({ parent: $('#face-color-picker-anchor'), popup: 'left', alpha: true, editor: true, cancelButton: true, color: color === TRANSPARENT_COLOR ? '#8795a133' : color, onDone: (value) => onChange(value.hex.toLowerCase()) });
+  trigger.addEventListener('click', () => openFaceColorPicker(trigger));
 }
 function renderGroupInspector(group: GroupSpec) {
   const host = $('#inspector-content'), disabled = draftDirty ? 'disabled' : '';
   const descendants = groupDescendants(groups, group.id);
   const members = groupItems(group.id);
   const world = groupOffset(groups, group.id);
-  host.innerHTML = `<div class="object-heading"><span class="group-symbol">▱</span><div><div class="object-name">${escapeHTML(group.name)}</div><div class="object-id">GROUP · ${groupItems(group.id).length} ITEMS</div></div></div>
+  const isPart = group.kind === 'part', body = isPart ? analyzePart(group, boxes, groups) : null;
+  host.innerHTML = `<div class="object-heading">${isPart ? `<span class="object-swatch" style="--cube:${escapeAttr(group.color!)}"></span>` : '<span class="group-symbol">▱</span>'}<div><div class="object-name">${escapeHTML(group.name)}</div><div class="object-id">${isPart ? `PART · ${body!.bodyCount === 1 ? 'SINGLE BODY' : body!.bodyCount ? `${body!.bodyCount} BODIES` : 'EMPTY'}` : `GROUP · ${members.length} ITEMS`}</div></div></div>
+    ${isPart ? `<div class="part-body-card ${body!.bodyCount !== 1 ? 'part-body-warning' : ''}" role="status"><strong>${body!.bodyCount === 1 ? 'One manufactured piece' : body!.bodyCount ? `${body!.bodyCount} disconnected bodies` : 'Add material to this Part'}</strong><p>${body!.bodyCount === 1 ? 'Subcomponents describe the same body. The cutlist exports one row for this Part.' : body!.bodyCount ? 'Join subcomponents by overlapping them or sharing a face. This Part is ignored in the cutlist until it is one body.' : 'Select this Part and add a box or cylinder, or drag existing solids into it. Empty Parts are ignored in the cutlist.'}</p>${body!.solids.length ? `<span class="part-stock-size">Overall size · ${body!.size.map(formatInches).join(' × ')} in</span>` : ''}</div>` : ''}
     <label class="field-label" for="group-name">NAME</label><input id="group-name" class="text-field" value="${escapeAttr(group.name)}" ${disabled}/>
-    <label class="field-label group-membership-label" for="group-parent">PARENT GROUP</label><select id="group-parent" class="text-field" ${disabled}><option value="">No parent</option>${groups.filter((g) => !descendants.has(g.id)).map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === group.parentId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>
-    <div class="section-label position-label"><span>GROUP POSITION${group.parentId ? ' · IN PARENT' : ''}</span><span>INCHES</span></div><div class="${documentKind === 'sketch' ? 'sketch-fields' : 'triple-fields'}">${(documentKind === 'sketch' ? ['X', 'Y'] : ['X', 'Y', 'Z']).map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Group position ${axis}" data-group-axis="${i}" value="${formatInches(group.position[i])}" ${disabled}/><small>in</small></span></label>`).join('')}</div>
-    <div class="inspector-tip">Moving this origin moves geometry and nested groups; measurements follow only their referenced geometry; relative box placements continue to follow their reference boxes. World origin: ${world.slice(0, documentKind === 'sketch' ? 2 : 3).map(formatInches).join(', ')} in.</div>
-    <div class="section-label position-label"><span>MEMBERS</span><span>${members.length}</span></div><div class="group-member-list" aria-label="Group members">${members.map((item) => `<button type="button" class="group-member" data-member-id="${escapeAttr(item.id)}" title="${escapeAttr(itemName(item))}" aria-haspopup="menu"><span>${escapeHTML(itemName(item))}</span>${item.groupId !== group.id ? `<small>${escapeHTML(groups.find((g) => g.id === item.groupId)?.name ?? '')}</small>` : ''}</button>`).join('') || '<div class="group-member-empty">No members. Drag items into this group in the tree.</div>'}</div>
-    <button id="ungroup" class="button button-quiet ungroup-button" ${disabled}>Ungroup · keep items</button>`;
+    ${isPart ? '<div id="part-color-controls"></div>' : ''}
+    <label class="field-label group-membership-label" for="group-parent">PARENT GROUP</label><select id="group-parent" class="text-field" ${disabled}><option value="">No parent</option>${groups.filter((g) => !descendants.has(g.id) && g.kind !== 'part').map((g) => `<option value="${escapeAttr(g.id)}" ${g.id === group.parentId ? 'selected' : ''}>${escapeHTML(g.name)}</option>`).join('')}</select>
+    <div class="section-label position-label"><span>${isPart ? 'PART ORIGIN' : 'GROUP POSITION'}${group.parentId ? ' · IN PARENT' : ''}</span><span>INCHES</span></div><div class="${documentKind === 'sketch' ? 'sketch-fields' : 'triple-fields'}">${(documentKind === 'sketch' ? ['X', 'Y'] : ['X', 'Y', 'Z']).map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="${isPart ? 'Part' : 'Group'} position ${axis}" data-group-axis="${i}" value="${formatInches(group.position[i])}" ${disabled}/><small>in</small></span></label>`).join('')}</div>
+    <div class="inspector-tip">${isPart ? 'Moving the Part origin moves its subcomponents together' : 'Moving this origin moves geometry and nested groups'}; measurements follow only their referenced geometry; relative box placements continue to follow their reference boxes. World origin: ${world.slice(0, documentKind === 'sketch' ? 2 : 3).map(formatInches).join(', ')} in.</div>
+    <div class="section-label position-label"><span>${isPart ? 'SUBCOMPONENTS' : 'MEMBERS'}</span><span>${members.length}</span></div><div class="group-member-list" aria-label="${isPart ? 'Part subcomponents' : 'Group members'}">${members.map((item) => `<button type="button" class="group-member" data-member-id="${escapeAttr(item.id)}" title="${escapeAttr(itemName(item))}" aria-haspopup="menu"><span>${escapeHTML(itemName(item))}</span>${item.groupId !== group.id ? `<small>${escapeHTML(groups.find((g) => g.id === item.groupId)?.name ?? '')}</small>` : ''}</button>`).join('') || `<div class="group-member-empty">No ${isPart ? 'subcomponents' : 'members'}. Drag items into this ${isPart ? 'Part' : 'group'} in the tree.</div>`}</div>
+    ${isPart ? `<button id="part-add-box" class="button part-add-box" ${disabled}>Add box subcomponent</button>` : documentKind === 'model' ? `<button id="make-part" class="button part-add-box" ${disabled}>Make a Part</button>` : ''}
+    <button id="ungroup" class="button button-quiet ungroup-button" ${disabled}>${isPart ? 'Dissolve Part · keep subcomponents' : 'Ungroup · keep items'}</button>`;
+  host.querySelector('#part-add-box')?.addEventListener('click', () => addBox());
+  host.querySelector('#make-part')?.addEventListener('click', openPartDialog);
   const update = (patch: Partial<GroupSpec>) => { if (draftDirty) return; try { commitGroups(groups.map((g) => g.id === group.id ? { ...g, ...patch } : g)); } catch (error) { notify(error instanceof Error ? error.message : 'Could not update group', true); renderInspector(); } };
+  if (isPart) renderPartColorControls(host.querySelector('#part-color-controls')!, group.color!, (color) => update({ color }));
   host.querySelector<HTMLInputElement>('#group-name')!.addEventListener('change', (event) => update({ name: (event.currentTarget as HTMLInputElement).value.trim() || group.name }));
   host.querySelector<HTMLSelectElement>('#group-parent')!.addEventListener('change', (event) => { const parentId = (event.currentTarget as HTMLSelectElement).value || undefined; update({ parentId, position: reparentPosition(group.position, groups, group.parentId, parentId) }); });
   host.querySelectorAll<HTMLInputElement>('[data-group-axis]').forEach((input) => {
@@ -529,7 +649,7 @@ function ungroup(group: GroupSpec) {
     const nextBoxes = boxes.map((b) => b.groupId === group.id ? reparentBox(b, groups, group.parentId) : b);
     const nextShapes = rectangles.map((r) => r.groupId === group.id ? { ...r, groupId: group.parentId, position: reparentPosition(r.position, groups, r.groupId, group.parentId).slice(0, 2) as [number, number] } : r);
     const nextGroups = groups.filter((g) => g.id !== group.id).map((g) => g.parentId === group.id ? { ...g, parentId: group.parentId, position: reparentPosition(g.position, groups, g.parentId, group.parentId) } : g);
-    commitGroups(nextGroups, nextBoxes, nextShapes, 'Ungrouped · items kept in place', treeOrder, sketches.map((sketch) => sketch.groupId === group.id ? reparentSketch(sketch, group.parentId) : sketch), measurements.map((m) => m.groupId === group.id ? { ...m, groupId: group.parentId } : m));
+    commitGroups(nextGroups, nextBoxes, nextShapes, group.kind === 'part' ? 'Part dissolved · subcomponents kept in place' : 'Ungrouped · items kept in place', treeOrder, sketches.map((sketch) => sketch.groupId === group.id ? reparentSketch(sketch, group.parentId) : sketch), measurements.map((m) => m.groupId === group.id ? { ...m, groupId: group.parentId } : m));
   } catch (error) { notify(error instanceof Error ? error.message : 'Could not ungroup', true); }
 }
 function moveTreeComponent(id: string, drop: TreeDrop) {
@@ -554,6 +674,7 @@ function renderList() {
   treeOrder = normalizeTreeOrder(treeOrder, groups, items);
   const entries = new Map([...groups, ...items].map((entry) => [entry.id, entry]));
   const groupIds = new Set(groups.map((group) => group.id));
+  const children = treeChildren(groups, items, treeOrder);
   const hiddenIds = sceneHiddenIds();
   const visibilityButton = (id: string, name: string, parentId?: string) => {
     const hidden = hiddenIds.has(id), inherited = !!parentId && hiddenIds.has(parentId);
@@ -565,25 +686,45 @@ function renderList() {
   $('#tree-empty').classList.toggle('hidden', items.length + variables.length + groups.length > 0);
   const itemRow = (item: BoxSpec | SketchShape | ModelSketch, depth: number) => {
     const hidden = hiddenIds.has(item.id), sketch = documentKind === 'sketch', mounted = 'shapes' in item;
+    const partMember = groups.find((g) => g.id === item.groupId)?.kind === 'part';
     const symbol = 'kind' in item && item.kind === 'circle' ? 'row-circle' : 'kind' in item && item.kind === 'cylinder' ? 'row-cylinder' : sketch ? (item as SketchShape).kind === 'line' ? 'row-line' : 'row-square' : mounted ? 'row-sketch' : 'row-cube';
     const size = 'kind' in item && item.kind === 'circle' ? `R ${formatInches(item.size[0] / 2)} in` : 'kind' in item && item.kind === 'cylinder' ? `R ${formatInches(item.size[cylinderAxes(item).radialAxes[0]] / 2)} × ${formatInches(item.size[cylinderAxes(item).lengthAxis])}` : sketch && (item as SketchShape).kind === 'line' ? `${formatInches(Math.hypot(...item.size))} in` : item.size.map(formatInches).join(' × ') + (mounted ? ` · ${item.axis.toUpperCase()}` : '');
-    return `<div class="component-row box-row ${selectedComponentIds.has(item.id) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(item.id)}><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(item.name)}"><span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span><span class="row-name">${escapeHTML(item.name)}</span><span class="row-size">${size}</span></button>${visibilityButton(item.id, item.name, item.groupId)}</div>`;
+    return `<div class="component-row box-row ${groups.find((g) => g.id === item.groupId)?.kind === 'part' ? 'part-subcomponent-row' : ''} ${selectedComponentIds.has(item.id) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(item.id)}><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(shortItemName(item))}">${partMember ? `<i class="subcomponent-icon" data-lucide="${'kind' in item && item.kind === 'cylinder' ? 'cylinder' : mounted ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span>`}<span class="row-name" title="${escapeAttr(shortItemName(item))}">${escapeHTML(shortItemName(item))}</span><span class="row-size">${size}</span></button>${partMember ? '' : visibilityButton(item.id, shortItemName(item), item.groupId)}</div>`;
   };
   const measurementRow = (m: Measurement, depth: number) => {
     const name = measurementName(m), hidden = hiddenIds.has(m.id);
     const distance = resolveMeasurement(m, currentMeasurementGeometry())?.distance;
-    return `<div class="component-row box-row ${selectedId === m.id ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(m.id)}><button type="button" class="component-select" data-id="${escapeAttr(m.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(name)}"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><span class="row-name">${escapeHTML(name)}</span><span class="row-size">${distance === undefined ? 'Missing geometry' : formatInches(distance) + ' in'}</span></button>${visibilityButton(m.id, name, m.groupId)}</div>`;
+    return `<div class="component-row box-row ${selectedId === m.id ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(m.id)}><button type="button" class="component-select" data-id="${escapeAttr(m.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(name)}"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><span class="row-name">${escapeHTML(name)}</span><span class="row-size">${distance === undefined ? 'Missing geometry' : formatInches(distance) + ' in'}</span></button>${groups.find((g) => g.id === m.groupId)?.kind === 'part' ? '' : visibilityButton(m.id, name, m.groupId)}</div>`;
   };
-  const branch = (parentId: string | undefined, depth: number): string => treeOrder.map((id) => entries.get(id)!).filter((entry) => (groupIds.has(entry.id) ? (entry as GroupSpec).parentId : (entry as BoxSpec | SketchShape | ModelSketch).groupId) === parentId).map((entry) => {
+  const branch = (parentId: string | undefined, depth: number): string => (children.get(parentId) ?? []).map((id) => entries.get(id)!).map((entry) => {
     if (!groupIds.has(entry.id)) return 'start' in entry ? measurementRow(entry as Measurement, depth) : itemRow(entry as BoxSpec | SketchShape | ModelSketch, depth);
     const g = entry as GroupSpec;
     const collapsed = collapsedGroupIds.has(g.id);
-    return `<div class="component-row group-row ${hiddenIds.has(g.id) ? 'hidden-object' : ''} ${selectedId === g.id ? 'selected' : ''}" style="--tree-depth:${depth}" ${dragAttributes(g.id)}><button class="group-collapse" data-collapse-id="${escapeAttr(g.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeAttr(g.name)}">${collapsed ? '▸' : '▾'}</button><button class="component-select" data-id="${escapeAttr(g.id)}" aria-label="Select ${escapeAttr(g.name)}"><i class="group-symbol tree-group-icon" data-lucide="group" aria-hidden="true"></i><span class="row-name">${escapeHTML(g.name)}</span><span class="row-size">${groupItems(g.id).length} items</span></button>${visibilityButton(g.id, g.name, g.parentId)}</div>${collapsed ? '' : branch(g.id, depth + 1)}`;
+    const body = g.kind === 'part' ? analyzePart(g, boxes, groups) : null;
+    const subtitle = body ? body.bodyCount === 1 ? 'PART' : body.bodyCount ? `PART · ${body.bodyCount} BODIES` : 'PART · EMPTY' : '';
+    return `<div class="component-row group-row ${g.kind === 'part' ? 'part-row' : ''} ${hiddenIds.has(g.id) ? 'hidden-object' : ''} ${selectedId === g.id ? 'selected' : ''}" data-body-count="${body?.bodyCount ?? ''}" style="--tree-depth:${depth}" ${dragAttributes(g.id)}>${body ? '' : `<button class="group-collapse" data-collapse-id="${escapeAttr(g.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeAttr(g.name)}">${collapsed ? '▸' : '▾'}</button>`}<button class="component-select" data-id="${escapeAttr(g.id)}" aria-label="Select ${escapeAttr(g.name)}">${body ? `<span class="row-cube" style="--cube:${escapeAttr(g.color!)}"></span>` : '<i class="group-symbol tree-group-icon" data-lucide="group" aria-hidden="true"></i>'}<span class="row-name">${body ? `<span class="part-name">${escapeHTML(g.name)}</span><small class="part-tag ${body.bodyCount !== 1 ? 'part-warning-label' : ''}">${subtitle}</small>` : escapeHTML(g.name)}</span><span class="row-size">${body ? body.solids.length ? body.size.map(formatInches).join(' × ') : '' : `${groupItems(g.id).length} items`}</span></button>${body ? `<button class="group-collapse part-collapse" data-collapse-id="${escapeAttr(g.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeAttr(g.name)}">${collapsed ? '▸' : '▾'}</button>` : ''}${visibilityButton(g.id, g.name, g.parentId)}</div>${collapsed ? '' : branch(g.id, depth + 1)}`;
+
   }).join('');
   listEl.innerHTML = (documentKind === 'model' ? variables.map((variable) => `<button class="component-row variable-row ${variable.name === selectedVariable ? 'selected' : ''}" data-variable="${escapeAttr(variable.name)}"><span class="variable-symbol">ƒ</span><span class="row-name">${escapeHTML(variable.name)}</span><span class="row-size">${formatInches(variable.value)} in</span></button>`).join('') : '') + branch(undefined, 0);
   renderIcons(listEl);
   listEl.insertAdjacentHTML('beforeend', '<div class="tree-root-drop" data-tree-root>Move to top level</div>');
-  listEl.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((row) => row.addEventListener('click', (event) => { const id = row.dataset.id!; const action = event.shiftKey || event.ctrlKey || event.metaKey ? 'toggle' : 'replace'; if (documentKind === 'sketch' && rectangles.some((shape) => shape.id === id)) { selectSketchShapes([id], action); return; } if (documentKind === 'model' && modelItems().some((item) => item.id === id)) { selectModelItems([id], action); return; } selectedComponentIds.clear(); selectedId = id; selectedVariable = null; selectedFace = null; renderAll(); }));
+  const selectAndTogglePart = (id: string) => {
+    if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id);
+    selectedComponentIds.clear(); selectedId = id; selectedVariable = null; selectedFace = null;
+    renderAll(); scheduleSave();
+  };
+  listEl.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((row) => row.addEventListener('click', (event) => {
+    const id = row.dataset.id!;
+    if (row.closest('.part-row')) { selectAndTogglePart(id); return; }
+    const action = event.shiftKey || event.ctrlKey || event.metaKey ? 'toggle' : 'replace';
+    if (documentKind === 'sketch' && rectangles.some((shape) => shape.id === id)) { selectSketchShapes([id], action); return; }
+    if (documentKind === 'model' && modelItems().some((item) => item.id === id)) { selectModelItems([id], action); return; }
+    selectedComponentIds.clear(); selectedId = id; selectedVariable = null; selectedFace = null; renderAll();
+  }));
+  listEl.querySelectorAll<HTMLElement>('.part-row').forEach((row) => row.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('button')) return;
+    selectAndTogglePart(row.querySelector<HTMLButtonElement>('[data-id]')!.dataset.id!);
+  }));
   listEl.querySelectorAll<HTMLButtonElement>('[data-collapse-id]').forEach((button) => button.addEventListener('click', () => { const id = button.dataset.collapseId!; if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id); renderList(); scheduleSave(); }));
   listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', () => toggleBoxVisibility(button.dataset.visibilityId!)));
   listEl.querySelectorAll<HTMLButtonElement>('[data-variable]').forEach((row) => row.addEventListener('click', () => { selectedVariable = row.dataset.variable!; selectedId = null; selectedFace = null; renderAll(); }));
@@ -604,7 +745,7 @@ function openFaceMenu(hit: { boxId: string; face: FaceName; clientX: number; cli
   contextFace = hit;
   const menu = $('#face-menu'); menu.hidden = false;
   const parent = boxes.find((box) => box.id === hit.boxId);
-  $('#face-menu-caption').textContent = `${parent?.name ?? 'Box'} · ${faceTitle(hit.face)} face`;
+  $('#face-menu-caption').textContent = `${parent ? shortItemName(parent) : 'Box'} · ${faceTitle(hit.face)} face`;
   const duplicate = $('#duplicate-from-menu') as HTMLButtonElement;
   const newFromFace = $('#new-from-face') as HTMLButtonElement;
   duplicate.disabled = draftDirty || !parent;
@@ -625,8 +766,11 @@ function openGroupMemberMenu(id: string, clientX: number, clientY: number) {
   if (!item?.groupId) return;
   closeFaceMenu(); contextGroupMemberId = id;
   const menu = $('#group-member-menu'); menu.hidden = false;
-  $('#group-member-menu-caption').textContent = itemName(item);
+  $('#group-member-menu-caption').textContent = shortItemName(item);
   const remove = $<HTMLButtonElement>('#remove-group-member'); remove.disabled = draftDirty;
+  const isPart = groups.find((g) => g.id === item.groupId)?.kind === 'part';
+  remove.textContent = isPart ? 'Remove from Part' : 'Remove from group';
+  $('#group-member-menu .face-menu-reason').textContent = isPart ? 'Keeps this subcomponent in place as a separate piece.' : 'Removes this item from all groups and keeps it in place.';
   menu.style.left = `${Math.max(8, Math.min(clientX, innerWidth - menu.offsetWidth - 8))}px`;
   menu.style.top = `${Math.max(8, Math.min(clientY, innerHeight - menu.offsetHeight - 8))}px`;
   remove.focus();
@@ -637,9 +781,9 @@ function renderMeasurementInspector(measurement: Measurement) {
   const endpointName = (anchor: Measurement['start']) => {
     const item = documentItems().find((item) => item.id === anchor.objectId);
     const shape = anchor.shapeId ? sketches.find((s) => s.id === anchor.objectId)?.shapes.find((s) => s.id === anchor.shapeId) : null;
-    return (item?.name ?? anchor.objectId) + (shape ? ' / ' + shape.name : '');
+    return (item ? itemName(item) : anchor.objectId) + (shape ? ' / ' + shape.name : '');
   };
-  host.innerHTML = `<div class="object-heading"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><div><div class="object-name">${escapeHTML(measurementName(measurement))}</div><div class="object-id">DISTANCE MEASUREMENT</div></div></div>
+  host.innerHTML = `<div class="object-heading"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><div><div class="object-name">${escapeHTML(itemName(measurement))}</div><div class="object-id">DISTANCE MEASUREMENT</div></div></div>
     <label class="field-label" for="measurement-name">NAME</label><input id="measurement-name" class="text-field" value="${escapeAttr(measurementName(measurement))}" ${disabled}/>
     <div class="section-label"><span>${measurement.distanceAxis ? measurement.distanceAxis.toUpperCase() + ' AXIS DISTANCE' : 'DISTANCE'}</span><span>INCHES</span></div><div class="measurement-value">${resolved ? formatInches(resolved.distance) + ' in' : 'Missing geometry'}</div>
     ${documentKind === 'model' ? '<label class="field-label" for="measurement-axis">LABEL FACING AXIS</label><select id="measurement-axis" class="text-field" aria-label="Measurement facing axis" ' + disabled + '>' + ['x', 'y', 'z'].map((axis) => '<option value="' + axis + '" ' + (axis === (measurement.axis ?? 'z') ? 'selected' : '') + '>' + (axis === 'z' ? 'Z · Up' : axis.toUpperCase()) + '</option>').join('') + '</select><div class="inspector-tip">The label normal faces this axis as closely as possible while staying perpendicular to the measured line. Parallel lines use the least-aligned world axis.</div>' : ''}
@@ -663,7 +807,33 @@ function renderMeasurementInspector(measurement: Measurement) {
   }
   membershipControl(measurement); renderIcons(host);
 }
+function selectedVisibilityIds() {
+  const ids = selectedComponentIds.size ? [...selectedComponentIds] : selectedId ? [selectedId] : [];
+  return [...new Set(ids.filter(sceneHasId).map((id) => {
+    const parentId = objectItems().find((item) => item.id === id)?.groupId;
+    return groups.find((group) => group.id === parentId && group.kind === 'part')?.id ?? id;
+  }))];
+}
+function renderInspectorVisibility() {
+  const button = $<HTMLButtonElement>('#visibility-selected');
+  const ids = selectedVisibilityIds(), hiddenIds = sceneHiddenIds();
+  const hidden = ids.length > 0 && ids.every((id) => hiddenIds.has(id));
+  const inherited = ids.some((id) => {
+    const parentId = groups.find((group) => group.id === id)?.parentId ?? objectItems().find((item) => item.id === id)?.groupId;
+    return !!parentId && hiddenIds.has(parentId);
+  });
+  const label = `${hidden ? 'Show' : 'Hide'} selected`;
+  button.disabled = draftDirty || !ids.length || inherited;
+  button.title = inherited ? 'Show the parent group first' : label;
+  button.setAttribute('aria-label', label);
+  button.innerHTML = `<i data-lucide="${hidden ? 'eye-off' : 'eye'}" aria-hidden="true"></i>`;
+  renderIcons(button);
+}
 function renderInspector() {
+  const variable = variables.find((item) => item.name === selectedVariable);
+  $('#visibility-selected').hidden = !!variable;
+  $('#duplicate-box').hidden = !!variable;
+  renderInspectorVisibility();
   closeGroupMemberMenu();
   faceColorPicker?.hide();
   faceColorPicker?.destroy();
@@ -675,10 +845,9 @@ function renderInspector() {
   if (documentKind === 'sketch') { renderSketchInspector(); if (selectedRectangle()) membershipControl(selectedRectangle()!); return; }
   if (selectedModelItems().length > 1) { renderSelectionInspector($('#inspector-content'), selectedModelItems()); return; }
   const mounted = selectedModelSketch();
-  if (mounted) { renderModelSketchInspector(mounted); membershipControl(mounted); return; }
+  if (mounted) { renderModelSketchInspector(mounted); membershipControl(mounted); renderIcons($('#inspector-content')); return; }
   const box = selectedBox();
   const host = $('#inspector-content');
-  const variable = variables.find((item) => item.name === selectedVariable);
   $('#delete-box').toggleAttribute('disabled', draftDirty || (!box && !variable));
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !box);
   if (relativeOpenBoxId !== box?.id) {
@@ -701,7 +870,7 @@ function renderInspector() {
   if (!box) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">⊙</div><div>Select a component or variable</div><small>Choose an item from the model tree to inspect it.</small></div><div class="source-warning">GUI edits regenerate this source. Undo can restore earlier source.</div>'; return; }
   const boxId = box.id;
   const relative = box.relative;
-  const refOptions = boxes.filter((candidate) => candidate.id !== box.id && !isDescendant(candidate.id, box.id)).map((candidate) => `<option value="${escapeAttr(candidate.id)}" ${candidate.id === relative?.boxId ? 'selected' : ''}>${escapeHTML(candidate.name)}</option>`).join('');
+  const refOptions = boxes.filter((candidate) => candidate.id !== box.id && !isDescendant(candidate.id, box.id)).map((candidate) => `<option value="${escapeAttr(candidate.id)}" ${candidate.id === relative?.boxId ? 'selected' : ''}>${escapeHTML(itemName(candidate))}</option>`).join('');
   const faceOptions = (value?: FaceName) => (['front', 'back', 'left', 'right', 'top', 'bottom'] as FaceName[]).map((face) => `<option value="${face}" ${face === value ? 'selected' : ''}>${referenceFaceTitle(face)}</option>`).join('');
   const frame = getFaceFrame(relative?.face ?? 'front');
   const edgeAxis = (axis: 'u' | 'v') => ['X', 'Y', 'Z'][axis === 'u' ? frame.uAxis : frame.vAxis];
@@ -716,6 +885,7 @@ function renderInspector() {
     }).join('')}`;
   };
   const cylinderFrame = cylinderAxes(box);
+  const partOwner = groups.find((g) => g.id === box.groupId && g.kind === 'part');
   const sizeFields = (box.kind === 'cylinder' ? ['Radius', `Length · ${['X', 'Y', 'Z'][cylinderFrame.lengthAxis]}`] : ['Width · X', 'Depth · Y', 'Height · Z']).map((label, fieldIndex) => {
     const i = box.kind === 'cylinder' ? fieldIndex === 1 ? cylinderFrame.lengthAxis : cylinderFrame.radialAxes[0] : fieldIndex;
     const field: NumericField = box.kind === 'cylinder' && fieldIndex === 0 ? 'radius' : `size.${i}` as NumericField;
@@ -723,8 +893,8 @@ function renderInspector() {
     const expression = box.expressions?.[field];
     return `<label class="measure-field"><span>${label}</span><span class="measure-input"><input aria-label="${label} in inches" data-kind="size" data-index="${i}" value="${escapeAttr(expression ?? formatInches(value))}" title="${expression ? `Resolved: ${formatInches(value)} in` : ''}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(expression, value)}</label>`;
   }).join('');
-  host.innerHTML = `<div class="source-warning">GUI edits regenerate the model source. Undo can restore earlier source.</div><div class="object-heading"><span class="object-swatch" style="--cube:${escapeAttr(box.color)}"></span><div><div class="object-name">${escapeHTML(box.name)}</div><div class="object-id">${box.kind === 'cylinder' ? 'CYLINDER' : 'BOX'} · ${escapeHTML(box.id.slice(0, 8).toUpperCase())}</div></div></div>
-    <label class="field-label" for="box-name">NAME</label><input id="box-name" class="text-field" value="${escapeAttr(box.name)}" ${draftDirty ? 'disabled' : ''} />
+  host.innerHTML = `<div class="source-warning">GUI edits regenerate the model source. Undo can restore earlier source.</div><div class="object-heading">${partOwner ? `<i class="subcomponent-icon" data-lucide="${box.kind === 'cylinder' ? 'cylinder' : 'box'}" aria-hidden="true"></i>` : `<span class="object-swatch" style="--cube:${escapeAttr(box.color)}"></span>`}<div><div class="object-name">${escapeHTML(itemName(box))}</div><div class="object-id">${box.kind === 'cylinder' ? 'CYLINDER' : 'BOX'} · ${escapeHTML(box.id.slice(0, 8).toUpperCase())}</div></div></div>
+    <label class="field-label" for="box-name">${groups.find((g) => g.id === box.groupId)?.kind === 'part' ? 'SUBCOMPONENT NAME · OPTIONAL' : 'NAME'}</label><input id="box-name" class="text-field" value="${escapeAttr(box.name)}" ${draftDirty ? 'disabled' : ''} />
     ${box.kind === 'cylinder' ? `<label class="field-label expression-label" for="solid-axis">LENGTH AXIS</label><select id="solid-axis" class="text-field" ${draftDirty ? 'disabled' : ''}>${(['x', 'y', 'z'] as const).map((axis) => `<option value="${axis}" ${axis === (box.axis ?? 'z') ? 'selected' : ''}>${axis.toUpperCase()}</option>`).join('')}</select>` : ''}
     <div class="section-label"><span>SIZE</span><span>INCHES</span></div><div class="${box.kind === 'cylinder' ? 'sketch-fields' : 'triple-fields'}">${sizeFields}</div>
     <div class="section-label position-label"><span>${box.groupId ? 'POSITION IN GROUP' : 'ABSOLUTE POSITION'} <em>MIN CORNER</em></span><span>INCHES</span></div><div class="triple-fields">${['X', 'Y', 'Z'].map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Absolute position ${axis}" data-kind="position" data-index="${i}" value="${escapeAttr(box.expressions?.[`position.${i}` as NumericField] ?? formatInches(box.position[i]))}" title="${box.expressions?.[`position.${i}` as NumericField] ? `Resolved: ${formatInches(box.position[i])} in` : ''}" inputmode="decimal" ${draftDirty || relative ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.[`position.${i}` as NumericField], box.position[i])}</label>`).join('')}</div>
@@ -736,11 +906,11 @@ function renderInspector() {
       <label class="measure-field"><span>Second edge · ${edgeAxis('v')}</span><select id="relative-v-side" aria-label="Second edge ${edgeAxis('v')}" ${draftDirty || !relative ? 'disabled' : ''}>${edgeOptions('v', relative?.v)}</select></label>
       <label class="measure-field"><span>Second edge offset</span><span class="measure-input"><input id="relative-v-offset" aria-label="Second edge ${edgeAxis('v')} inward offset in inches" value="${escapeAttr(box.expressions?.['relative.v.offset'] ?? formatInches(relative?.v?.offset ?? 0))}" title="${box.expressions?.['relative.v.offset'] ? `Resolved: ${formatInches(relative?.v?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative?.v ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.v.offset'], relative?.v?.offset ?? 0)}</label>
       <label class="measure-field relative-distance-field"><span>Distance from face</span><span class="measure-input"><input id="relative-offset" aria-label="Distance from face in inches" value="${escapeAttr(box.expressions?.['relative.offset'] ?? formatInches(relative?.offset ?? 0))}" title="${box.expressions?.['relative.offset'] ? `Resolved: ${formatInches(relative?.offset ?? 0)} in` : ''}" inputmode="decimal" ${draftDirty || !relative ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(box.expressions?.['relative.offset'], relative?.offset ?? 0)}</label></div><div class="relative-help">Positive edge offsets move inward from the named edge.</div></details>
-    <div class="section-label color-label"><span>FACE COLOR</span><span>${box.color.trim().toLowerCase() === TRANSPARENT_COLOR ? 'TRANSPARENT' : 'CUSTOM CODE'}</span></div><div class="color-row"><div class="swatch-grid">${COLOR_OPTIONS.map((c) => { const transparent = c === TRANSPARENT_COLOR; const chosen = box.color.trim().toLowerCase() === c; const swatchStyle = transparent ? `--cube:#1c2932;background-color:#1c2932;background-image:linear-gradient(45deg,#aab7be 25%,transparent 25%,transparent 75%,#aab7be 75%),linear-gradient(45deg,#aab7be 25%,transparent 25%,transparent 75%,#aab7be 75%);background-position:0 0,4px 4px;background-size:8px 8px;${chosen ? 'border:1px solid #f0c27e;box-shadow:none;position:relative' : ''}` : `--cube:${c}`; const check = transparent && chosen ? '<span aria-hidden="true" style="position:absolute;inset:0;display:grid;place-items:center;color:#17222b;font-size:10px;font-weight:800;line-height:1">✓</span>' : ''; return `<button class="swatch ${transparent ? 'swatch-transparent ' : ''}${chosen ? 'chosen' : ''}" data-color="${c}" style="${swatchStyle}" aria-label="${transparent ? `Transparent${chosen ? ' (selected)' : ''}` : `Color ${c}`}" aria-pressed="${chosen}" ${draftDirty ? 'disabled' : ''}>${check}</button>`; }).join('')}</div><input id="box-color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(box.color) ? box.color : '#d9a76e')}" ${draftDirty ? 'disabled' : ''}/></div>
+    ${partOwner ? '' : `<div class="section-label color-label"><span>FACE COLOR</span><span>${box.color.trim().toLowerCase() === TRANSPARENT_COLOR ? 'TRANSPARENT' : 'CUSTOM CODE'}</span></div><div class="color-row"><div class="swatch-grid">${COLOR_OPTIONS.map((c) => { const transparent = c === TRANSPARENT_COLOR; const chosen = box.color.trim().toLowerCase() === c; const swatchStyle = transparent ? `--cube:#1c2932;background-color:#1c2932;background-image:linear-gradient(45deg,#aab7be 25%,transparent 25%,transparent 75%,#aab7be 75%),linear-gradient(45deg,#aab7be 25%,transparent 25%,transparent 75%,#aab7be 75%);background-position:0 0,4px 4px;background-size:8px 8px;${chosen ? 'border:1px solid #f0c27e;box-shadow:none;position:relative' : ''}` : `--cube:${c}`; const check = transparent && chosen ? '<span aria-hidden="true" style="position:absolute;inset:0;display:grid;place-items:center;color:#17222b;font-size:10px;font-weight:800;line-height:1">✓</span>' : ''; return `<button class="swatch ${transparent ? 'swatch-transparent ' : ''}${chosen ? 'chosen' : ''}" data-color="${c}" style="${swatchStyle}" aria-label="${transparent ? `Transparent${chosen ? ' (selected)' : ''}` : `Color ${c}`}" aria-pressed="${chosen}" ${draftDirty ? 'disabled' : ''}>${check}</button>`; }).join('')}</div><input id="box-color" type="color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(box.color) ? box.color : '#d9a76e')}" ${draftDirty ? 'disabled' : ''}/></div>`}
     <div class="inspector-tip">Enter an inch value or arithmetic (for example, (20 - 3/4)); press Enter or leave the field to apply it.</div>`;
   const nameInput = host.querySelector<HTMLInputElement>('#box-name')!;
   host.querySelector<HTMLDetailsElement>('.relative-card')?.addEventListener('toggle', (event) => { const card = event.currentTarget as HTMLDetailsElement; if (card.isConnected && relativeOpenBoxId === boxId) relativeOpen = card.open; });
-  nameInput.addEventListener('change', () => updateBox(box.id, { name: nameInput.value.trim() || box.name }));
+  nameInput.addEventListener('change', () => updateBox(box.id, { name: groups.find((g) => g.id === box.groupId)?.kind === 'part' ? nameInput.value.trim() : nameInput.value.trim() || box.name }));
   host.querySelector<HTMLSelectElement>('#solid-axis')?.addEventListener('change', (event) => {
     try {
       const axis = (event.currentTarget as HTMLSelectElement).value as CylinderAxis;
@@ -824,40 +994,55 @@ function renderInspector() {
     });
     colorTrigger.addEventListener('click', () => openFaceColorPicker(colorTrigger));
   }
-  membershipControl(box);
+  membershipControl(box); renderIcons(host);
 }
 function renderSelectionInspector(host: HTMLElement, shapes: (SketchShape | BoxSpec | ModelSketch)[]) {
   const colors = new Set(shapes.map((shape) => shape.color.toLowerCase()));
   const commonColor = colors.size === 1 ? shapes[0].color.toLowerCase() : null;
   const disabled = draftDirty ? 'disabled' : '';
+  const partIds = new Set(shapes.map((shape) => groups.find((g) => g.id === shape.groupId && g.kind === 'part')?.id).filter((id): id is string => !!id));
+  const allPartSubcomponents = documentKind === 'model' && shapes.every((shape) => partIds.has(shape.groupId ?? ''));
   host.innerHTML = `<div class="object-heading"><div><div class="object-name">${shapes.length} components selected</div><div class="object-id">${documentKind === 'sketch' ? '2D SKETCH' : '3D MODEL'} SELECTION</div></div></div>
-    <div class="section-label"><span>SELECTED COMPONENTS</span></div><ul class="sketch-selected-components">${shapes.map((shape) => `<li><span class="${'kind' in shape && shape.kind === 'circle' ? 'row-circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'row-cylinder' : 'kind' in shape && shape.kind === 'line' ? 'row-line' : shape.size.length === 3 ? 'row-cube' : 'row-square'}" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true"></span><span class="selection-component-name">${escapeHTML(shape.name)}</span><small>${'kind' in shape && shape.kind === 'circle' ? 'Circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'Cylinder' : 'kind' in shape && shape.kind === 'line' ? 'Line' : shape.size.length === 3 ? 'Box' : documentKind === 'sketch' ? 'Rectangle' : 'Sketch'}</small></li>`).join('')}</ul>
+    <div class="section-label"><span>SELECTED COMPONENTS</span></div><ul class="sketch-selected-components">${shapes.map((shape) => `<li>${partIds.has(shape.groupId ?? '') ? `<i class="subcomponent-icon" data-lucide="${'kind' in shape && shape.kind === 'cylinder' ? 'cylinder' : 'shapes' in shape ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${'kind' in shape && shape.kind === 'circle' ? 'row-circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'row-cylinder' : 'kind' in shape && shape.kind === 'line' ? 'row-line' : shape.size.length === 3 ? 'row-cube' : 'row-square'}" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true"></span>`}<span class="selection-component-name">${escapeHTML(itemName(shape))}</span><small>${'kind' in shape && shape.kind === 'circle' ? 'Circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'Cylinder' : 'kind' in shape && shape.kind === 'line' ? 'Line' : shape.size.length === 3 ? 'Box' : documentKind === 'sketch' ? 'Rectangle' : 'Sketch'}</small></li>`).join('')}</ul>
     <div class="section-label color-label"><span>${documentKind === 'sketch' ? 'STROKE' : 'FACE'} COLOR</span><span>${commonColor ? 'ALL SELECTED' : 'MIXED COLORS'}</span></div>
     <div class="color-row"><div class="swatch-grid">${SKETCH_COLOR_OPTIONS.map((color) => `<button class="swatch ${color === commonColor ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" aria-pressed="${color === commonColor}" ${disabled}></button>`).join('')}</div><input id="selection-color" type="color" aria-label="Color for all selected components" value="${escapeAttr(commonColor && /^#[0-9a-f]{6}$/i.test(commonColor) ? commonColor : SKETCH_DEFAULT_COLOR)}" ${disabled}/></div>
-    <div class="inspector-tip">Color changes apply to all ${shapes.length} selected components. Shift-click a component to add or remove it.</div>`;
+    <div class="inspector-tip">Color changes apply to all ${shapes.length} selected components. Shift-click a component to add or remove it.</div>${documentKind === 'model' ? `<button id="selection-make-part" class="button part-add-box" ${disabled}>Combine into a Part</button><div class="inspector-tip">Describe one manufactured piece with these subcomponents.</div>` : ''}`;
+  host.querySelector('#selection-make-part')?.addEventListener('click', openPartDialog);
+  if (allPartSubcomponents) {
+    host.querySelector('.color-label')!.innerHTML = '<span>PART COLOR</span><span>OWNED BY PART</span>';
+    host.querySelector('.color-row')!.innerHTML = [...partIds].map((id) => `<button class="button button-quiet" data-inspect-part="${escapeAttr(id)}">Edit ${escapeHTML(groups.find((g) => g.id === id)!.name)} color</button>`).join('');
+    host.querySelector('.inspector-tip')!.textContent = 'Subcomponents inherit their Part color. Edit the Part to change its whole body.';
+    host.querySelectorAll<HTMLButtonElement>('[data-inspect-part]').forEach((button) => button.addEventListener('click', () => { selectedId = button.dataset.inspectPart!; selectedComponentIds.clear(); selectedFace = null; renderAll(); }));
+  } else if (partIds.size) {
+    host.querySelector('.color-label span')!.textContent = 'PART / FACE COLOR';
+    host.querySelector('.inspector-tip')!.textContent = 'Changing color updates selected standalone components and the whole body of each selected Part subcomponent.';
+  }
   const applyColor = (color: string) => {
     if (draftDirty) return;
     const ids = new Set(shapes.map((shape) => shape.id));
     try {
       if (documentKind === 'sketch') commitRectangles(rectangles.map((shape) => ids.has(shape.id) ? { ...shape, color } : shape), `${ids.size} component colors updated`, { preserveView: true });
+      else if (partIds.size) commitGroups(groups.map((g) => partIds.has(g.id) ? { ...g, color } : g), boxes.map((box) => ids.has(box.id) && !partIds.has(box.groupId ?? '') ? { ...box, color } : box), rectangles, 'Part and component colors updated', treeOrder, sketches.map((sketch) => ids.has(sketch.id) ? { ...sketch, color } : sketch));
       else commitBoxes(boxes.map((box) => ids.has(box.id) ? { ...box, color } : box), `${ids.size} component colors updated`, { preserveView: true }, variables, sketches.map((sketch) => ids.has(sketch.id) ? { ...sketch, color } : sketch));
     }
     catch (error) { notify(error instanceof Error ? error.message : 'Could not update colors', true); renderInspector(); }
   };
   host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => applyColor(button.dataset.color!)));
-  host.querySelector<HTMLInputElement>('#selection-color')!.addEventListener('change', (event) => applyColor((event.currentTarget as HTMLInputElement).value));
+  host.querySelector<HTMLInputElement>('#selection-color')?.addEventListener('change', (event) => applyColor((event.currentTarget as HTMLInputElement).value));
+  renderIcons(host);
 }
 function renderModelSketchInspector(sketch: ModelSketch) {
   const host = $('#inspector-content'), disabled = draftDirty ? 'disabled' : '';
   const axes: Record<SketchAxis, string> = { x: 'X · Y/Z plane', y: 'Y · X/Z plane', z: 'Z · X/Y plane' };
+  const partMember = groups.find((g) => g.id === sketch.groupId)?.kind === 'part';
   const references = documents.filter((doc) => doc.kind === 'sketch');
   const linked = findSketchEditor(documents, activeDocumentId, sketch.id);
-  host.innerHTML = `<div class="object-heading"><span class="row-sketch" style="--cube:${escapeAttr(sketch.color)}"></span><div><div class="object-name">${escapeHTML(sketch.name)}</div><div class="object-id">SKETCH · ${sketch.shapes.length} SHAPES</div></div></div>
+  host.innerHTML = `<div class="object-heading">${partMember ? '<i class="subcomponent-icon" data-lucide="square" aria-hidden="true"></i>' : `<span class="row-sketch" style="--cube:${escapeAttr(sketch.color)}"></span>`}<div><div class="object-name">${escapeHTML(itemName(sketch))}</div><div class="object-id">SKETCH · ${sketch.shapes.length} SHAPES</div></div></div>
     <label class="field-label" for="model-sketch-name">NAME</label><input id="model-sketch-name" class="text-field" value="${escapeAttr(sketch.name)}" ${disabled}/>
     <label class="field-label group-membership-label" for="model-sketch-axis">NORMAL AXIS</label><select id="model-sketch-axis" class="text-field" ${disabled}>${(['x', 'y', 'z'] as SketchAxis[]).map((axis) => `<option value="${axis}" ${axis === sketch.axis ? 'selected' : ''}>${axes[axis]}</option>`).join('')}</select>
     <div class="section-label"><span>FRAME SIZE</span><span>INCHES</span></div><div class="sketch-fields">${['Width', 'Height'].map((label, i) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input aria-label="Sketch ${label.toLowerCase()}" data-model-sketch-size="${i}" value="${formatInches(sketch.size[i])}" ${disabled}/><small>in</small></span></label>`).join('')}</div>
     <div class="section-label position-label"><span>POSITION${sketch.groupId ? ' · IN GROUP' : ''}</span><span>INCHES</span></div><div class="triple-fields">${['X', 'Y', 'Z'].map((axis, i) => `<label class="measure-field"><span>${axis}</span><span class="measure-input"><input aria-label="Sketch position ${axis}" data-model-sketch-position="${i}" value="${formatInches(sketch.position[i])}" ${disabled}/><small>in</small></span></label>`).join('')}</div>
-    <div class="section-label color-label"><span>FRAME COLOR</span></div><input id="model-sketch-color" type="color" aria-label="Sketch frame color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(sketch.color) ? sketch.color : '#86a9a3')}" ${disabled}/>
+    ${partMember ? '' : `<div class="section-label color-label"><span>FRAME COLOR</span></div><input id="model-sketch-color" type="color" aria-label="Sketch frame color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(sketch.color) ? sketch.color : '#86a9a3')}" ${disabled}/>`}
     <label class="field-label group-membership-label" for="model-sketch-reference">REFERENCE SKETCH</label><select id="model-sketch-reference" class="text-field" ${disabled}><option value="">No linked tab</option>${references.map((doc) => `<option value="${escapeAttr(doc.id)}" ${linked?.id === doc.id ? 'selected' : ''} ${doc.draftDirty && linked?.id !== doc.id ? 'disabled' : ''}>${escapeHTML(doc.name)}${doc.draftDirty ? ' · Draft pending' : ''}</option>`).join('')}</select>
     <div class="inspector-tip">${linked ? `Changes in ${escapeHTML(linked.name)} update this sketch automatically. Run source drafts to apply them.` : 'Link an open 2D sketch or edit the contents below.'} Contents are saved inside this model. Frame size does not scale the shapes.</div>
     <button id="edit-model-sketch" class="button button-quiet ungroup-button">Edit contents in 2D</button>
@@ -869,7 +1054,7 @@ function renderModelSketchInspector(sketch: ModelSketch) {
   };
   host.querySelector<HTMLInputElement>('#model-sketch-name')!.addEventListener('change', (event) => update({ name: (event.currentTarget as HTMLInputElement).value.trim() || sketch.name }));
   host.querySelector<HTMLSelectElement>('#model-sketch-axis')!.addEventListener('change', (event) => update({ axis: (event.currentTarget as HTMLSelectElement).value as SketchAxis }));
-  host.querySelector<HTMLInputElement>('#model-sketch-color')!.addEventListener('change', (event) => update({ color: (event.currentTarget as HTMLInputElement).value }));
+  host.querySelector<HTMLInputElement>('#model-sketch-color')?.addEventListener('change', (event) => update({ color: (event.currentTarget as HTMLInputElement).value }));
   host.querySelectorAll<HTMLInputElement>('[data-model-sketch-size], [data-model-sketch-position]').forEach((input) => {
     input.addEventListener('keydown', (event) => { if (event.key === 'Enter') input.blur(); });
     input.addEventListener('change', () => {
@@ -993,7 +1178,7 @@ function renderLineInspector(host: HTMLElement, line: SketchShape) {
 }
 function isDescendant(candidateId: string, ancestorId: string) { let current = boxes.find((box) => box.id === candidateId); const seen = new Set<string>(); while (current?.relative && !seen.has(current.id)) { if (current.relative.boxId === ancestorId) return true; seen.add(current.id); current = boxes.find((box) => box.id === current!.relative!.boxId); } return false; }
 function renderAll() {
-  syncGlbExportUI();
+  syncExportUI();
   if (selectedId && !selectedGroup() && sceneHiddenIds().has(selectedId)) { selectedId = null; selectedFace = null; }
   if (selectedGroup() || selectedMeasurement() || selectedVariable) selectedComponentIds.clear();
   else {
@@ -1008,7 +1193,7 @@ function renderAll() {
   const componentCount = selectedComponentIds.size;
   $('#delete-box').toggleAttribute('disabled', draftDirty || (!componentCount && !selectedBox() && !selectedModelSketch() && !selectedMeasurement() && !selectedVariable && !selectedGroup()));
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || (!componentCount && !selectedBox() && !selectedModelSketch() && !selectedMeasurement() && !selectedGroup()));
-  $('#selection-status').textContent = selectedMeasurement() ? `SELECTED · ${measurementName(selectedMeasurement()!).toUpperCase()}` : selectedGroup() ? `GROUP · ${selectedGroup()!.name.toUpperCase()}` : componentCount > 1 ? `SELECTED · ${componentCount} COMPONENTS` : selectedVariable ? `VARIABLE · ${selectedVariable.toUpperCase()}` : selectedRectangle() ? `SELECTED · ${selectedRectangle()!.name.toUpperCase()}` : selectedModelSketch() ? `SELECTED · ${selectedModelSketch()!.name.toUpperCase()}` : selectedBox() ? `SELECTED · ${selectedBox()!.name.toUpperCase()}${selectedFace ? ` · ${faceTitle(selectedFace).toUpperCase()} FACE` : ''}` : 'NO SELECTION';
+  $('#selection-status').textContent = selectedMeasurement() ? `SELECTED · ${measurementName(selectedMeasurement()!).toUpperCase()}` : selectedGroup() ? `${selectedGroup()!.kind === 'part' ? 'PART' : 'GROUP'} · ${selectedGroup()!.name.toUpperCase()}` : componentCount > 1 ? `SELECTED · ${componentCount} COMPONENTS` : selectedVariable ? `VARIABLE · ${selectedVariable.toUpperCase()}` : selectedRectangle() ? `SELECTED · ${selectedRectangle()!.name.toUpperCase()}` : selectedModelSketch() ? `SELECTED · ${shortItemName(selectedModelSketch()!).toUpperCase()}` : selectedBox() ? `SELECTED · ${shortItemName(selectedBox()!).toUpperCase()}${selectedFace ? ` · ${faceTitle(selectedFace).toUpperCase()} FACE` : ''}` : 'NO SELECTION';
 }
 function computedMeasurement(expression: string | undefined, value: number): string {
   return expression && /\bvar\s*\(/.test(expression)
@@ -1044,6 +1229,7 @@ function renderDocumentTabs() {
   if (focused) Array.from(host.querySelectorAll<HTMLButtonElement>(closing ? '.document-close' : '.document-select')).find((button) => button.dataset.documentId === focused)?.focus();
 }
 function loadDocument(document: ModelDocument) {
+  exportMenu.close();
   // A worker from the previous tab must never apply its result to this tab.
   runEpoch++;
   $('#run-code').toggleAttribute('disabled', false);
@@ -1053,7 +1239,6 @@ function loadDocument(document: ModelDocument) {
   const empty = !openDocumentIds.length;
   $('#empty-workspace').hidden = !empty;
   $('.workspace').toggleAttribute('inert', empty);
-  $('#download').toggleAttribute('disabled', empty);
   $('#source-name').toggleAttribute('disabled', empty);
   groups = structuredClone(document.groups); collapsedGroupIds = new Set(document.collapsedGroupIds); treeOrder = [...document.treeOrder];
   documentKind = document.kind; boxes = cloneBoxes(document.boxes); sketches = structuredClone(document.sketches); rectangles = cloneRectangles(document.rectangles); variables = cloneVariables(document.variables);
@@ -1129,11 +1314,10 @@ function downloadSource(source: string, filename: string) {
   document.body.append(anchor); anchor.click(); anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
-let savingDocument = false;
 async function saveDocument(modelDocument: ModelDocument): Promise<boolean> {
   if (savingDocument || !documents.includes(modelDocument)) return false;
   savingDocument = true;
-  $('#download').toggleAttribute('disabled', true);
+  syncExportUI();
   $('#close-document-save').toggleAttribute('disabled', true);
   try {
     const pickerWindow = window as Window & { showSaveFilePicker?: SaveFilePicker };
@@ -1151,7 +1335,7 @@ async function saveDocument(modelDocument: ModelDocument): Promise<boolean> {
     return false;
   } finally {
     savingDocument = false;
-    $('#download').toggleAttribute('disabled', !openDocumentIds.length);
+    syncExportUI();
     $('#close-document-save').toggleAttribute('disabled', false);
   }
 }
@@ -1170,7 +1354,7 @@ closeDocumentDialog.addEventListener('close', () => {
   removeDocument(id);
 });
 function libraryState(): LibraryState {
-  return { documents, folders, workspace: { openIds: [...openDocumentIds], activeId: openDocumentIds.includes(activeDocumentId) ? activeDocumentId : '', preferences: { measurementsThroughObjects } } };
+  return { documents, folders, workspace: { openIds: [...openDocumentIds], activeId: openDocumentIds.includes(activeDocumentId) ? activeDocumentId : '', preferences: { measurementsThroughObjects }, entryOrder: normalizeLibraryOrder(libraryEntryOrder, documents, folders), collapsedFolderIds: [...collapsedFolderIds].filter((id) => folders.some((folder) => folder.id === id)) } };
 }
 async function saveWorkspace(): Promise<boolean> {
   if (!storageReady) return false;
@@ -1200,22 +1384,27 @@ function renameTab(id: string) {
   const doc = documents.find((doc) => doc.id === id);
   if (doc) fileManager.rename(id, doc.name);
 }
-async function persistLibraryChange(nextDocuments: ModelDocument[], nextFolders: Folder[], nextOpenIds = openDocumentIds) {
+async function persistLibraryChange(nextDocuments: ModelDocument[], nextFolders: Folder[], nextOpenIds = openDocumentIds, nextEntryOrder = libraryEntryOrder, nextCollapsedFolders = [...collapsedFolderIds]) {
   if (!library) throw new Error('Browser storage is unavailable. Export or back up your work.');
   validateLibrary(nextDocuments, nextFolders);
   window.clearTimeout(saveTimer); captureDocument();
   const generation = ++persistenceGeneration;
   $('#save-state').textContent = 'Saving…';
   const nextActive = nextOpenIds.includes(activeDocumentId) ? activeDocumentId : nextOpenIds[0] ?? '';
-  try { await library.save(nextDocuments, nextFolders, { openIds: nextOpenIds, activeId: nextActive, preferences: { measurementsThroughObjects } }); }
+  const entryOrder = normalizeLibraryOrder(nextEntryOrder, nextDocuments, nextFolders);
+  const collapsed = nextCollapsedFolders.filter((id) => nextFolders.some((folder) => folder.id === id));
+  try { await library.save(nextDocuments, nextFolders, { openIds: nextOpenIds, activeId: nextActive, preferences: { measurementsThroughObjects }, entryOrder, collapsedFolderIds: collapsed }); }
   catch (error) { if (generation === persistenceGeneration) $('#save-state').textContent = 'Not saved'; throw error; }
   documents = nextDocuments; folders = nextFolders; openDocumentIds = [...nextOpenIds];
+  libraryEntryOrder = entryOrder;
+  collapsedFolderIds = new Set(collapsed);
   if (!documents.some((doc) => doc.id === activeDocumentId && openDocumentIds.includes(doc.id))) loadDocument(documents.find((doc) => doc.id === nextActive) ?? emptyDocument);
   else { $('#source-name').textContent = activeDocument().name; renderDocumentTabs(); renderInspector(); }
   if (generation === persistenceGeneration) $('#save-state').textContent = 'Saved locally';
 }
 const fileManager = createFileManager(root, {
   state: () => { captureDocument(); return libraryState(); },
+  setFolderCollapsed(id, collapsed) { if (collapsed) collapsedFolderIds.add(id); else collapsedFolderIds.delete(id); scheduleSave(); },
   open: (id) => switchDocument(id),
   async rename(id, value) {
     captureDocument();
@@ -1226,9 +1415,11 @@ const fileManager = createFileManager(root, {
     const renamed = documents.find((doc) => doc.id === id);
     if (renamed?.kind === 'sketch') { synchronizeSketchReferences(documents, renamed); if (openDocumentIds.length) loadDocument(activeDocument()); scheduleSave(); }
   },
-  async move(id, parentId) {
+  async move(id, drop) {
     captureDocument();
-    await persistLibraryChange(documents.map((doc) => doc.id === id ? { ...doc, parentId } : doc), folders.map((folder) => folder.id === id ? { ...folder, parentId } : folder));
+    const plan = planLibraryMove(libraryState(), id, drop);
+    if (!plan.changed) return;
+    await persistLibraryChange(documents.map((doc) => doc.id === id ? { ...doc, parentId: plan.parentId } : doc), folders.map((folder) => folder.id === id ? { ...folder, parentId: plan.parentId } : folder), openDocumentIds, plan.order, [...collapsedFolderIds].filter((folderId) => drop.placement !== 'inside' || folderId !== plan.parentId));
   },
   async remove(id) {
     captureDocument();
@@ -1259,6 +1450,8 @@ $('#backup-input').addEventListener('change', async (event) => {
     window.clearTimeout(saveTimer); captureDocument();
     await library.save(restored.documents, restored.folders, restored.workspace);
     documents = restored.documents; folders = restored.folders; openDocumentIds = restored.workspace.openIds;
+    libraryEntryOrder = restored.workspace.entryOrder ?? [];
+    collapsedFolderIds = new Set(restored.workspace.collapsedFolderIds ?? []);
     measurementsThroughObjects = restored.workspace.preferences.measurementsThroughObjects; syncMeasurementThroughPreference();
     loadDocument(documents.find((doc) => doc.id === restored.workspace.activeId) ?? emptyDocument);
     $('#save-state').textContent = 'Saved locally'; notify('Library restored');
@@ -1297,17 +1490,24 @@ function commitBoxes(next: BoxSpec[], message: string, options?: { preserveView?
   viewport.setBoxes(worldBoxes(), { ...options, hiddenIds: sceneHiddenIds(), sketches: worldSketches() }); viewport.setMeasurements(measurements); setEditor(source); appliedSource = editor.value; recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
 function toggleBoxVisibility(id: string) {
-  if (draftDirty || !sceneHasId(id)) return;
-  const group = groups.find((g) => g.id === id);
-  const parentId = group ? group.parentId : objectItems().find((item) => item.id === id)?.groupId;
-  if (parentId && sceneHiddenIds().has(parentId)) return;
-  const hidden = hiddenBoxIds.has(id);
-  if (hidden) hiddenBoxIds.delete(id); else hiddenBoxIds.add(id);
-  if (!hidden && selectedId === id && !group) { selectedId = null; selectedFace = null; }
+  toggleVisibility([id]);
+}
+function toggleVisibility(ids: string[]) {
+  if (draftDirty || !ids.length || ids.some((id) => !sceneHasId(id))) return;
+  const currentHiddenIds = sceneHiddenIds();
+  if (ids.some((id) => {
+    const parentId = groups.find((group) => group.id === id)?.parentId ?? objectItems().find((item) => item.id === id)?.groupId;
+    return !!parentId && currentHiddenIds.has(parentId);
+  })) return;
+  const hidden = ids.every((id) => hiddenBoxIds.has(id));
+  for (const id of ids) {
+    if (hidden) hiddenBoxIds.delete(id); else hiddenBoxIds.add(id);
+  }
+  if (!hidden && selectedId && ids.includes(selectedId) && !selectedGroup()) { selectedId = null; selectedFace = null; }
   const hiddenIds = sceneHiddenIds();
   viewport.setVisibility(objectItems().filter((item) => !hiddenIds.has(item.id)).map((item) => item.id), true);
   viewport.setVisibility(objectItems().filter((item) => hiddenIds.has(item.id)).map((item) => item.id), false);
-  recordAfterChange(); renderAll(); setStatus(`${group ? 'Group' : 'Component'} ${hidden ? 'shown' : 'hidden'}`); scheduleSave();
+  recordAfterChange(); renderAll(); setStatus(`${ids.length > 1 ? 'Components' : groups.some((group) => group.id === ids[0]) ? 'Group' : 'Component'} ${hidden ? 'shown' : 'hidden'}`); scheduleSave();
 }
 function updateBox(id: string, patch: Partial<BoxSpec>) {
   if (draftDirty) return notify('Run or discard the source draft before editing boxes.', true);
@@ -1563,6 +1763,7 @@ $('#cylinder-form').addEventListener('submit', (event) => {
 });
 $('#add-variable').addEventListener('click', () => void addVariable());
 $('#delete-box').addEventListener('click', deleteBox);
+$('#visibility-selected').addEventListener('click', () => toggleVisibility(selectedVisibilityIds()));
 $('#duplicate-box').addEventListener('click', () => addBox(true));
 $('#duplicate-from-menu').addEventListener('click', duplicateFromMenu);
 $('#new-from-face').addEventListener('click', createFromFace);
@@ -1575,11 +1776,12 @@ $('#remove-group-member').addEventListener('click', () => {
   closeGroupMemberMenu(true);
   if (id) changeItemGroup(id, undefined);
 });
+// Run before viewport handlers stop pointer events for selection and drawing.
 document.addEventListener('pointerdown', (event) => {
   const target = event.target as Node;
   if (!$('#face-menu').hidden && !$('#face-menu').contains(target)) closeFaceMenu();
   if (!$('#group-member-menu').hidden && !$('#group-member-menu').contains(target)) closeGroupMemberMenu();
-});
+}, true);
 document.addEventListener('scroll', () => closeGroupMemberMenu(), true);
 window.addEventListener('resize', () => { closeFaceMenu(); closeGroupMemberMenu(); closeFaceColorPicker(); });
 $('#run-code').addEventListener('click', runSource);
@@ -1650,6 +1852,59 @@ $('#file-input').addEventListener('change', async (event) => {
   else if (opened.length > 1) notify(`Opened ${opened.length} files`);
 });
 $('#download').addEventListener('click', () => { captureDocument(); void saveDocument(activeDocument()); });
+const cutlistDialog = $<HTMLDialogElement>('#cutlist-dialog');
+const cutlistThickness = $<HTMLInputElement>('#cutlist-thickness');
+let cutlistSnapshot: { model: ReturnType<typeof resolveModel>; name: string; treeOrder: string[] } | null = null;
+let cutlistResult: CutlistExportResult | null = null;
+function updateCutlistPreview() {
+  if (!cutlistSnapshot) return;
+  cutlistResult = null;
+  $('#cutlist-error').textContent = '';
+  cutlistThickness.removeAttribute('aria-invalid');
+  $('#cutlist-ignored').replaceChildren();
+  $('#cutlist-ignored-empty').hidden = true;
+  $<HTMLButtonElement>('#cutlist-download').disabled = true;
+  try {
+    const result = exportModelCutlist(cutlistSnapshot.model, { name: cutlistSnapshot.name, maxThickness: cutlistThickness.value, treeOrder: cutlistSnapshot.treeOrder });
+    cutlistResult = result;
+    $('#cutlist-summary').textContent = `${result.rows.length} ${cutlistSnapshot.model.groups?.some((g) => g.kind === 'part') ? result.rows.length === 1 ? 'piece' : 'pieces' : result.rows.length === 1 ? 'box' : 'boxes'} to export · ${result.ignored.length} ignored`;
+    $('#cutlist-ignored').innerHTML = result.ignored.map((item) => `<li><span>${escapeHTML(item.name)}</span><small>${escapeHTML(item.reason)}</small></li>`).join('');
+    $('#cutlist-ignored-empty').hidden = result.ignored.length > 0;
+    $<HTMLButtonElement>('#cutlist-download').disabled = !result.rows.length;
+    if (!result.rows.length) $('#cutlist-error').textContent = 'No boxes meet this thickness limit, or Parts are empty or disconnected. Review the ignored list.';
+  } catch (error) {
+    cutlistThickness.setAttribute('aria-invalid', 'true');
+    $('#cutlist-error').textContent = error instanceof Error ? error.message : 'Enter a valid maximum thickness.';
+    $('#cutlist-summary').textContent = 'Enter a valid limit to preview the cutlist.';
+  }
+}
+$('#export-cutlist').addEventListener('click', () => {
+  if (!openDocumentIds.length || documentKind !== 'model' || !boxes.length && !groups.some((g) => g.kind === 'part')) return;
+  cutlistSnapshot = { model: structuredClone({ boxes, variables, groups, sketches, measurements }), name: activeDocument().name, treeOrder: [...treeOrder] };
+  cutlistThickness.value = '3';
+  $('#cutlist-draft-note').hidden = !draftDirty;
+  updateCutlistPreview();
+  exportMenu.close();
+  cutlistDialog.showModal();
+  cutlistThickness.focus();
+  cutlistThickness.select();
+});
+cutlistThickness.addEventListener('input', updateCutlistPreview);
+$('#cutlist-cancel').addEventListener('click', () => cutlistDialog.close());
+cutlistDialog.addEventListener('close', () => {
+  cutlistSnapshot = null; cutlistResult = null;
+  $('#export-menu-button').focus();
+});
+$('#cutlist-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  updateCutlistPreview();
+  if (!cutlistResult?.rows.length) { cutlistThickness.focus(); return; }
+  const { csv, filename, rows, ignored } = cutlistResult;
+  downloadData(csv, filename, 'text/csv;charset=utf-8');
+  const message = `Export requested · ${filename} · ${rows.length} ${rows.length === 1 ? 'piece' : 'pieces'} · ${ignored.length} ignored${!$('#cutlist-draft-note').hidden ? ' · Unrun draft was excluded.' : ''}`;
+  cutlistDialog.close();
+  notify(message); setStatus(message);
+});
 $('#export-glb').addEventListener('click', async () => {
   if (exportingGlb || !openDocumentIds.length || documentKind !== 'model') return;
   const name = activeDocument().name;
@@ -1657,7 +1912,7 @@ $('#export-glb').addEventListener('click', async () => {
   const hiddenIds = [...hiddenBoxIds];
   const hasDraft = draftDirty;
   exportingGlb = true;
-  syncGlbExportUI();
+  syncExportUI();
   try {
     const { exportModelGlb } = await import('./glb-export');
     const result = await exportModelGlb(snapshot, { name, hiddenIds });
@@ -1670,7 +1925,7 @@ $('#export-glb').addEventListener('click', async () => {
     notify(error instanceof Error ? error.message : 'Could not export GLB', true);
   } finally {
     exportingGlb = false;
-    syncGlbExportUI();
+    syncExportUI();
   }
 });
 $('#undo').addEventListener('click', () => undoRedo(-1)); $('#redo').addEventListener('click', () => undoRedo(1));
@@ -1723,6 +1978,8 @@ async function initializeWorkspace() {
   }
   if (state) {
     documents = state.documents; folders = state.folders; openDocumentIds = state.workspace.openIds;
+    libraryEntryOrder = state.workspace.entryOrder ?? [];
+    collapsedFolderIds = new Set(state.workspace.collapsedFolderIds ?? []);
     measurementsThroughObjects = state.workspace.preferences.measurementsThroughObjects; syncMeasurementThroughPreference();
     loadDocument(documents.find((doc) => doc.id === state!.workspace.activeId) ?? emptyDocument);
   } else {

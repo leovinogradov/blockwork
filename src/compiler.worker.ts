@@ -62,6 +62,11 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       groups.push(result); members.set(result, 'group'); return result;
     };
     const rectangles: unknown[] = [];
+    const part: GroupHelper = (raw, items) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('part(...) expects an object.');
+      const spec = raw as Record<string, unknown>;
+      return group({ ...spec, kind: 'part', name: spec.name ?? `Part ${groups.filter((g) => (g as { kind?: string }).kind === 'part').length + 1}` }, items);
+    };
     let nextShapeId = 1;
     const rectangle = (raw: unknown) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('rectangle(...) expects an object.');
@@ -196,8 +201,8 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
     // Only defer variable references; ordinary inch() calls retain legacy numeric behavior.
     const inch = (value: string | number) => typeof value === "string" && /\bvar\s*\(/.test(value) ? value : parseInches(value);
     // Code runs in a disposable worker. The main thread enforces a hard timeout.
-    const evaluate = new Function("box", "variable", "inch", "group", "sketch", "rectangle", "line", "circle", "cylinder", "measurement", `"use strict";\n${event.data.source}`);
-    evaluate(box, variable, inch, group, sketch, rectangle, line, circle, cylinder, measurement);
+    const evaluate = new Function("box", "variable", "inch", "group", "sketch", "rectangle", "line", "circle", "cylinder", "measurement", "part", `"use strict";\n${event.data.source}`);
+    evaluate(box, variable, inch, group, sketch, rectangle, line, circle, cylinder, measurement, part);
     if (rectangles.some((shape) => !claimedShapes.has(shape as object))) throw new Error("Model rectangles, circles and lines must be inside sketch(properties, items).");
     const response: CompileResponse = resolveModel(boxes, variables, groups, sketches, measurements);
     workerScope.postMessage(response);

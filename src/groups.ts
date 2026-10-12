@@ -1,8 +1,9 @@
 import { getFaceFrame, parseInches, type BoxSpec, type FaceName } from './model';
 
 export type Vector3 = [number, number, number];
-/** Shared container for model parts and sketch shapes. Positions are parent-local. */
-export type GroupSpec = { id: string; name: string; position: Vector3; parentId?: string };
+/** Organizational group or manufactured Part. Positions are parent-local. */
+export const DEFAULT_PART_COLOR = '#d9a76e';
+export type GroupSpec = { id: string; name: string; position: Vector3; parentId?: string; kind?: 'part'; color?: string };
 /** A sketch can extend a group with a plane frame, using the same local coordinates. */
 export type PlaneFrame = { origin: Vector3; u: Vector3; v: Vector3; normal: Vector3 };
 
@@ -17,6 +18,14 @@ export function validateGroups(input: unknown = [], planar = false): GroupSpec[]
     const position = raw.position ?? [0, 0, 0];
     if (!Array.isArray(position) || position.length !== 3 || position.some((n) => typeof n !== 'string' && typeof n !== 'number')) throw new Error('Group position needs three inch values.');
     const result: GroupSpec = { id: raw.id, name: raw.name, position: position.map((n) => parseInches(n)) as Vector3 };
+    if (raw.kind !== undefined) {
+      if (raw.kind !== 'part') throw new Error('Unknown container kind.');
+      if (planar) throw new Error('Parts belong in 3D models, not 2D sketches.');
+      result.kind = 'part';
+      const color = raw.color ?? DEFAULT_PART_COLOR;
+      if (typeof color !== 'string' || !color.trim()) throw new Error(`Part ${raw.id} needs a color.`);
+      result.color = color;
+    }
     if (planar && result.position[2] !== 0) throw new Error('Sketch groups must stay on the X/Y plane (Z = 0).');
     if (raw.parentId !== undefined) {
       if (typeof raw.parentId !== 'string' || !raw.parentId.trim()) throw new Error('Group parentId must be a group ID.');
@@ -33,6 +42,7 @@ export function validateGroups(input: unknown = [], planar = false): GroupSpec[]
     if (g.parentId) {
       const parent = byId.get(g.parentId);
       if (!parent) throw new Error(`Unknown parent group ${g.parentId}.`);
+      if (parent.kind === 'part') throw new Error('A Part contains subcomponents, not groups or other Parts.');
       visit(parent);
     }
     visiting.delete(g.id); done.add(g.id);
@@ -100,10 +110,11 @@ export function generateGroupedSource<T extends { id: string; groupId?: string }
     const indent = '  '.repeat(depth), ending = depth === 0 ? ';' : ',';
     if (entry.item) return `${serializeItem(entry.item)}${ending}`.split('\n').map((line) => `${indent}${line}`);
     const { id: groupId, name, position } = entry.group!;
-    const properties = JSON.stringify({ id: groupId, name, position });
+    const properties = JSON.stringify({ id: groupId, name, position, ...(entry.group!.kind === 'part' ? { color: entry.group!.color ?? DEFAULT_PART_COLOR } : {}) });
+    const helper = entry.group!.kind === 'part' ? 'part' : 'group';
     const members = children.get(id) ?? [];
-    if (!members.length) return [`${indent}group(${properties}, [])${ending}`];
-    return [`${indent}group(${properties}, [`, ...members.flatMap((child) => emit(child, depth + 1)), `${indent}])${ending}`];
+    if (!members.length) return [`${indent}${helper}(${properties}, [])${ending}`];
+    return [`${indent}${helper}(${properties}, [`, ...members.flatMap((child) => emit(child, depth + 1)), `${indent}])${ending}`];
   };
   return (children.get(undefined) ?? []).flatMap((id) => emit(id, 0));
 }

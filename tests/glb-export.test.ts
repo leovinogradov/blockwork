@@ -119,6 +119,20 @@ test('empty models and invalid export options fail clearly before writing a file
   assert.equal((await exportModelGlb(model, { name: 'Already.glb' })).filename, 'Already.glb');
 });
 
+test('Parts retain their identity and local subcomponent names in GLB metadata', async () => {
+  const model = resolveModel([part('Panel', { groupId: 'piece', color: '#ff0000' }), part('Top', { groupId: 'piece', color: '#0000ff' })], [], [
+    { id: 'piece', name: 'Notched board', kind: 'part', color: '#86a9a3', position: [10, 0, 0] },
+  ]);
+  const result = await exportModelGlb(model);
+  const json = glbJson(result.buffer);
+  assert.equal(json.nodes.find((node: { extras?: any }) => node.extras?.blockwork.id === 'piece').extras.blockwork.kind, 'part');
+  assert.equal(json.nodes.find((node: { mesh?: number }) => node.mesh !== undefined).name, 'Panel');
+  assert.equal(json.nodes.find((node: { mesh?: number }) => node.mesh !== undefined).extras.blockwork.name, 'Panel');
+  assert.equal(json.materials.length, 1, 'Part subcomponents share one material');
+  const children = json.nodes.filter((node: { mesh?: number }) => node.mesh !== undefined);
+  assert.ok(children.every((node: any) => !Object.hasOwn(node.extras.blockwork, 'color') && node.extras.blockwork.colorOwner === 'piece'));
+});
+
 test('serialization failures dispose export resources and leave the applied model intact', async (context) => {
   const model = resolveModel([part('box')]);
   const before = structuredClone(model);

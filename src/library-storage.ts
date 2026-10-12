@@ -1,7 +1,7 @@
 import type { serializeDocument, WorkspacePreferences } from './documents';
 
 export type Folder = { id: string; parentId: string | null; name: string };
-export type WorkspaceState = { openIds: string[]; activeId: string; preferences: WorkspacePreferences };
+export type WorkspaceState = { openIds: string[]; activeId: string; preferences: WorkspacePreferences; entryOrder?: string[]; collapsedFolderIds?: string[] };
 export type FileData = ReturnType<typeof serializeDocument>;
 export type StoredFile = FileData & { createdAt: number; updatedAt: number; revision: number };
 export type StoredFolder = Folder & { revision: number };
@@ -33,4 +33,3 @@ export class StorageConflictError extends Error {
     super('This file changed elsewhere. Export your work before reloading to see those changes.');
   }
 }
-

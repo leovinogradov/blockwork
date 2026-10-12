@@ -77,6 +77,8 @@ export class FileLibrary {
     return { documents, folders: folders.map(({ id, name, parentId }) => ({ id, name, parentId })), workspace: {
       openIds, activeId: openIds.includes(workspace.activeId) ? workspace.activeId : openIds[0] ?? '',
       preferences: workspace.preferences ?? defaultPreferences,
+      ...(workspace.entryOrder !== undefined ? { entryOrder: workspace.entryOrder } : {}),
+      ...(Array.isArray(workspace.collapsedFolderIds) ? { collapsedFolderIds: workspace.collapsedFolderIds.filter((id) => folders.some((folder) => folder.id === id)) } : {}),
     } };
   }
 
@@ -135,7 +137,8 @@ export function restoreLibrary(raw: string): LibraryState {
   });
   validateLibrary(documents, folders);
   const openIds = [...new Set<string>(data.workspace.openIds)].filter((id) => documents.some((doc: ModelDocument) => doc.id === id));
-  return { documents, folders, workspace: { openIds, activeId: openIds.includes(data.workspace.activeId) ? data.workspace.activeId : openIds[0] ?? '', preferences: {
+  return { documents, folders, workspace: { openIds, activeId: openIds.includes(data.workspace.activeId) ? data.workspace.activeId : openIds[0] ?? '', ...(data.workspace.entryOrder !== undefined ? { entryOrder: data.workspace.entryOrder } : {}),
+    ...(Array.isArray(data.workspace.collapsedFolderIds) ? { collapsedFolderIds: data.workspace.collapsedFolderIds.filter((id: unknown) => folders.some((folder) => folder.id === id)) } : {}), preferences: {
     measurementsThroughObjects: typeof data.workspace.preferences?.measurementsThroughObjects === 'boolean' ? data.workspace.preferences.measurementsThroughObjects : true,
   } } };
 }

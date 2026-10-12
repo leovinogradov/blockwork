@@ -5,9 +5,11 @@ import type { BoxSpec } from './model';
 import type { ModelSketch } from './model-sketch';
 import type { SketchShape } from './sketch';
 
-/** Group visibility masks descendants without changing their own visibility settings. */
+/** Groups mask descendants; a Part alone owns visibility for its whole body. */
 export function effectiveHiddenIds(groups: GroupSpec[], items: TreeItem[], hiddenIds: Iterable<string>): Set<string> {
-  const hidden = new Set(hiddenIds);
+  const partIds = new Set(groups.filter((group) => group.kind === 'part').map((group) => group.id));
+  const partMembers = new Set(items.filter((item) => item.groupId && partIds.has(item.groupId)).map((item) => item.id));
+  const hidden = new Set([...hiddenIds].filter((id) => !partMembers.has(id)));
   const children = new Map<string, string[]>();
   const addChild = (parentId: string | undefined, id: string) => {
     if (!parentId) return;
