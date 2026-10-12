@@ -11,6 +11,20 @@ pnpm dev
 
 Open the local Vite URL. The editable workbench model is in [examples/workbench.js](examples/workbench.js); choose **Import .js**, select that file, and choose **3D model** to load it in the editor and model view. To make a production build, run `pnpm build`.
 
+## Publish to GitHub Pages
+
+The [deployment workflow](.github/workflows/deploy.yml) builds the app with the `/blockwork/` asset path and publishes `dist` on pushes to `main`.
+
+1. Open [repository Pages settings](https://github.com/leovinogradov/blockwork/settings/pages). Under **Build and deployment → Source**, choose **GitHub Actions**.
+2. Commit and push the project changes to `main`.
+3. Open [Actions](https://github.com/leovinogradov/blockwork/actions) and wait for **Deploy to GitHub Pages** to finish. Then visit [Blockwork](https://leovinogradov.github.io/blockwork/).
+
+Future pushes to `main` update the site automatically. For a local production preview, run `pnpm build --base=/blockwork/`, then `pnpm exec vite preview --base=/blockwork/` and open `http://localhost:4173/blockwork/`. If the repository name or domain changes, update the build's `--base` value following the [Vite deployment guide](https://vite.dev/guide/static-deploy#github-pages).
+
+## License
+
+[MIT](LICENSE), copyright 2026 Leo Vinogradov.
+
 ## Make a 2D sketch
 
 Choose **＋** to create a file or **Import .js** to load one, then select **2D sketch**. A sketch lies on the X/Y plane of a model and uses the same inch grid. Select **Rectangle** (or press **R**, or use the tree's **＋**), click the first corner, then click the opposite corner. A live outline and width/height readout follow the pointer; after the first corner, press Tab to edit width, then Tab again to edit height, and Enter to draw. Both corners snap to visible rectangle corners and edges when the pointer is close; a **CORNER** or **EDGE** marker shows the snap target. Dragging from one corner to the other also works. The tool remains active for another rectangle; press Escape or choose **Select** to finish. Rectangles are outlines by default. The tree and inspector let you duplicate, rename, position, resize, color, hide, and delete rectangles. The sketch view stays top-down and orthographic; middle or right drag to pan and scroll to zoom.
