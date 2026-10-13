@@ -367,8 +367,8 @@ function syncExportUI() {
 function selectedBox() { return boxes.find((box) => box.id === selectedId) ?? null; }
 function selectedModelSketch() { return sketches.find((sketch) => sketch.id === selectedId) ?? null; }
 function selectedRectangle() { return rectangles.find((rectangle) => rectangle.id === selectedId) ?? null; }
-function selectedSketchShapes() { const hiddenIds = sceneHiddenIds(); return rectangles.filter((shape) => selectedComponentIds.has(shape.id) && !hiddenIds.has(shape.id)); }
-function selectedModelItems() { const hiddenIds = sceneHiddenIds(); return modelItems().filter((item) => selectedComponentIds.has(item.id) && !hiddenIds.has(item.id)); }
+function selectedSketchShapes() { return rectangles.filter((shape) => selectedComponentIds.has(shape.id)); }
+function selectedModelItems() { return modelItems().filter((item) => selectedComponentIds.has(item.id)); }
 function selectModelItems(ids: string[], action: SelectionAction) {
   selectComponents(ids, action);
 }
@@ -376,8 +376,7 @@ function selectSketchShapes(ids: string[], action: SelectionAction) {
   selectComponents(ids, action);
 }
 function selectComponents(ids: string[], action: SelectionAction) {
-  const hiddenIds = sceneHiddenIds();
-  selectedComponentIds = updateSketchSelection(selectedComponentIds, ids.filter((id) => documentItems().some((item) => item.id === id) && !hiddenIds.has(id)), action);
+  selectedComponentIds = updateSketchSelection(selectedComponentIds, ids.filter((id) => documentItems().some((item) => item.id === id)), action);
   selectedId = selectedComponentIds.size === 1 ? [...selectedComponentIds][0] : null;
   selectedVariable = null; selectedFace = null;
   renderAll();
@@ -719,12 +718,12 @@ function renderList() {
     const partMember = groups.find((g) => g.id === item.groupId)?.kind === 'part';
     const symbol = 'kind' in item && item.kind === 'circle' ? 'row-circle' : 'kind' in item && item.kind === 'cylinder' ? 'row-cylinder' : sketch ? (item as SketchShape).kind === 'line' ? 'row-line' : 'row-square' : mounted ? 'row-sketch' : 'row-cube';
     const size = 'kind' in item && item.kind === 'circle' ? `R ${formatInches(item.size[0] / 2)} in` : 'kind' in item && item.kind === 'cylinder' ? `R ${formatInches(item.size[cylinderAxes(item).radialAxes[0]] / 2)} × ${formatInches(item.size[cylinderAxes(item).lengthAxis])}` : sketch && (item as SketchShape).kind === 'line' ? `${formatInches(Math.hypot(...item.size))} in` : item.size.map(formatInches).join(' × ') + (mounted ? ` · ${item.axis.toUpperCase()}` : '');
-    return `<div class="component-row box-row ${groups.find((g) => g.id === item.groupId)?.kind === 'part' ? 'part-subcomponent-row' : ''} ${selectedComponentIds.has(item.id) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(item.id)}><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(shortItemName(item))}">${partMember ? `<i class="subcomponent-icon" data-lucide="${'kind' in item && item.kind === 'cylinder' ? 'cylinder' : mounted ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span>`}<span class="row-name" title="${escapeAttr(shortItemName(item))}">${escapeHTML(shortItemName(item))}</span><span class="row-size">${size}</span></button>${partMember ? '' : visibilityButton(item.id, shortItemName(item), item.groupId)}</div>`;
+    return `<div class="component-row box-row ${groups.find((g) => g.id === item.groupId)?.kind === 'part' ? 'part-subcomponent-row' : ''} ${selectedComponentIds.has(item.id) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(item.id)}><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" aria-label="Select ${escapeAttr(shortItemName(item))}">${partMember ? `<i class="subcomponent-icon" data-lucide="${'kind' in item && item.kind === 'cylinder' ? 'cylinder' : mounted ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span>`}<span class="row-name" title="${escapeAttr(shortItemName(item))}">${escapeHTML(shortItemName(item))}</span><span class="row-size">${size}</span></button>${partMember ? '' : visibilityButton(item.id, shortItemName(item), item.groupId)}</div>`;
   };
   const measurementRow = (m: Measurement, depth: number) => {
     const name = measurementName(m), hidden = hiddenIds.has(m.id);
     const distance = resolveMeasurement(m, currentMeasurementGeometry())?.distance;
-    return `<div class="component-row box-row ${selectedId === m.id ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(m.id)}><button type="button" class="component-select" data-id="${escapeAttr(m.id)}" ${hidden ? 'disabled' : ''} aria-label="Select ${escapeAttr(name)}"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><span class="row-name">${escapeHTML(name)}</span><span class="row-size">${distance === undefined ? 'Missing geometry' : formatInches(distance) + ' in'}</span></button>${groups.find((g) => g.id === m.groupId)?.kind === 'part' ? '' : visibilityButton(m.id, name, m.groupId)}</div>`;
+    return `<div class="component-row box-row ${selectedId === m.id ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(m.id)}><button type="button" class="component-select" data-id="${escapeAttr(m.id)}" aria-label="Select ${escapeAttr(name)}"><i class="measurement-symbol" data-lucide="ruler" aria-hidden="true"></i><span class="row-name">${escapeHTML(name)}</span><span class="row-size">${distance === undefined ? 'Missing geometry' : formatInches(distance) + ' in'}</span></button>${groups.find((g) => g.id === m.groupId)?.kind === 'part' ? '' : visibilityButton(m.id, name, m.groupId)}</div>`;
   };
   const branch = (parentId: string | undefined, depth: number): string => (children.get(parentId) ?? []).map((id) => entries.get(id)!).map((entry) => {
     if (!groupIds.has(entry.id)) return 'start' in entry ? measurementRow(entry as Measurement, depth) : itemRow(entry as BoxSpec | SketchShape | ModelSketch, depth);
@@ -1209,7 +1208,6 @@ function renderLineInspector(host: HTMLElement, line: SketchShape) {
 function isDescendant(candidateId: string, ancestorId: string) { let current = boxes.find((box) => box.id === candidateId); const seen = new Set<string>(); while (current?.relative && !seen.has(current.id)) { if (current.relative.boxId === ancestorId) return true; seen.add(current.id); current = boxes.find((box) => box.id === current!.relative!.boxId); } return false; }
 function renderAll() {
   syncExportUI();
-  if (selectedId && !selectedGroup() && sceneHiddenIds().has(selectedId)) { selectedId = null; selectedFace = null; }
   if (selectedGroup() || selectedMeasurement() || selectedVariable) selectedComponentIds.clear();
   else {
     if (selectedId && documentItems().some((item) => item.id === selectedId)) selectedComponentIds = new Set([selectedId]);
@@ -1500,7 +1498,7 @@ function commitRectangles(next: SketchShape[], message: string, options?: { pres
   rectangles = cloneRectangles(validateSketchShapes(next, groups));
   measurements = pruneMeasurements(measurements, currentMeasurementGeometry());
   hiddenBoxIds = new Set([...hiddenBoxIds].filter(sceneHasId));
-  if ((!selectedGroup() && !objectItems().some((rectangle) => rectangle.id === selectedId)) || (!selectedGroup() && sceneHiddenIds().has(selectedId!))) selectedId = null;
+  if (!selectedGroup() && !objectItems().some((rectangle) => rectangle.id === selectedId)) selectedId = null;
   viewport.setRectangles(worldRectangles(), { ...options, hiddenIds: sceneHiddenIds() });
   viewport.setMeasurements(measurements);
   const source = generateSketchSource(rectangles, groups, treeOrder, measurements); setEditor(source); appliedSource = source;
@@ -1516,7 +1514,7 @@ function commitBoxes(next: BoxSpec[], message: string, options?: { preserveView?
   const resolved = resolveModel(next, nextVariables, groups, nextSketches, nextMeasurements);
   const source = generateSource(resolved.boxes, resolved.variables, groups, treeOrder, resolved.sketches ?? [], nextMeasurements);
   measurements = nextMeasurements;
-  boxes = cloneBoxes(resolved.boxes); sketches = structuredClone(resolved.sketches ?? []); variables = cloneVariables(resolved.variables); hiddenBoxIds = new Set([...hiddenBoxIds].filter(sceneHasId)); selectedId = (selectedGroup() || objectItems().some((b) => b.id === selectedId)) && (selectedGroup() || !sceneHiddenIds().has(selectedId!)) ? selectedId : null;
+  boxes = cloneBoxes(resolved.boxes); sketches = structuredClone(resolved.sketches ?? []); variables = cloneVariables(resolved.variables); hiddenBoxIds = new Set([...hiddenBoxIds].filter(sceneHasId)); selectedId = selectedGroup() || objectItems().some((b) => b.id === selectedId) ? selectedId : null;
   if (!selectedId) selectedFace = null;
   viewport.setBoxes(worldBoxes(), { ...options, hiddenIds: sceneHiddenIds(), sketches: worldSketches() }); viewport.setMeasurements(measurements); setEditor(source); appliedSource = editor.value; recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
@@ -1534,7 +1532,6 @@ function toggleVisibility(ids: string[]) {
   for (const id of ids) {
     if (hidden) hiddenBoxIds.delete(id); else hiddenBoxIds.add(id);
   }
-  if (!hidden && selectedId && ids.includes(selectedId) && !selectedGroup()) { selectedId = null; selectedFace = null; }
   const hiddenIds = sceneHiddenIds();
   viewport.setVisibility(objectItems().filter((item) => !hiddenIds.has(item.id)).map((item) => item.id), true);
   viewport.setVisibility(objectItems().filter((item) => hiddenIds.has(item.id)).map((item) => item.id), false);

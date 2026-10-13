@@ -74,7 +74,13 @@ try{
   check(!!$('#inspect-owner-part')&&$('.part-membership-card').dataset.ownerPart===partId,'membership identifies the Part and provides return action');
   change('#box-name','');check($('.object-name').textContent==='MC1'&&$('[data-id="panel"] .row-name').textContent==='Box','unnamed subcomponent displays the Part name only in inspector');change('#box-name','Panel');
   $('#inspect-owner-part').click();check($('.object-name').textContent==='MC1','return action selects the parent Part');
-  const showToggle=$('.part-row [data-visibility-id]');showToggle.click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>row.classList.contains('hidden-object')),'Part visibility hides the whole body');$('.part-row [data-visibility-id]').click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>!row.classList.contains('hidden-object')),'Part visibility restores every subcomponent');
+  const showToggle=$('.part-row [data-visibility-id]');showToggle.click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>row.classList.contains('hidden-object')),'Part visibility hides the whole body');
+  check(!$('[data-id="panel"]').disabled,'hidden Part subcomponents remain selectable');
+  select('panel');change('#box-name','Hidden panel');
+  check($('.object-name').textContent==='MC1 > Hidden panel'&&$('[data-id="panel"]').closest('.component-row').classList.contains('selected'),'hidden Part subcomponents remain editable and selected');
+  check($('.part-row').classList.contains('hidden-object')&&$('[data-id="panel"]').closest('.component-row').classList.contains('hidden-object'),'editing a hidden subcomponent preserves Part visibility');
+  $('#undo').click();select(partId);
+  $('.part-row [data-visibility-id]').click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>!row.classList.contains('hidden-object')),'Part visibility restores every subcomponent');
   check($('.part-collapse').getAttribute('aria-expanded')==='true','Part visibility button does not toggle expansion');
   const compiled=await compileModel($('#source-editor').value);
   check(compiled.groups.find(g=>g.id===partId).kind==='part','source preserves Part kind');
