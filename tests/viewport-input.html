@@ -42,14 +42,18 @@ const same = (a, b) => a.length === b.length && a.every((value, index) => value 
 function pointer(type, button = 0, dx = 0, dy = 0, shiftKey = false) {
   const bounds = canvas.getBoundingClientRect();
   const buttons = type === 'pointerup' ? 0 : [1,4,2][button];
-  canvas.dispatchEvent(new PointerEvent(type, { bubbles:true, pointerType:'mouse', pointerId:1,
-    button, buttons, shiftKey, clientX:bounds.left + bounds.width / 2 + dx, clientY:bounds.top + bounds.height / 2 + dy }));
+  const event = new PointerEvent(type, { bubbles:true, cancelable:true, pointerType:'mouse', pointerId:1,
+    button, buttons, shiftKey, clientX:bounds.left + bounds.width / 2 + dx, clientY:bounds.top + bounds.height / 2 + dy });
+  canvas.dispatchEvent(event);
+  return event;
 }
 function wheel(deltaX, deltaY, modifiers = {}) {
   const bounds = canvas.getBoundingClientRect();
-  canvas.dispatchEvent(new WheelEvent('wheel', { bubbles:true, cancelable:true,
+  const event = new WheelEvent('wheel', { bubbles:true, cancelable:true,
     clientX:bounds.left + bounds.width / 2, clientY:bounds.top + bounds.height / 2,
-    deltaX, deltaY, ...modifiers }));
+    deltaX, deltaY, ...modifiers });
+  canvas.dispatchEvent(event);
+  return event;
 }
 try {
   for (const projection of ['perspective', 'orthographic']) {
@@ -91,6 +95,15 @@ try {
     viewport.setView('iso'); await pixels();
     pointer('pointerdown', 2); pointer('pointerup', 2);
     check(selected === 'box' && context?.boxId === 'box', `${projection}: stationary right click retains face actions`);
+    context = null;
+    const shiftedClick = pointer('pointerdown', 2, 0, 0, true);
+    pointer('pointerup', 2, 0, 0, true);
+    check(shiftedClick.defaultPrevented && context === null, `${projection}: Shift-secondary click cancels native actions and doesn't open a face menu`);
+    for (const type of ['mousedown', 'auxclick', 'contextmenu']) {
+      const nativeMenu = new MouseEvent(type, { bubbles:true, cancelable:true, button:2, shiftKey:true });
+      canvas.dispatchEvent(nativeMenu);
+      check(nativeMenu.defaultPrevented, `${projection}: ${type} is prevented inside the viewport`);
+    }
   }
   for (const projection of ['perspective', 'orthographic']) {
     viewport.setProjection(projection);
@@ -115,19 +128,24 @@ try {
     pointer('pointerdown', 0, -290, -190); pointer('pointermove', 0, 290, 190); pointer('pointercancel');
     check(selectedIds.length === 0 && host.querySelector('.sketch-selection-box').hidden, `${projection}: cancelling a drag hides the marquee without selecting`);
   }
-  viewport.setNavigationInput('trackpad');
   for (const projection of ['perspective', 'orthographic']) {
     viewport.setProjection(projection); viewport.setView('iso');
     const beforeSlide = await pixels();
     selectedIds = ['retained']; context = null;
-    wheel(25, 15);
+    check(wheel(25, 15).defaultPrevented, `${projection}: trackpad slide prevents browser scrolling`);
     check(!same(beforeSlide, await pixels()), `${projection}: trackpad slide pans`);
     const beforeOrbit = await pixels();
-    wheel(20, 15, { shiftKey:true });
+    check(wheel(20, 15, { shiftKey:true }).defaultPrevented, `${projection}: Shift-slide prevents browser actions`);
     check(!same(beforeOrbit, await pixels()), `${projection}: Shift-slide orbits`);
     const beforePinch = await pixels();
-    wheel(0, -5, { ctrlKey:true });
+    check(wheel(0, -5, { ctrlKey:true }).defaultPrevented, `${projection}: pinch prevents browser zoom`);
     check(!same(beforePinch, await pixels()), `${projection}: pinch zooms`);
+    const beforeWheel = await pixels();
+    check(wheel(0, -100).defaultPrevented, `${projection}: wheel prevents browser scrolling`);
+    check(!same(beforeWheel, await pixels()), `${projection}: mouse wheel zooms after using the trackpad`);
+    const beforeNextSlide = await pixels();
+    wheel(10, 15);
+    check(!same(beforeNextSlide, await pixels()), `${projection}: trackpad slides still work after the mouse wheel`);
     check(selectedIds.join() === 'retained' && context === null, `${projection}: gestures preserve selection without menus`);
     for (const tool of ['orbit', 'pan', 'zoom']) {
       viewport.setView('iso'); viewport.setNavigationTool(tool);

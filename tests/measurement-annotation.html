@@ -50,6 +50,10 @@ let checks = 0;
 const errors = [];
 let previewCamera;
 function check(condition, message) { checks++; if (!condition) errors.push(message); }
+function tapShift() {
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+  window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true }));
+}
 function render(camera) {
   renderer.setRenderTarget(target);
   renderer.render(scene, camera);
@@ -286,7 +290,7 @@ for (const mode of ['model', 'sketch']) for (const projection of ['perspective',
     pointer('pointermove', ...second); await framePixels();
     const label = host.querySelector('.measurement-label.preview text');
     const freeDistance = label.textContent;
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     await framePixels();
     const expectedDistance = `${formatInches(fixture.distance ?? fixture.height + .25)} in`;
     check(label.textContent === expectedDistance && label.textContent !== freeDistance, `${mode}/${projection}/${fixture.view}: Shift updates the stationary preview to the largest axis distance`);
@@ -299,24 +303,24 @@ for (const mode of ['model', 'sketch']) for (const projection of ['perspective',
     check(label.textContent === expectedDistance, `${mode}/${projection}/${fixture.view}: pointer movement without holding Shift retains axis mode`);
     host.querySelector('input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
     check(axisModeStatus && modeChanges === changesAfterPress, `${mode}/${projection}/${fixture.view}: typing Shift in a field does not toggle axis mode`);
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     await framePixels();
     check(label.textContent === freeDistance && !axisModeStatus, `${mode}/${projection}/${fixture.view}: a second Shift press restores full distance`);
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     createdMeasurement = null;
     pointer('pointerdown', ...second, 1); pointer('pointerup', ...second);
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     await framePixels();
     check(label.textContent === freeDistance && !axisModeStatus, `${mode}/${projection}/${fixture.view}: toggling during label placement changes the pending dimension`);
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     click();
     check(createdMeasurement?.distanceAxis === fixture.distanceAxis && createdMeasurement?.end.coordinates.every((n, i) => Math.abs(n - fixture.expected[i]) < 1e-3), `${mode}/${projection}/${fixture.view}: shifted click saves the chosen axis and the actual geometry edge anchor`);
     check(axisModeStatus, `${mode}/${projection}/${fixture.view}: creating a dimension retains the mode for the next measurement`);
     viewport.setMeasurementTool(false);
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     viewport.setMeasurementTool(true);
     check(axisModeStatus, `${mode}/${projection}/${fixture.view}: leaving and re-entering Measure retains the selected mode`);
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true }));
+    tapShift();
     check(!axisModeStatus, `${mode}/${projection}/${fixture.view}: Shift can toggle the mode before the first point`);
     viewport.setMeasurementTool(false);
   }

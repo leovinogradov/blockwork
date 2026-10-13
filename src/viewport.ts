@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { NavigationControls, type NavigationInput, type NavigationTool } from './navigation-controls';
+import { NavigationControls, type NavigationTool } from './navigation-controls';
 import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
 import { createFaceHighlight } from './face-highlight';
@@ -33,7 +33,6 @@ export interface Viewport {
   fit(): void;
   setProjection(mode: ProjectionMode): void;
   setGrid(visible: boolean): void;
-  setNavigationInput(input: NavigationInput): void;
   setNavigationTool(tool: NavigationTool): void;
   dispose(): void;
 }
@@ -78,7 +77,6 @@ export function createViewport(
   let projection: ProjectionMode = 'perspective';
   let sketchMode = false;
   let sketchTool: SketchTool = 'select';
-  let navigationInput: NavigationInput = 'mouse';
   let navigationTool: NavigationTool = 'select';
   let pendingMeasurementShift = false;
   let sketchFirst: [number, number] | null = null;
@@ -496,7 +494,6 @@ export function createViewport(
     controls?.dispose();
     controls = new NavigationControls(camera, renderer.domElement, navigationPointAtPointer, navigationModelScale);
     controls.enableRotate = !sketchMode;
-    controls.inputDevice = navigationInput;
     controls.setNavigationTool(navigationTool);
     controls.enablePan = true;
     controls.rotateSpeed = 0.686;
@@ -892,18 +889,19 @@ export function createViewport(
     if (event.key !== 'Shift' || event.repeat || event.ctrlKey || event.metaKey || event.altKey || !measurementTool) return;
     const target = event.target;
     if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
-    // With trackpad input, a Shift tap toggles on release so an orbit gesture
-    // doesn't also edit the measurement.
-    if (navigationInput === 'trackpad') pendingMeasurementShift = true;
-    else toggleMeasurementAxisMode();
+    // Wait for release so holding Shift for navigation doesn't also edit
+    // the measurement, regardless of which device sends the next gesture.
+    pendingMeasurementShift = true;
   };
   const onMeasurementModifierUp = (event: KeyboardEvent) => {
     if (event.key !== 'Shift') return;
-    if (pendingMeasurementShift && measurementTool) toggleMeasurementAxisMode();
+    const target = event.target;
+    const editing = target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'));
+    if (pendingMeasurementShift && measurementTool && !editing) toggleMeasurementAxisMode();
     pendingMeasurementShift = false;
   };
   const onNavigationWheel = (event: WheelEvent) => {
-    if (navigationInput === 'trackpad' && event.shiftKey) pendingMeasurementShift = false;
+    if (event.shiftKey) pendingMeasurementShift = false;
   };
   const clearMeasurementHover = () => { measurementHover = null; };
   const onWindowBlur = () => { pendingMeasurementShift = false; controls?.setNavigationTool(navigationTool); clearMeasurementHover(); };
@@ -929,6 +927,9 @@ export function createViewport(
   };
 
   const onPointerDown = (event: PointerEvent) => {
+    // Cancel native mouse actions before handling secondary-click navigation.
+    if (event.button === 1 || event.button === 2) event.preventDefault();
+    if (event.shiftKey && event.button !== 0) pendingMeasurementShift = false;
     if (navigationTool !== 'select') { renderer?.domElement.focus({ preventScroll: true }); return; }
     if (measurementTool && event.button === 0) {
       event.preventDefault(); event.stopImmediatePropagation(); renderer?.domElement.focus({ preventScroll: true });
@@ -1067,6 +1068,7 @@ export function createViewport(
       return;
     }
     if (dragged) return;
+    if (event.button === 2 && (down.additive || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey)) return;
 
     const hit = faceAtPointer(event);
     if (event.button === 0) {
@@ -1084,8 +1086,9 @@ export function createViewport(
     }
   };
   const onContextMenu = (event: MouseEvent) => {
-    event.preventDefault();
+    event.preventDefault(); event.stopPropagation();
   };
+  const onSecondaryClick = (event: MouseEvent) => { if (event.button === 2) event.preventDefault(); };
   const onSketchKeyDown = (event: KeyboardEvent) => {
     if (navigationTool !== 'select') return;
     if (event.key === 'Escape' && (!sketchMode || sketchTool === 'select')) {
@@ -1152,7 +1155,9 @@ export function createViewport(
     renderer.domElement.addEventListener('pointerleave', onPointerLeave);
     renderer.domElement.addEventListener('pointercancel', onPointerCancel, true);
     renderer.domElement.addEventListener('keydown', onSketchKeyDown);
-    renderer.domElement.addEventListener('contextmenu', onContextMenu);
+    renderer.domElement.addEventListener('contextmenu', onContextMenu, true);
+    renderer.domElement.addEventListener('mousedown', onSecondaryClick, true);
+    renderer.domElement.addEventListener('auxclick', onSecondaryClick, true);
     renderer.domElement.addEventListener('wheel', onNavigationWheel, { capture: true, passive: true });
     window.addEventListener('keydown', onMeasurementModifier);
     window.addEventListener('keyup', onMeasurementModifierUp);
@@ -1175,7 +1180,6 @@ export function createViewport(
     setView,
     fit,
     setProjection,
-    setNavigationInput: (input) => { navigationInput = input; pendingMeasurementShift = false; if (controls) controls.inputDevice = input; },
     setNavigationTool,
     setGrid: (visible) => {
       grid.visible = visible;
@@ -1192,7 +1196,9 @@ export function createViewport(
         renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
         renderer.domElement.removeEventListener('pointercancel', onPointerCancel, true);
         renderer.domElement.removeEventListener('keydown', onSketchKeyDown);
-        renderer.domElement.removeEventListener('contextmenu', onContextMenu);
+        renderer.domElement.removeEventListener('contextmenu', onContextMenu, true);
+        renderer.domElement.removeEventListener('mousedown', onSecondaryClick, true);
+        renderer.domElement.removeEventListener('auxclick', onSecondaryClick, true);
         renderer.domElement.removeEventListener('wheel', onNavigationWheel, true);
         window.removeEventListener('keydown', onMeasurementModifier);
         window.removeEventListener('keyup', onMeasurementModifierUp);

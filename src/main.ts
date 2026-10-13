@@ -10,7 +10,7 @@ import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, createCylinderFromFace, cylinderAxes, cylinderAxisOrder, cylinderSize, reorientCylinder, formatInches, generateSource, getFaceFrame, parseInches, removeVariable, reparentBox, resolveModel, validateBoxes, type BoxSpec, type CylinderAxis, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
 import { createViewport, type SketchTool } from './viewport';
-import type { NavigationInput, NavigationTool } from './navigation-controls';
+import type { NavigationTool } from './navigation-controls';
 import { updateSketchSelection, type SelectionAction } from './sketch-selection';
 import { createBlankDocument, createDocument, resolveSnapshot, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
 import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
@@ -109,7 +109,6 @@ root.innerHTML = `
           </div>
         </div>
         <div class="navigation-toolbar">
-          <label class="navigation-input-label" for="navigation-input">INPUT <select id="navigation-input"><option value="mouse">Mouse</option><option value="trackpad">Trackpad</option></select></label>
           <div class="navigation-tools" role="group" aria-label="Navigation tools">
             <button class="tool-button active" data-navigation-tool="select" type="button" aria-pressed="true" title="Select or use drawing tools">SELECT</button>
             <button class="tool-button" data-navigation-tool="orbit" type="button" aria-pressed="false" title="Click and drag to orbit · Escape to return to Select">ORBIT</button>
@@ -243,9 +242,8 @@ let toastTimer = 0;
 let viewMode: 'iso' | 'front' | 'right' | 'top' = 'iso';
 let projectionMode: 'perspective' | 'orthographic' = 'perspective';
 let gridVisible = true;
-const NAVIGATION_INPUT_KEY = 'blockwork-navigation-input';
-let navigationInput: NavigationInput = 'mouse';
-try { if (localStorage.getItem(NAVIGATION_INPUT_KEY) === 'trackpad') navigationInput = 'trackpad'; } catch { /* Use mouse controls when storage is unavailable. */ }
+// Retire the old device preference; navigation now follows each input event.
+try { localStorage.removeItem('blockwork-navigation-input'); } catch { /* Navigation also works without storage. */ }
 let navigationTool: NavigationTool = 'select';
 let hiddenBoxIds = new Set<string>();
 let relativeOpenBoxId: string | null = null;
@@ -295,7 +293,6 @@ const viewport = createViewport(
   (axisMode) => { measurementAxisMode = axisMode; renderSketchToolUI(); },
   (ids, action) => selectModelItems(ids, action),
 );
-viewport.setNavigationInput(navigationInput);
 
 function closeFaceColorPicker() { faceColorPicker?.hide(); }
 function openFaceColorPicker(trigger: HTMLElement) {
@@ -392,19 +389,16 @@ function renderSketchToolUI() {
     button.classList.toggle('active', measuring);
     button.setAttribute('aria-pressed', String(measuring));
   });
-  ($('#navigation-input') as HTMLSelectElement).value = navigationInput;
   root.querySelectorAll<HTMLButtonElement>('[data-navigation-tool]').forEach((button) => {
     const active = button.dataset.navigationTool === navigationTool;
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', String(active));
     button.disabled = documentKind === 'sketch' && button.dataset.navigationTool === 'orbit';
   });
-  const navigationHint = navigationInput === 'trackpad'
-    ? `<span>TWO-FINGER SLIDE</span> pan ${documentKind === 'model' ? '<i>·</i> <span>SHIFT + SLIDE</span> orbit ' : ''}<i>·</i> <span>PINCH</span> zoom`
-    : `${documentKind === 'model' ? '<span>MIDDLE DRAG</span> orbit <i>·</i> ' : ''}<span>${documentKind === 'model' ? 'RIGHT DRAG / SHIFT + MIDDLE' : 'MIDDLE / RIGHT DRAG'}</span> pan <i>·</i> wheel zoom`;
+  const navigationHint = `${documentKind === 'model' ? '<span>MIDDLE DRAG / SHIFT + SLIDE</span> orbit <i>·</i> ' : ''}<span>RIGHT DRAG / TWO-FINGER SLIDE</span> pan <i>·</i> <span>WHEEL / PINCH</span> zoom`;
   const toolHint = navigationTool !== 'select'
     ? `<span>${navigationTool.toUpperCase()}</span> <i>·</i> <span>CLICK + DRAG${navigationTool === 'zoom' ? ' UP / DOWN' : ''}</span> ${navigationTool === 'zoom' ? 'zoom in / out' : navigationTool} <i>·</i> <span>ESC</span> select`
-    : measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>${navigationInput === 'trackpad' ? 'TAP SHIFT' : 'SHIFT'}</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'
+    : measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>TAP SHIFT</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'
     ? sketchTool !== 'select' ? sketchTool === 'circle' ? '<span>CLICK</span> center <i>·</i> <span>MOVE</span> radius <i>·</i> <span>CLICK</span> draw <i>·</i> <span>TAB</span> exact radius <i>·</i> <span>ESC</span> select' : sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>SHIFT + CLICK</span> multi-select <i>·</i> <span>DRAG</span> select'
     : '<span>LEFT DRAG</span> multi-select <i>·</i> <span>SHIFT</span> add';
   $('.navigation-help').innerHTML = `${toolHint} <i>·</i> ${navigationHint}`;
@@ -1961,12 +1955,6 @@ editor.addEventListener('input', () => { if (measuring) activateMeasurementTool(
 editor.addEventListener('scroll', () => { $('#line-numbers').scrollTop = editor.scrollTop; });
 root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.addEventListener('click', () => { if (documentKind === 'sketch') return; viewMode = button.dataset.view as typeof viewMode; viewport.setView(viewMode); root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b === button)); scheduleSave(); }));
 $('#fit').addEventListener('click', () => viewport.fit());
-$('#navigation-input').addEventListener('change', (event) => {
-  navigationInput = (event.currentTarget as HTMLSelectElement).value === 'trackpad' ? 'trackpad' : 'mouse';
-  viewport.setNavigationInput(navigationInput);
-  try { localStorage.setItem(NAVIGATION_INPUT_KEY, navigationInput); } catch { /* Keep the current session usable without storage. */ }
-  renderSketchToolUI();
-});
 root.querySelectorAll<HTMLButtonElement>('[data-navigation-tool]').forEach((button) => button.addEventListener('click', () => {
   const tool = button.dataset.navigationTool as NavigationTool;
   if (tool === 'orbit' && documentKind === 'sketch') return;
