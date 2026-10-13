@@ -395,7 +395,7 @@ function renderSketchToolUI() {
     button.setAttribute('aria-pressed', String(active));
     button.disabled = documentKind === 'sketch' && button.dataset.navigationTool === 'orbit';
   });
-  const navigationHint = `${documentKind === 'model' ? '<span>MIDDLE DRAG / SHIFT + SLIDE</span> orbit <i>·</i> ' : ''}<span>RIGHT DRAG / TWO-FINGER SLIDE</span> pan <i>·</i> <span>WHEEL / PINCH</span> zoom`;
+  const navigationHint = `${documentKind === 'model' ? '<span>MIDDLE DRAG / TWO-FINGER SLIDE</span> orbit <i>·</i> ' : '<span>TWO-FINGER SLIDE</span> pan <i>·</i> '}<span>RIGHT DRAG / TWO-FINGER CLICK + DRAG</span> pan <i>·</i> <span>WHEEL / PINCH</span> zoom`;
   const toolHint = navigationTool !== 'select'
     ? `<span>${navigationTool.toUpperCase()}</span> <i>·</i> <span>CLICK + DRAG${navigationTool === 'zoom' ? ' UP / DOWN' : ''}</span> ${navigationTool === 'zoom' ? 'zoom in / out' : navigationTool} <i>·</i> <span>ESC</span> select`
     : measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>TAP SHIFT</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'

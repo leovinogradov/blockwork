@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MOUSE, OrthographicCamera, PerspectiveCamera, Plane, Raycaster, Vector2, Vector3 } from 'three';
-import { MIN_ZOOM_STEP_FRACTION, NavigationControls, wheelNavigationAction } from '../src/navigation-controls';
+import { MIN_ZOOM_STEP_FRACTION, NavigationControls } from '../src/navigation-controls';
+import { PENDING_WHEEL_MS, WheelGestureClassifier } from '../src/wheel-gesture';
 
 // Exercise the actual OrbitControls input handlers and camera projection.
 class Surface extends EventTarget {
@@ -14,10 +15,12 @@ class Surface extends EventTarget {
   releasePointerCapture() {}
   hasPointerCapture() { return false; }
   send(type: string, fields: Record<string, number | string | boolean> = {}) {
+    const { timeStamp, ...data } = fields;
     const event = Object.assign(new Event(type, { cancelable: true }), {
       pointerId: 1, pointerType: 'mouse', button: 2, clientX: 350, clientY: 225,
-      deltaMode: 0, deltaX: 0, deltaY: 0, ...fields,
+      deltaMode: 0, deltaX: 0, deltaY: 0, ...data,
     });
+    if (typeof timeStamp === 'number') Object.defineProperty(event, 'timeStamp', { value: timeStamp });
     this.dispatchEvent(event);
     return event;
   }
@@ -30,36 +33,91 @@ test('automatic navigation recognizes common browser events independently for ei
     ['page wheel', { deltaY: 1, deltaMode: 2 }, 'zoom'],
     ['Mac mouse wheel', { deltaY: 3, wheelDeltaY: -120 }, 'zoom'],
     ['fractional wheel with a discrete tick', { deltaY: 53.333, wheelDeltaY: -120 }, 'zoom'],
-    ['vertical trackpad', { deltaY: 12 }, 'pan'],
-    ['horizontal trackpad', { deltaX: 20 }, 'pan'],
-    ['diagonal trackpad', { deltaX: 65, deltaY: 90 }, 'pan'],
-    ['fast fractional trackpad', { deltaY: 84.5 }, 'pan'],
-    ['Mac trackpad', { deltaY: 3, wheelDeltaY: -9 }, 'pan'],
-    ['fast trackpad with smooth legacy delta', { deltaY: 70, wheelDeltaY: -210 }, 'pan'],
-    ['Shift-trackpad', { deltaY: 12, shiftKey: true }, 'orbit'],
+    ['ambiguous vertical input', { deltaY: 12 }, 'pending'],
+    ['horizontal trackpad', { deltaX: 20 }, 'orbit'],
+    ['diagonal trackpad', { deltaX: 65, deltaY: 90 }, 'orbit'],
+    ['fractional vertical input alone', { deltaY: 84.5 }, 'pending'],
+    ['small smooth legacy value alone', { deltaY: 3, wheelDeltaY: -9 }, 'pending'],
+    ['fast smooth legacy value alone', { deltaY: 70, wheelDeltaY: -210 }, 'pending'],
+    ['Shift-trackpad', { deltaX: 5, deltaY: 12, shiftKey: true }, 'orbit'],
     ['Shift-mouse wheel', { deltaX: 100, shiftKey: true }, 'zoom'],
     ['pinch even with Shift held', { deltaY: 5, ctrlKey: true, shiftKey: true }, 'zoom'],
   ] as const;
   for (const [name, fields, expected] of samples) {
     const event = { deltaMode: 0, deltaX: 0, deltaY: 0, ...fields } as WheelEvent;
-    assert.equal(wheelNavigationAction(event), expected, name);
+    assert.equal(new WheelGestureClassifier().classify(event).action, expected, name);
   }
 });
 
 for (const projection of ['perspective', 'orthographic'] as const) {
-  test(`${projection}: trackpad slides pan at picked depth, including horizontal-only input`, () => {
-    const current = setup(projection);
-    const anchor = current.pickAt(470, 140);
+  test(`${projection}: a vertical trackpad burst replays buffered motion as orbit, with a mouse wheel interleaved`, () => {
+    const current = setup(projection, 100, 100);
     const orientation = current.camera.quaternion.clone();
-    current.surface.send('wheel', { clientX: 470, clientY: 140, deltaX: 25, deltaY: 15 });
-    let projected = current.screenPoint(anchor);
-    closeTo(projected.x, 445); closeTo(projected.y, 125);
-    current.surface.send('wheel', { clientX: 445, clientY: 125, deltaX: -12 });
-    projected = current.screenPoint(anchor);
-    closeTo(projected.x, 457); closeTo(projected.y, 125);
+    current.surface.send('wheel', { deltaY: 4.2, timeStamp: 0 });
+    current.surface.send('wheel', { deltaY: 6.7, timeStamp: 12 });
     assert.ok(current.camera.quaternion.angleTo(orientation) < 1e-7);
-    assert.equal(current.camera.zoom, 1);
+    closeTo(current.controls.getDistance(), 100);
+    current.surface.send('wheel', { deltaY: -100, timeStamp: 16 });
+    assert.ok(current.camera.quaternion.angleTo(orientation) < 1e-7, 'mouse wheel must zoom rather than inherit orbit');
+    assert.ok(current.controls.getDistance() < 100 || current.camera.zoom > 1);
+    const distanceAfterWheel = current.controls.getDistance(), zoomAfterWheel = current.camera.zoom;
+    current.surface.send('wheel', { deltaY: 9.1, timeStamp: 24 });
+    assert.ok(current.camera.quaternion.angleTo(orientation) > 0.01);
+    closeTo(current.controls.getDistance(), distanceAfterWheel);
+    assert.equal(current.camera.zoom, zoomAfterWheel, 'buffered trackpad motion must not zoom first');
     current.controls.dispose();
+  });
+
+  test(`${projection}: fractional wheel steps still zoom after horizontal trackpad motion`, () => {
+    const current = setup(projection, 100, 100);
+    current.surface.send('wheel', { deltaX: 8, deltaY: 10, timeStamp: 0 });
+    const orientation = current.camera.quaternion.clone(), zoom = current.camera.zoom;
+    const position = current.camera.position.clone();
+    for (const timeStamp of [5, 15, 25]) current.surface.send('wheel', { deltaY: -12.5, timeStamp });
+    assert.ok(current.camera.quaternion.angleTo(orientation) < 1e-7);
+    assert.ok(!current.camera.position.equals(position) || current.camera.zoom !== zoom);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: unresolved vertical input defaults to zoom after a bounded wait`, async () => {
+    const current = setup(projection, 100, 100);
+    const orientation = current.camera.quaternion.clone(), zoom = current.camera.zoom;
+    const position = current.camera.position.clone();
+    const event = current.surface.send('wheel', { deltaY: 2.5 });
+    assert.ok(event.defaultPrevented, 'browser scrolling must be canceled while deciding');
+    assert.ok(current.camera.position.equals(position));
+    await new Promise((resolve) => setTimeout(resolve, PENDING_WHEEL_MS + 20));
+    assert.ok(!current.camera.position.equals(position) || current.camera.zoom !== zoom);
+    assert.ok(current.camera.quaternion.angleTo(orientation) < 1e-7);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: disposal or a pointer drag cancels delayed wheel input`, async () => {
+    for (const cancel of ['dispose', 'pointer'] as const) {
+      const current = setup(projection, 100, 100);
+      const position = current.camera.position.clone(), zoom = current.camera.zoom;
+      current.surface.send('wheel', { deltaY: 2.5 });
+      if (cancel === 'dispose') current.controls.dispose();
+      else { current.surface.send('pointerdown'); current.surface.send('pointerup'); }
+      await new Promise((resolve) => setTimeout(resolve, PENDING_WHEEL_MS + 20));
+      assert.ok(current.camera.position.equals(position)); assert.equal(current.camera.zoom, zoom);
+      if (cancel !== 'dispose') current.controls.dispose();
+    }
+  });
+
+  test(`${projection}: two-finger slides orbit equally with and without Shift, including horizontal-only input`, () => {
+    const plain = setup(projection, 100, 100), shifted = setup(projection, 100, 100);
+    const orientation = plain.camera.quaternion.clone();
+    for (const fields of [{ deltaX: 25, deltaY: 15 }, { deltaX: -12, deltaY: 0 }]) {
+      plain.surface.send('wheel', fields);
+      shifted.surface.send('wheel', { ...fields, shiftKey: true });
+    }
+    assert.ok(plain.camera.quaternion.angleTo(orientation) > 0.01);
+    assert.ok(plain.camera.quaternion.angleTo(shifted.camera.quaternion) < 1e-7);
+    assert.ok(plain.camera.position.distanceTo(shifted.camera.position) < 1e-7);
+    closeTo(plain.controls.getDistance(), 100);
+    assert.equal(plain.camera.zoom, 1);
+    plain.controls.dispose(); shifted.controls.dispose();
   });
 
   test(`${projection}: Shift-slide orbits, while pinch zoom keeps its cursor anchor`, () => {
@@ -83,7 +141,7 @@ for (const projection of ['perspective', 'orthographic'] as const) {
     const current = setup(projection);
     current.controls.enableRotate = false;
     const anchor = current.pickAt(350, 225);
-    current.surface.send('wheel', { deltaY: 15, shiftKey: true });
+    current.surface.send('wheel', { deltaX: 5, deltaY: 15, shiftKey: true });
     closeTo(current.screenPoint(anchor).y, 210);
     const before = current.camera.position.clone();
     current.surface.send('wheel', { deltaY: -100 });
@@ -100,7 +158,7 @@ for (const projection of ['perspective', 'orthographic'] as const) {
     current.surface.send('pointerup', { button: 2, clientX: 390, clientY: 235 });
     assert.ok(!current.camera.position.equals(afterPinch));
     const afterMouse = current.pickAt(350, 225);
-    current.surface.send('wheel', { deltaY: 10 });
+    current.surface.send('wheel', { deltaX: 2, deltaY: 10 });
     closeTo(current.screenPoint(afterMouse).y, 215);
     current.controls.dispose();
   });
@@ -129,13 +187,13 @@ for (const projection of ['perspective', 'orthographic'] as const) {
     }
   });
 
-  test(`${projection}: disabled controls and a disabled pan do not move on trackpad slides`, () => {
+  test(`${projection}: disabled controls and a disabled 2D pan do not move on trackpad slides`, () => {
     const current = setup(projection);
     const position = current.camera.position.clone();
     current.controls.enabled = false;
-    current.surface.send('wheel', { deltaY: 15 });
-    current.controls.enabled = true; current.controls.enablePan = false;
-    current.surface.send('wheel', { deltaY: 15 });
+    current.surface.send('wheel', { deltaX: 5, deltaY: 15 });
+    current.controls.enabled = true; current.controls.enablePan = false; current.controls.enableRotate = false;
+    current.surface.send('wheel', { deltaX: 5, deltaY: 15 });
     assert.ok(current.camera.position.equals(position));
     current.controls.dispose();
   });

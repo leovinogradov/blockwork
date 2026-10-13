@@ -133,10 +133,11 @@ try {
     const beforeSlide = await pixels();
     selectedIds = ['retained']; context = null;
     check(wheel(25, 15).defaultPrevented, `${projection}: trackpad slide prevents browser scrolling`);
-    check(!same(beforeSlide, await pixels()), `${projection}: trackpad slide pans`);
-    const beforeOrbit = await pixels();
-    check(wheel(20, 15, { shiftKey:true }).defaultPrevented, `${projection}: Shift-slide prevents browser actions`);
-    check(!same(beforeOrbit, await pixels()), `${projection}: Shift-slide orbits`);
+    const plainOrbit = await pixels();
+    check(!same(beforeSlide, plainOrbit), `${projection}: trackpad slide orbits without Shift`);
+    viewport.setView('iso'); await pixels();
+    check(wheel(25, 15, { shiftKey:true }).defaultPrevented, `${projection}: Shift-slide prevents browser actions`);
+    check(same(plainOrbit, await pixels()), `${projection}: Shift and plain two-finger slides produce the same orbit`);
     const beforePinch = await pixels();
     check(wheel(0, -5, { ctrlKey:true }).defaultPrevented, `${projection}: pinch prevents browser zoom`);
     check(!same(beforePinch, await pixels()), `${projection}: pinch zooms`);
@@ -147,6 +148,21 @@ try {
     wheel(10, 15);
     check(!same(beforeNextSlide, await pixels()), `${projection}: trackpad slides still work after the mouse wheel`);
     check(selectedIds.join() === 'retained' && context === null, `${projection}: gestures preserve selection without menus`);
+    viewport.setView('iso'); await pixels();
+    const beforeVertical = await pixels();
+    for (const deltaY of [4.2, 6.7, 9.1]) wheel(0, deltaY);
+    check(!same(beforeVertical, await pixels()), `${projection}: dense varying vertical trackpad input resolves as orbit`);
+    viewport.setView('iso'); await pixels();
+    const beforeWeakWheel = await pixels();
+    wheel(0, 2.5);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check(!same(beforeWeakWheel, await pixels()), `${projection}: ambiguous scroll defaults to zoom within the bounded wait`);
+    viewport.setView('iso'); await pixels();
+    const beforeCanceledWheel = await pixels();
+    wheel(0, 2.5);
+    viewport.fit();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check(same(beforeCanceledWheel, await pixels()), `${projection}: Fit cancels pending wheel input without a later camera move`);
     for (const tool of ['orbit', 'pan', 'zoom']) {
       viewport.setView('iso'); viewport.setNavigationTool(tool);
       const before = await pixels();

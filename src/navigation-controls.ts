@@ -1,5 +1,6 @@
 import { MOUSE, OrthographicCamera, PerspectiveCamera, Vector2, Vector3 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { PENDING_WHEEL_MS, WheelGestureClassifier } from './wheel-gesture';
 
 const ZOOM_SPEED = 0.8;
 export const MIN_ZOOM_STEP_FRACTION = 1 / 100;
@@ -9,28 +10,10 @@ export type NavigationTool = 'select' | 'orbit' | 'pan' | 'zoom';
 
 const wheelPixels = (event: WheelEvent) => event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
 
-/** Infer this event, rather than choosing a device for the entire session.
- * Browsers share wheel events between mice and trackpads. Line/page units and
- * coarse wheel ticks zoom; smooth pixel deltas pan (or orbit with Shift).
- * Optional legacy tick values distinguish small Mac mouse-wheel deltas from
- * trackpad motion. Pixel input without those values uses a conservative size
- * heuristic; a smooth mouse wheel can be indistinguishable from a trackpad.
- */
-export function wheelNavigationAction(event: WheelEvent): 'zoom' | 'pan' | 'orbit' {
-  if (event.ctrlKey || event.metaKey || event.deltaMode !== 0) return 'zoom';
-  const legacy = event as WheelEvent & { wheelDeltaY?: number; wheelDeltaX?: number; wheelDelta?: number };
-  const tick = event.deltaY !== 0 ? legacy.wheelDeltaY ?? legacy.wheelDelta : legacy.wheelDeltaX ?? legacy.wheelDelta;
-  if (typeof tick === 'number' && tick !== 0 && Math.abs(tick) % 120 === 0) return 'zoom';
-  const largestDelta = Math.max(Math.abs(event.deltaX), Math.abs(event.deltaY));
-  const smooth = (typeof tick === 'number' && tick !== 0)
-    || largestDelta < 40
-    || !Number.isInteger(event.deltaX) || !Number.isInteger(event.deltaY)
-    || (event.deltaX !== 0 && event.deltaY !== 0);
-  if (!smooth) return 'zoom';
-  return event.shiftKey ? 'orbit' : 'pan';
-}
-
 export class NavigationControls extends OrbitControls {
+  private readonly wheelClassifier = new WheelGestureClassifier();
+  private pendingWheel: WheelEvent[] = [];
+  private wheelTimer: ReturnType<typeof setTimeout> | null = null;
   private navigationTool: NavigationTool = 'select';
   private drag: { pointerId: number; x: number; y: number; anchorX: number; anchorY: number; panSpeed: number } | null = null;
   // Three's installed OrbitControls implements these helpers but omits them
@@ -39,6 +22,7 @@ export class NavigationControls extends OrbitControls {
   declare protected _rotateLeft: (angle: number) => void;
   declare protected _rotateUp: (angle: number) => void;
   declare protected _handleMouseWheel: (event: { clientX: number; clientY: number; deltaY: number }) => void;
+  declare protected _customWheelEvent: (event: WheelEvent) => { clientX: number; clientY: number; deltaY: number };
   private readonly surface: HTMLElement;
   private readonly pickPoint: PickNavigationPoint;
   private readonly modelScale: () => number;
@@ -79,6 +63,7 @@ export class NavigationControls extends OrbitControls {
   }
 
   private preparePointerDown = (event: PointerEvent) => {
+    this.cancelPendingWheel();
     if (!this.enabled) return;
     if (event.button === 0 && this.navigationTool !== 'select') {
       event.preventDefault(); event.stopImmediatePropagation();
@@ -117,6 +102,7 @@ export class NavigationControls extends OrbitControls {
   }
 
   setNavigationTool(tool: NavigationTool) {
+    this.cancelPendingWheel();
     this.cancelNavigationDrag();
     this.navigationTool = tool;
   }
@@ -170,25 +156,57 @@ export class NavigationControls extends OrbitControls {
     if (this.pointers.size === 0) this.panSpeed = 1;
   };
 
-  private prepareWheel = (event: WheelEvent) => {
-    if (this.drag) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-    const action = wheelNavigationAction(event);
-    if (action !== 'zoom') {
-      if (!this.enabled) return;
-      event.preventDefault(); event.stopImmediatePropagation();
-      if (this.pointers.size > 0) return;
-      const units = wheelPixels(event);
-      const dx = event.deltaX * units, dy = event.deltaY * units;
-      if (dx === 0 && dy === 0) return;
-      this.dispatchEvent({ type: 'start' });
+  cancelPendingWheel() {
+    if (this.wheelTimer !== null) clearTimeout(this.wheelTimer);
+    this.wheelTimer = null;
+    this.pendingWheel = [];
+    this.wheelClassifier.reset();
+  }
+
+  private flushPendingWheel(action: 'zoom' | 'orbit') {
+    if (this.wheelTimer !== null) clearTimeout(this.wheelTimer);
+    this.wheelTimer = null;
+    const pending = this.pendingWheel;
+    this.pendingWheel = [];
+    for (const event of pending) this.applyWheel(event, action);
+  }
+
+  private applyWheel(event: WheelEvent, action: 'zoom' | 'orbit') {
+    if (!this.enabled || this.drag || this.pointers.size > 0) return;
+    this.dispatchEvent({ type: 'start' });
+    if (action === 'orbit') {
       // Wheel deltas describe scrolling, the inverse of a pointer drag.
-      if (action === 'orbit' && this.enableRotate) this.orbitPixels(-dx, -dy);
-      else this.panPixels(-dx, -dy, this.surfacePanSpeed(event.clientX, event.clientY));
-      this.dispatchEvent({ type: 'end' });
+      if (this.enableRotate) this.orbitPixels(-event.deltaX, -event.deltaY);
+      else this.panPixels(-event.deltaX, -event.deltaY, this.surfacePanSpeed(event.clientX, event.clientY));
+    } else if (this.enableZoom) {
+      // Some browsers move Shift-wheel or tilt-wheel motion onto deltaX.
+      const zoomEvent = { clientX: event.clientX, clientY: event.clientY, deltaMode: event.deltaMode,
+        deltaY: event.deltaY || event.deltaX, ctrlKey: event.ctrlKey } as WheelEvent;
+      if (zoomEvent.deltaY !== 0) {
+        this.prepareZoom(zoomEvent);
+        this._handleMouseWheel(this._customWheelEvent(zoomEvent));
+      }
+    }
+    this.dispatchEvent({ type: 'end' });
+  }
+
+  private prepareWheel = (event: WheelEvent) => {
+    if (!this.enabled) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (this.drag || this.pointers.size > 0) return;
+    const decision = this.wheelClassifier.classify(event);
+    if (decision.restartPending) this.flushPendingWheel('zoom');
+    if (decision.action === 'pending') {
+      this.pendingWheel.push(event);
+      if (this.wheelTimer === null) this.wheelTimer = setTimeout(() => {
+        this.flushPendingWheel('zoom');
+        this.wheelClassifier.reset();
+      }, PENDING_WHEEL_MS);
+      if (this.pendingWheel.length >= 16) { this.flushPendingWheel('zoom'); this.wheelClassifier.reset(); }
       return;
     }
-    if (!this.enabled || !this.enableZoom || event.deltaY === 0 || this.pointers.size > 0) return;
-    this.prepareZoom(event);
+    if (decision.resolvePending) this.flushPendingWheel(decision.action);
+    this.applyWheel(event, decision.action);
   };
 
   private prepareZoom(event: WheelEvent) {
@@ -231,6 +249,7 @@ export class NavigationControls extends OrbitControls {
   }
 
   override dispose() {
+    this.cancelPendingWheel();
     this.cancelNavigationDrag();
     this.surface.removeEventListener('pointerdown', this.preparePointerDown);
     this.surface.removeEventListener('pointermove', this.moveNavigationPointer);

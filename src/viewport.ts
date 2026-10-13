@@ -546,6 +546,7 @@ export function createViewport(
   };
 
   const fit = () => {
+    controls?.cancelPendingWheel();
     const target = boundsCenter();
     const radius = boundsRadius();
     const direction = camera.position.clone().sub(controls?.target ?? target);
@@ -927,6 +928,7 @@ export function createViewport(
   };
 
   const onPointerDown = (event: PointerEvent) => {
+    controls?.cancelPendingWheel();
     // Cancel native mouse actions before handling secondary-click navigation.
     if (event.button === 1 || event.button === 2) event.preventDefault();
     if (event.shiftKey && event.button !== 0) pendingMeasurementShift = false;

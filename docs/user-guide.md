@@ -172,12 +172,15 @@ Measurement labels are clipped to the camera view, including in THROUGH mode. La
 | Right-click and drag | Pan | Pan |
 | Shift + middle-drag | Pan | Pan |
 | Scroll wheel | Zoom toward the cursor | Same |
-| Two-finger slide | Pan | Pan |
+| Two-finger slide | Rotate (orbit) | Pan |
 | Shift + two-finger slide | Rotate (orbit) | Pan |
+| Two-finger click, hold, and drag | Pan | Pan |
 | Pinch / spread | Zoom toward the cursor | Same |
 | Escape | Clear selection | Clear selection or return to the Select tool |
 
-Mouse and trackpad navigation work together without a device selector or saved input preference. The app recognizes individual scroll gestures, so you can alternate between devices. Smooth pixel scrolling pans, while discrete wheel ticks zoom. Some smooth mouse wheels or trackpad drivers produce indistinguishable events; the navigation buttons below provide explicit controls in that case. A stationary, unmodified right-click on a 3D box face opens its actions menu. Modified secondary-clicks navigate without opening a face menu. The viewport cancels native context-menu and secondary-click actions when the browser allows it; Firefox reserves Shift + right-click as a browser-menu override. For trackpad orbit, slide two fingers while holding Shift, without pressing the touchpad.
+Mouse and trackpad navigation work together without a device selector or saved input preference. Two-finger slides rotate the 3D model with or without Shift; holding a two-finger click and dragging pans. Pinch and mouse-wheel scrolling zoom. The app uses scroll-event heuristics and favors mouse-wheel zoom when the input is ambiguous. Horizontal movement is a strong trackpad clue unless a clear wheel signal takes precedence. Weak vertical input may wait up to 75 ms for more samples. Devices that emit identical events remain ambiguous; use the navigation buttons for an explicit action. See [Navigation input decisions](navigation-input.md) for the rules and mixed-device tests.
+
+A stationary, unmodified right-click on a 3D box face opens its actions menu. Modified secondary-clicks navigate without opening a face menu. The viewport cancels native context-menu and secondary-click actions when the browser allows it; Firefox reserves Shift + right-click as a browser-menu override. Trackpad orbit uses two-finger sliding without pressing the touchpad.
 
 Choose **Orbit**, **Pan**, or **Zoom** above the viewport to navigate using a one-finger click and drag. Zoom drags upward to move in and downward to move out. Choose **Select** or press **Escape** to return to selection; activating a drawing or measurement tool also returns to regular tool input. Orbit is disabled in 2D sketches. Trackpad slides and pinches remain available while drawing or measuring. Tap and release **Shift** to toggle measurement axis distance; holding Shift while navigating does not change the measurement mode. If your browser does not deliver pinch gestures, use the **Zoom** button.
 
