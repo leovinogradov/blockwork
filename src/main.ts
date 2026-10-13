@@ -99,10 +99,10 @@ root.innerHTML = `
             <button data-view="front" class="view-button" title="Front view (1)">FRONT <kbd>1</kbd></button>
             <button data-view="right" class="view-button" title="Right view (3)">RIGHT <kbd>3</kbd></button>
             <button data-view="top" class="view-button" title="Top view (7)">TOP <kbd>7</kbd></button>
+            <button id="projection" class="tool-button" title="Toggle perspective / orthographic">PERSPECTIVE</button>
           </div>
           <div class="stage-actions">
             <button id="measurement-through-toggle" class="tool-button active" type="button" aria-pressed="true" title="Toggle measurements through objects" aria-label="Show measurements through objects"><i data-lucide="ruler" aria-hidden="true"></i> THROUGH</button>
-            <button id="projection" class="tool-button" title="Toggle perspective / orthographic">PERSPECTIVE</button>
             <button id="grid-toggle" class="tool-button active" title="Toggle grid">▦ <span>GRID</span></button>
             <button id="fit" class="tool-button" title="Fit model (F)">FIT <kbd>F</kbd></button>
           </div>
