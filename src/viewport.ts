@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { NavigationControls } from './navigation-controls';
+import { NavigationControls, type NavigationInput, type NavigationTool } from './navigation-controls';
 import { GRID_LINE_OPACITY, gridAppearanceForCamera } from './grid-scale';
 import { withDepthBias } from './depth-bias';
 import { createFaceHighlight } from './face-highlight';
@@ -33,6 +33,8 @@ export interface Viewport {
   fit(): void;
   setProjection(mode: ProjectionMode): void;
   setGrid(visible: boolean): void;
+  setNavigationInput(input: NavigationInput): void;
+  setNavigationTool(tool: NavigationTool): void;
   dispose(): void;
 }
 
@@ -76,6 +78,9 @@ export function createViewport(
   let projection: ProjectionMode = 'perspective';
   let sketchMode = false;
   let sketchTool: SketchTool = 'select';
+  let navigationInput: NavigationInput = 'mouse';
+  let navigationTool: NavigationTool = 'select';
+  let pendingMeasurementShift = false;
   let sketchFirst: [number, number] | null = null;
   let sketchHover: [number, number] | null = null;
   let lineInputMode: 'cartesian' | 'polar' = 'cartesian';
@@ -288,6 +293,8 @@ export function createViewport(
     }
   };
   const setMeasurementTool = (active: boolean) => {
+    pendingMeasurementShift = false;
+    if (active) setNavigationTool('select');
     measurementTool = active; clearMeasurementDraft(); pointerDown = null;
     if (active) { setSketchTool('select'); onMeasureStage?.('first'); }
     if (renderer) renderer.domElement.style.cursor = active ? 'crosshair' : sketchMode && sketchTool !== 'select' ? 'crosshair' : '';
@@ -339,6 +346,7 @@ export function createViewport(
   };
 
   const setSketchTool = (tool: SketchTool) => {
+    if (tool !== 'select') setNavigationTool('select');
     sketchTool = sketchMode ? tool : 'select';
     pointerDown = null;
     selectionBox.hidden = true;
@@ -488,6 +496,8 @@ export function createViewport(
     controls?.dispose();
     controls = new NavigationControls(camera, renderer.domElement, navigationPointAtPointer, navigationModelScale);
     controls.enableRotate = !sketchMode;
+    controls.inputDevice = navigationInput;
+    controls.setNavigationTool(navigationTool);
     controls.enablePan = true;
     controls.rotateSpeed = 0.686;
     controls.screenSpacePanning = true;
@@ -713,6 +723,7 @@ export function createViewport(
   };
 
   const setMode = (mode: 'model' | 'sketch') => {
+    setNavigationTool('select');
     setMeasurementTool(false);
     sketchMode = mode === 'sketch';
     setSketchTool('select');
@@ -869,10 +880,7 @@ export function createViewport(
     });
   };
 
-  const onMeasurementModifier = (event: KeyboardEvent) => {
-    if (event.key !== 'Shift' || event.repeat || event.ctrlKey || event.metaKey || event.altKey || !measurementTool) return;
-    const target = event.target;
-    if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
+  const toggleMeasurementAxisMode = () => {
     measurementAxisMode = !measurementAxisMode;
     if (measurementFirst && measurementSecond) {
       const start = resolveMeasurementAnchor(measurementFirst, measurementGeometry), end = resolveMeasurementAnchor(measurementSecond, measurementGeometry);
@@ -880,7 +888,35 @@ export function createViewport(
     }
     onMeasureModeChange?.(measurementAxisMode);
   };
+  const onMeasurementModifier = (event: KeyboardEvent) => {
+    if (event.key !== 'Shift' || event.repeat || event.ctrlKey || event.metaKey || event.altKey || !measurementTool) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
+    // With trackpad input, a Shift tap toggles on release so an orbit gesture
+    // doesn't also edit the measurement.
+    if (navigationInput === 'trackpad') pendingMeasurementShift = true;
+    else toggleMeasurementAxisMode();
+  };
+  const onMeasurementModifierUp = (event: KeyboardEvent) => {
+    if (event.key !== 'Shift') return;
+    if (pendingMeasurementShift && measurementTool) toggleMeasurementAxisMode();
+    pendingMeasurementShift = false;
+  };
+  const onNavigationWheel = (event: WheelEvent) => {
+    if (navigationInput === 'trackpad' && event.shiftKey) pendingMeasurementShift = false;
+  };
   const clearMeasurementHover = () => { measurementHover = null; };
+  const onWindowBlur = () => { pendingMeasurementShift = false; controls?.setNavigationTool(navigationTool); clearMeasurementHover(); };
+
+  const setNavigationTool = (tool: NavigationTool) => {
+    navigationTool = sketchMode && tool === 'orbit' ? 'select' : tool;
+    pendingMeasurementShift = false;
+    pointerDown = null;
+    selectionBox.hidden = true;
+    controls?.setNavigationTool(navigationTool);
+    if (renderer) renderer.domElement.style.cursor = navigationTool === 'zoom' ? 'ns-resize'
+      : navigationTool !== 'select' ? 'grab' : measurementTool || sketchMode && sketchTool !== 'select' ? 'crosshair' : '';
+  };
 
   const measurementLabelAtPointer = (event: PointerEvent) => {
     updateMeasurements();
@@ -893,6 +929,7 @@ export function createViewport(
   };
 
   const onPointerDown = (event: PointerEvent) => {
+    if (navigationTool !== 'select') { renderer?.domElement.focus({ preventScroll: true }); return; }
     if (measurementTool && event.button === 0) {
       event.preventDefault(); event.stopImmediatePropagation(); renderer?.domElement.focus({ preventScroll: true });
       renderer?.domElement.setPointerCapture(event.pointerId);
@@ -915,6 +952,7 @@ export function createViewport(
     };
   };
   const onPointerMove = (event: PointerEvent) => {
+    if (navigationTool !== 'select') return;
     if (measurementTool) {
       if (measurementSecond) updatePlacementCursor(event);
       else measurementHover = measurementAtPointer(event);
@@ -946,6 +984,7 @@ export function createViewport(
     }
   };
   const onPointerUp = (event: PointerEvent) => {
+    if (navigationTool !== 'select') return;
     const down = pointerDown;
     if (measurementTool && event.button === 0) {
       event.preventDefault(); event.stopImmediatePropagation(); pointerDown = null;
@@ -1048,6 +1087,7 @@ export function createViewport(
     event.preventDefault();
   };
   const onSketchKeyDown = (event: KeyboardEvent) => {
+    if (navigationTool !== 'select') return;
     if (event.key === 'Escape' && (!sketchMode || sketchTool === 'select')) {
       if (pointerDown && renderer?.domElement.hasPointerCapture(pointerDown.pointerId)) renderer.domElement.releasePointerCapture(pointerDown.pointerId);
       pointerDown = null; selectionBox.hidden = true;
@@ -1113,8 +1153,10 @@ export function createViewport(
     renderer.domElement.addEventListener('pointercancel', onPointerCancel, true);
     renderer.domElement.addEventListener('keydown', onSketchKeyDown);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
+    renderer.domElement.addEventListener('wheel', onNavigationWheel, { capture: true, passive: true });
     window.addEventListener('keydown', onMeasurementModifier);
-    window.addEventListener('blur', clearMeasurementHover);
+    window.addEventListener('keyup', onMeasurementModifierUp);
+    window.addEventListener('blur', onWindowBlur);
     render();
   }
 
@@ -1133,6 +1175,8 @@ export function createViewport(
     setView,
     fit,
     setProjection,
+    setNavigationInput: (input) => { navigationInput = input; pendingMeasurementShift = false; if (controls) controls.inputDevice = input; },
+    setNavigationTool,
     setGrid: (visible) => {
       grid.visible = visible;
     },
@@ -1149,8 +1193,10 @@ export function createViewport(
         renderer.domElement.removeEventListener('pointercancel', onPointerCancel, true);
         renderer.domElement.removeEventListener('keydown', onSketchKeyDown);
         renderer.domElement.removeEventListener('contextmenu', onContextMenu);
+        renderer.domElement.removeEventListener('wheel', onNavigationWheel, true);
         window.removeEventListener('keydown', onMeasurementModifier);
-        window.removeEventListener('blur', clearMeasurementHover);
+        window.removeEventListener('keyup', onMeasurementModifierUp);
+        window.removeEventListener('blur', onWindowBlur);
       }
       controls?.dispose();
       angleGuide.geometry.dispose();

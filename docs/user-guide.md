@@ -168,13 +168,18 @@ Measurement labels are clipped to the camera view, including in THROUGH mode. La
 | Left-click and drag | Select items overlapping the dragged area | Same |
 | Shift + left-drag | Add the dragged area to the current selection | Same |
 | Shift + left-click | Add or remove an item | Same |
-| Middle-click and drag / two-finger touchpad drag configured as middle click | Rotate (orbit) | Pan |
+| Middle-click and drag | Rotate (orbit) | Pan |
 | Right-click and drag | Pan | Pan |
 | Shift + middle-drag | Pan | Pan |
-| Scroll wheel | Zoom toward the cursor | Same |
+| Scroll wheel (Mouse input) | Zoom toward the cursor | Same |
+| Two-finger slide (Trackpad input) | Pan | Pan |
+| Shift + two-finger slide (Trackpad input) | Rotate (orbit) | Pan |
+| Pinch / spread | Zoom toward the cursor | Same |
 | Escape | Clear selection | Clear selection or return to the Select tool |
 
-For two-finger touchpad rotation in 3D, configure the gesture to send the middle mouse button. A two-finger secondary click that sends the right mouse button pans. A stationary right-click on a 3D box face opens its actions menu.
+Choose **Input → Trackpad** above the viewport to use trackpad gestures without changing your system settings. The app remembers this input preference across files and reloads. **Mouse** retains wheel-to-zoom. The input preference is independent of the active editing tool. A stationary right-click on a 3D box face opens its actions menu.
+
+Choose **Orbit**, **Pan**, or **Zoom** above the viewport to navigate using a one-finger click and drag. Zoom drags upward to move in and downward to move out. Choose **Select** or press **Escape** to return to selection; activating a drawing or measurement tool also returns to regular tool input. Orbit is disabled in 2D sketches. Trackpad slides and pinches remain available while drawing or measuring. With trackpad input, tap and release **Shift** to toggle measurement axis distance; holding Shift while sliding orbits without changing the measurement mode. If your browser does not deliver pinch gestures, use the **Zoom** button.
 
 Area selection works in either drag direction and excludes hidden items. In 3D it selects boxes, cylinders and mounted sketches; in 2D it selects rectangles, circles and lines. Selected components are highlighted in the viewport and tree. The shared selection inspector shows mixed or common colors and applies a palette or custom color to every selected component. You can also group, duplicate, or delete the selection together. Source drafts disable these edits until you run the code.
 

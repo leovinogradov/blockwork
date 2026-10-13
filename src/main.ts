@@ -10,6 +10,7 @@ import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, createCylinderFromFace, cylinderAxes, cylinderAxisOrder, cylinderSize, reorientCylinder, formatInches, generateSource, getFaceFrame, parseInches, removeVariable, reparentBox, resolveModel, validateBoxes, type BoxSpec, type CylinderAxis, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
 import { createViewport, type SketchTool } from './viewport';
+import type { NavigationInput, NavigationTool } from './navigation-controls';
 import { updateSketchSelection, type SelectionAction } from './sketch-selection';
 import { createBlankDocument, createDocument, resolveSnapshot, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
 import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
@@ -107,7 +108,16 @@ root.innerHTML = `
             <button id="fit" class="tool-button" title="Fit model (F)">FIT <kbd>F</kbd></button>
           </div>
         </div>
-        <div class="navigation-help"><span>LEFT DRAG</span> multi-select <i>·</i> <span>SHIFT</span> add <i>·</i> <span title="Two-finger touchpad drag rotates when configured to send the middle mouse button; secondary clicks pan.">MIDDLE / TWO-FINGER DRAG</span> rotate <i>·</i> <span>RIGHT DRAG / SHIFT + MIDDLE</span> pan <i>·</i> wheel zoom</div><div id="viewport" class="viewport" tabindex="0" aria-label="3D model viewport"></div>
+        <div class="navigation-toolbar">
+          <label class="navigation-input-label" for="navigation-input">INPUT <select id="navigation-input"><option value="mouse">Mouse</option><option value="trackpad">Trackpad</option></select></label>
+          <div class="navigation-tools" role="group" aria-label="Navigation tools">
+            <button class="tool-button active" data-navigation-tool="select" type="button" aria-pressed="true" title="Select or use drawing tools">SELECT</button>
+            <button class="tool-button" data-navigation-tool="orbit" type="button" aria-pressed="false" title="Click and drag to orbit · Escape to return to Select">ORBIT</button>
+            <button class="tool-button" data-navigation-tool="pan" type="button" aria-pressed="false" title="Click and drag to pan · Escape to return to Select">PAN</button>
+            <button class="tool-button" data-navigation-tool="zoom" type="button" aria-pressed="false" title="Click and drag up to zoom in, down to zoom out · Escape to return to Select">ZOOM</button>
+          </div>
+        </div>
+        <div class="navigation-help"></div><div id="viewport" class="viewport" tabindex="0" aria-label="3D model viewport"></div>
         <div class="stage-footer"><span class="status-indicator"></span><span id="status-text">Ready</span><span class="footer-spacer"></span><span>INCHES</span><span class="footer-separator">/</span><span>SNAP 1/64</span><span class="footer-separator">/</span><span id="selection-status">NO SELECTION</span></div>
       </section>
       <div class="panel-resizer inspector-resizer" data-resize-panel="inspector" role="separator" tabindex="0" aria-label="Resize inspector" aria-orientation="vertical" aria-controls="inspector-panel" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div>
@@ -233,6 +243,10 @@ let toastTimer = 0;
 let viewMode: 'iso' | 'front' | 'right' | 'top' = 'iso';
 let projectionMode: 'perspective' | 'orthographic' = 'perspective';
 let gridVisible = true;
+const NAVIGATION_INPUT_KEY = 'blockwork-navigation-input';
+let navigationInput: NavigationInput = 'mouse';
+try { if (localStorage.getItem(NAVIGATION_INPUT_KEY) === 'trackpad') navigationInput = 'trackpad'; } catch { /* Use mouse controls when storage is unavailable. */ }
+let navigationTool: NavigationTool = 'select';
 let hiddenBoxIds = new Set<string>();
 let relativeOpenBoxId: string | null = null;
 let relativeOpen = true;
@@ -281,6 +295,7 @@ const viewport = createViewport(
   (axisMode) => { measurementAxisMode = axisMode; renderSketchToolUI(); },
   (ids, action) => selectModelItems(ids, action),
 );
+viewport.setNavigationInput(navigationInput);
 
 function closeFaceColorPicker() { faceColorPicker?.hide(); }
 function openFaceColorPicker(trigger: HTMLElement) {
@@ -370,21 +385,35 @@ function selectComponents(ids: string[], action: SelectionAction) {
 function renderSketchToolUI() {
   for (const tool of ['select', 'rectangle', 'line', 'circle'] as const) {
     const button = $(`#${tool}-sketch-tool`);
-    button.classList.toggle('active', !measuring && sketchTool === tool);
-    button.setAttribute('aria-pressed', String(!measuring && sketchTool === tool));
+    button.classList.toggle('active', !measuring && navigationTool === 'select' && sketchTool === tool);
+    button.setAttribute('aria-pressed', String(!measuring && navigationTool === 'select' && sketchTool === tool));
   }
   $('#measurement-axis-tool').classList.toggle('hidden', !measuring || documentKind === 'sketch');
   root.querySelectorAll('[data-measure-tool]').forEach((button) => {
     button.classList.toggle('active', measuring);
     button.setAttribute('aria-pressed', String(measuring));
   });
-  $('.navigation-help').innerHTML = measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>SHIFT</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'
-    ? sketchTool !== 'select' ? sketchTool === 'circle' ? '<span>CLICK</span> center <i>·</i> <span>MOVE</span> radius <i>·</i> <span>CLICK</span> draw <i>·</i> <span>TAB</span> exact radius <i>·</i> <span>ESC</span> select' : sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>SHIFT + CLICK</span> multi-select <i>·</i> <span>DRAG</span> select <i>·</i> <span>MIDDLE / RIGHT DRAG</span> pan <i>·</i> wheel zoom'
-    : '<span>LEFT DRAG</span> multi-select <i>·</i> <span>SHIFT</span> add <i>·</i> <span title="Two-finger touchpad drag rotates when configured to send the middle mouse button; secondary clicks pan.">MIDDLE / TWO-FINGER DRAG</span> rotate <i>·</i> <span>RIGHT DRAG / SHIFT + MIDDLE</span> pan <i>·</i> wheel zoom';
+  ($('#navigation-input') as HTMLSelectElement).value = navigationInput;
+  root.querySelectorAll<HTMLButtonElement>('[data-navigation-tool]').forEach((button) => {
+    const active = button.dataset.navigationTool === navigationTool;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+    button.disabled = documentKind === 'sketch' && button.dataset.navigationTool === 'orbit';
+  });
+  const navigationHint = navigationInput === 'trackpad'
+    ? `<span>TWO-FINGER SLIDE</span> pan ${documentKind === 'model' ? '<i>·</i> <span>SHIFT + SLIDE</span> orbit ' : ''}<i>·</i> <span>PINCH</span> zoom`
+    : `${documentKind === 'model' ? '<span>MIDDLE DRAG</span> orbit <i>·</i> ' : ''}<span>${documentKind === 'model' ? 'RIGHT DRAG / SHIFT + MIDDLE' : 'MIDDLE / RIGHT DRAG'}</span> pan <i>·</i> wheel zoom`;
+  const toolHint = navigationTool !== 'select'
+    ? `<span>${navigationTool.toUpperCase()}</span> <i>·</i> <span>CLICK + DRAG${navigationTool === 'zoom' ? ' UP / DOWN' : ''}</span> ${navigationTool === 'zoom' ? 'zoom in / out' : navigationTool} <i>·</i> <span>ESC</span> select`
+    : measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>${navigationInput === 'trackpad' ? 'TAP SHIFT' : 'SHIFT'}</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'
+    ? sketchTool !== 'select' ? sketchTool === 'circle' ? '<span>CLICK</span> center <i>·</i> <span>MOVE</span> radius <i>·</i> <span>CLICK</span> draw <i>·</i> <span>TAB</span> exact radius <i>·</i> <span>ESC</span> select' : sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>SHIFT + CLICK</span> multi-select <i>·</i> <span>DRAG</span> select'
+    : '<span>LEFT DRAG</span> multi-select <i>·</i> <span>SHIFT</span> add';
+  $('.navigation-help').innerHTML = `${toolHint} <i>·</i> ${navigationHint}`;
 }
 function activateSketchTool(tool: SketchTool) {
   if (documentKind !== 'sketch' || (tool !== 'select' && draftDirty)) return;
   activateMeasurementTool(false);
+  navigationTool = 'select'; viewport.setNavigationTool('select');
   sketchTool = tool;
   viewport.setSketchTool(tool);
   renderSketchToolUI();
@@ -392,6 +421,7 @@ function activateSketchTool(tool: SketchTool) {
 function activateMeasurementTool(active: boolean) {
   if (active && draftDirty) return;
   measuring = active;
+  if (active) { navigationTool = 'select'; viewport.setNavigationTool('select'); }
   if (active) sketchTool = 'select';
   viewport.setMeasurementTool(active);
   viewport.setMeasurementAxis(measurementAxis);
@@ -1229,6 +1259,7 @@ function renderDocumentTabs() {
   if (focused) Array.from(host.querySelectorAll<HTMLButtonElement>(closing ? '.document-close' : '.document-select')).find((button) => button.dataset.documentId === focused)?.focus();
 }
 function loadDocument(document: ModelDocument) {
+  navigationTool = 'select';
   exportMenu.close();
   // A worker from the previous tab must never apply its result to this tab.
   runEpoch++;
@@ -1933,6 +1964,21 @@ editor.addEventListener('input', () => { if (measuring) activateMeasurementTool(
 editor.addEventListener('scroll', () => { $('#line-numbers').scrollTop = editor.scrollTop; });
 root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.addEventListener('click', () => { if (documentKind === 'sketch') return; viewMode = button.dataset.view as typeof viewMode; viewport.setView(viewMode); root.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('active', b === button)); scheduleSave(); }));
 $('#fit').addEventListener('click', () => viewport.fit());
+$('#navigation-input').addEventListener('change', (event) => {
+  navigationInput = (event.currentTarget as HTMLSelectElement).value === 'trackpad' ? 'trackpad' : 'mouse';
+  viewport.setNavigationInput(navigationInput);
+  try { localStorage.setItem(NAVIGATION_INPUT_KEY, navigationInput); } catch { /* Keep the current session usable without storage. */ }
+  renderSketchToolUI();
+});
+root.querySelectorAll<HTMLButtonElement>('[data-navigation-tool]').forEach((button) => button.addEventListener('click', () => {
+  const tool = button.dataset.navigationTool as NavigationTool;
+  if (tool === 'orbit' && documentKind === 'sketch') return;
+  if (measuring) activateMeasurementTool(false);
+  if (documentKind === 'sketch' && sketchTool !== 'select') activateSketchTool('select');
+  navigationTool = tool;
+  viewport.setNavigationTool(tool);
+  renderSketchToolUI();
+}));
 $('#projection').addEventListener('click', () => { if (documentKind === 'sketch') return; projectionMode = projectionMode === 'perspective' ? 'orthographic' : 'perspective'; viewport.setProjection(projectionMode); $('#projection').textContent = projectionMode === 'perspective' ? 'PERSPECTIVE' : 'ORTHOGRAPHIC'; scheduleSave(); });
 $('#grid-toggle').addEventListener('click', () => { gridVisible = !gridVisible; viewport.setGrid(gridVisible); $('#grid-toggle').classList.toggle('active', gridVisible); scheduleSave(); });
 document.addEventListener('keydown', (event) => {
@@ -1944,6 +1990,7 @@ document.addEventListener('keydown', (event) => {
   else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); captureDocument(); void saveDocument(activeDocument()); }
   else if (!openDocumentIds.length) return;
   else if (!editing && event.key === 'F2') { event.preventDefault(); renameTab(activeDocumentId); }
+  else if (navigationTool !== 'select' && event.key === 'Escape' && !editing) { event.preventDefault(); navigationTool = 'select'; viewport.setNavigationTool('select'); renderSketchToolUI(); }
   else if (measuring && event.key === 'Escape' && !editing) { event.preventDefault(); activateMeasurementTool(false); }
   else if (!editing && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'm') { event.preventDefault(); activateMeasurementTool(!measuring); }
   else if (event.key === 'Escape' && !editing) { event.preventDefault(); if (documentKind === 'sketch' && sketchTool !== 'select') activateSketchTool('select'); else if (documentKind === 'sketch') selectSketchShapes([], 'replace'); else selectModelItems([], 'replace'); }

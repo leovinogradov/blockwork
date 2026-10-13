@@ -12,12 +12,99 @@ class Surface extends EventTarget {
   getBoundingClientRect() { return { left: 50, top: 25, width: 600, height: 400 }; }
   setPointerCapture() {}
   releasePointerCapture() {}
+  hasPointerCapture() { return false; }
   send(type: string, fields: Record<string, number | string | boolean> = {}) {
     this.dispatchEvent(Object.assign(new Event(type, { cancelable: true }), {
       pointerId: 1, pointerType: 'mouse', button: 2, clientX: 350, clientY: 225,
-      deltaMode: 0, deltaY: 0, ...fields,
+      deltaMode: 0, deltaX: 0, deltaY: 0, ...fields,
     }));
   }
+}
+
+for (const projection of ['perspective', 'orthographic'] as const) {
+  test(`${projection}: trackpad slides pan at picked depth, including horizontal-only input`, () => {
+    const current = setup(projection);
+    current.controls.inputDevice = 'trackpad';
+    const anchor = current.pickAt(470, 140);
+    const orientation = current.camera.quaternion.clone();
+    current.surface.send('wheel', { clientX: 470, clientY: 140, deltaX: 25, deltaY: 15 });
+    let projected = current.screenPoint(anchor);
+    closeTo(projected.x, 445); closeTo(projected.y, 125);
+    current.surface.send('wheel', { clientX: 445, clientY: 125, deltaX: -12 });
+    projected = current.screenPoint(anchor);
+    closeTo(projected.x, 457); closeTo(projected.y, 125);
+    assert.ok(current.camera.quaternion.angleTo(orientation) < 1e-7);
+    assert.equal(current.camera.zoom, 1);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: Shift-slide orbits, while pinch zoom keeps its cursor anchor`, () => {
+    const current = setup(projection, 100, 100);
+    current.controls.inputDevice = 'trackpad';
+    const orientation = current.camera.quaternion.clone();
+    const distance = current.controls.getDistance();
+    current.surface.send('wheel', { deltaX: 25, deltaY: 15, shiftKey: true });
+    assert.ok(current.camera.quaternion.angleTo(orientation) > 0.01);
+    closeTo(current.controls.getDistance(), distance);
+    const anchor = current.pickAt(470, 140);
+    const pinchOrientation = current.camera.quaternion.clone();
+    current.surface.send('wheel', { clientX: 470, clientY: 140, deltaY: -5, ctrlKey: true, shiftKey: true });
+    const projected = current.screenPoint(anchor);
+    closeTo(projected.x, 470); closeTo(projected.y, 140);
+    assert.ok(current.camera.quaternion.angleTo(pinchOrientation) < 1e-7);
+    assert.ok(current.controls.getDistance() < distance || current.camera.zoom > 1);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: sketches pan on Shift-slide and the input can switch back to wheel zoom`, () => {
+    const current = setup(projection);
+    current.controls.inputDevice = 'trackpad';
+    current.controls.enableRotate = false;
+    const anchor = current.pickAt(350, 225);
+    current.surface.send('wheel', { deltaY: 15, shiftKey: true });
+    closeTo(current.screenPoint(anchor).y, 210);
+    const before = current.camera.position.clone();
+    current.controls.inputDevice = 'mouse';
+    current.surface.send('wheel', { deltaY: -100 });
+    assert.ok(!current.camera.position.equals(before) || current.camera.zoom > 1);
+    current.controls.dispose();
+  });
+
+  test(`${projection}: navigation buttons use one-finger drag and stop after release or cancellation`, () => {
+    for (const tool of ['orbit', 'pan', 'zoom'] as const) {
+      const current = setup(projection, 100, 100);
+      current.controls.setNavigationTool(tool);
+      const position = current.camera.position.clone(), zoom = current.camera.zoom;
+      current.surface.send('pointerdown', { button: 0 });
+      current.surface.send('pointermove', { button: 0, clientX: 380, clientY: 245 });
+      assert.ok(!current.camera.position.equals(position) || current.camera.zoom !== zoom, `${tool} must move the view`);
+      current.surface.send('pointerup', { button: 0, clientX: 380, clientY: 245 });
+      const stopped = current.camera.position.clone(), stoppedZoom = current.camera.zoom;
+      current.surface.send('pointermove', { button: 0, clientX: 450, clientY: 260 });
+      assert.ok(current.camera.position.equals(stopped)); assert.equal(current.camera.zoom, stoppedZoom);
+      current.surface.send('pointerdown', { button: 0 });
+      current.surface.send('pointercancel', { button: 0 });
+      current.surface.send('pointermove', { button: 0, clientX: 450, clientY: 260 });
+      assert.ok(current.camera.position.equals(stopped)); assert.equal(current.camera.zoom, stoppedZoom);
+      current.surface.send('pointerdown', { button: 0 });
+      current.controls.setNavigationTool('select');
+      current.surface.send('pointermove', { button: 0, clientX: 450, clientY: 260 });
+      assert.ok(current.camera.position.equals(stopped)); assert.equal(current.camera.zoom, stoppedZoom);
+      current.controls.dispose();
+    }
+  });
+
+  test(`${projection}: disabled controls and a disabled pan do not move on trackpad slides`, () => {
+    const current = setup(projection);
+    current.controls.inputDevice = 'trackpad';
+    const position = current.camera.position.clone();
+    current.controls.enabled = false;
+    current.surface.send('wheel', { deltaY: 15 });
+    current.controls.enabled = true; current.controls.enablePan = false;
+    current.surface.send('wheel', { deltaY: 15 });
+    assert.ok(current.camera.position.equals(position));
+    current.controls.dispose();
+  });
 }
 
 function setup(projection: 'perspective' | 'orthographic', distance = 100, targetDistance = 0.5, zoom = 1, modelScale = 0) {

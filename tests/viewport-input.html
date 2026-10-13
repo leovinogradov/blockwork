@@ -16,10 +16,10 @@ import { createViewport } from '/src/viewport.ts';
 
 const host = document.querySelector('#viewport');
 const errors = [];
-let checks = 0, selected = null, context = null, selectedIds = [];
+let checks = 0, selected = null, context = null, selectedIds = [], axisChanges = 0;
 function check(condition, message) { checks++; if (!condition) errors.push(message); }
 const viewport = createViewport(host, (id) => { selected = id; selectedIds = id ? [id] : []; }, (hit) => { context = hit; },
-  undefined, undefined, undefined, undefined, undefined, undefined, (ids, action) => {
+  undefined, undefined, undefined, undefined, undefined, () => { axisChanges++; }, (ids, action) => {
     selectedIds = action === 'add' ? [...new Set([...selectedIds, ...ids])] : action === 'toggle'
       ? [...new Set([...selectedIds.filter((id) => !ids.includes(id)), ...ids.filter((id) => !selectedIds.includes(id))])] : ids;
     selected = selectedIds.length === 1 ? selectedIds[0] : null;
@@ -44,6 +44,12 @@ function pointer(type, button = 0, dx = 0, dy = 0, shiftKey = false) {
   const buttons = type === 'pointerup' ? 0 : [1,4,2][button];
   canvas.dispatchEvent(new PointerEvent(type, { bubbles:true, pointerType:'mouse', pointerId:1,
     button, buttons, shiftKey, clientX:bounds.left + bounds.width / 2 + dx, clientY:bounds.top + bounds.height / 2 + dy }));
+}
+function wheel(deltaX, deltaY, modifiers = {}) {
+  const bounds = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new WheelEvent('wheel', { bubbles:true, cancelable:true,
+    clientX:bounds.left + bounds.width / 2, clientY:bounds.top + bounds.height / 2,
+    deltaX, deltaY, ...modifiers }));
 }
 try {
   for (const projection of ['perspective', 'orthographic']) {
@@ -109,10 +115,58 @@ try {
     pointer('pointerdown', 0, -290, -190); pointer('pointermove', 0, 290, 190); pointer('pointercancel');
     check(selectedIds.length === 0 && host.querySelector('.sketch-selection-box').hidden, `${projection}: cancelling a drag hides the marquee without selecting`);
   }
+  viewport.setNavigationInput('trackpad');
+  for (const projection of ['perspective', 'orthographic']) {
+    viewport.setProjection(projection); viewport.setView('iso');
+    const beforeSlide = await pixels();
+    selectedIds = ['retained']; context = null;
+    wheel(25, 15);
+    check(!same(beforeSlide, await pixels()), `${projection}: trackpad slide pans`);
+    const beforeOrbit = await pixels();
+    wheel(20, 15, { shiftKey:true });
+    check(!same(beforeOrbit, await pixels()), `${projection}: Shift-slide orbits`);
+    const beforePinch = await pixels();
+    wheel(0, -5, { ctrlKey:true });
+    check(!same(beforePinch, await pixels()), `${projection}: pinch zooms`);
+    check(selectedIds.join() === 'retained' && context === null, `${projection}: gestures preserve selection without menus`);
+    for (const tool of ['orbit', 'pan', 'zoom']) {
+      viewport.setView('iso'); viewport.setNavigationTool(tool);
+      const before = await pixels();
+      pointer('pointerdown'); pointer('pointermove', 0, 35, 25); pointer('pointerup', 0, 35, 25);
+      const after = await pixels();
+      check(!same(before, after), `${projection}/${tool}: left drag navigates`);
+      check(selectedIds.join() === 'retained' && host.querySelector('.sketch-selection-box').hidden, `${projection}/${tool}: left drag doesn't select`);
+      pointer('pointermove', 0, 80, 60);
+      check(same(after, await pixels()), `${projection}/${tool}: navigation stops on release`);
+    }
+    viewport.setNavigationTool('select');
+    viewport.setView('iso');
+    const beforeSelect = await pixels();
+    pointer('pointerdown'); pointer('pointermove', 0, 35, 25);
+    check(same(beforeSelect, await pixels()), `${projection}: Select restores camera-still marquee input`);
+    pointer('pointerup', 0, 35, 25);
+  }
+  viewport.setMeasurementTool(true);
+  canvas.dispatchEvent(new KeyboardEvent('keydown', { bubbles:true, key:'Shift', shiftKey:true }));
+  wheel(25, 15, { shiftKey:true });
+  canvas.dispatchEvent(new KeyboardEvent('keyup', { bubbles:true, key:'Shift' }));
+  check(axisChanges === 0, 'measurement: Shift-orbit does not toggle axis mode');
+  canvas.dispatchEvent(new KeyboardEvent('keydown', { bubbles:true, key:'Shift', shiftKey:true }));
+  canvas.dispatchEvent(new KeyboardEvent('keyup', { bubbles:true, key:'Shift' }));
+  check(axisChanges === 1, 'measurement: a Shift tap still toggles axis mode');
+  viewport.setMeasurementTool(false);
   viewport.setMode('sketch');
   viewport.setRectangles([{ id:'shape', name:'Rectangle', size:[12,8], position:[0,0], color:'#86a9a3' }]);
   await pixels(); pointer('pointerdown'); pointer('pointerup');
   check(selected === 'shape', 'sketch: left click still selects');
+  const beforeSketchPan = await pixels();
+  wheel(20, 15, { shiftKey:true });
+  check(!same(beforeSketchPan, await pixels()), 'sketch: Shift-slide pans without enabling rotation');
+  viewport.setNavigationTool('pan');
+  const beforeSketchTool = await pixels();
+  pointer('pointerdown'); pointer('pointermove', 0, 30, 20); pointer('pointerup', 0, 30, 20);
+  check(!same(beforeSketchTool, await pixels()), 'sketch: Pan uses left drag');
+  viewport.setNavigationTool('select');
   viewport.setMode('model'); viewport.setBoxes([{ id:'box', name:'Box', size:[12,8,4], position:[0,0,0], color:'#86a9a3' }]);
   viewport.setView('iso');
   await pixels(); pointer('pointerdown'); pointer('pointerup');
