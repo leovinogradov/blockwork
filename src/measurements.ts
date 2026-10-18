@@ -1,7 +1,7 @@
 import { pointOnPlane, worldPosition, type GroupSpec, type Vector3 } from './groups';
 import { cylinderAxes, type BoxSpec } from './model';
 import { modelSketchFrame, type ModelSketch } from './model-sketch';
-import type { SketchShape } from './sketch';
+import { sketchShapeOrigin, type SketchShape } from './sketch';
 
 /** Coordinates are fractions of the referenced geometry, never frozen world points. */
 export type MeasurementAnchor = { objectId: string; shapeId?: string; coordinates: number[] };
@@ -34,7 +34,7 @@ export function resolveMeasurementAnchor(anchor: MeasurementAnchor, geometry: Me
   if (!item) return null;
   const c = anchor.coordinates;
   if ('shapes' in item) return pointOnPlane(modelSketchFrame(item, geometry.groups), [item.size[0] * c[0], item.size[1] * c[1]]);
-  const position = worldPosition(item.position, geometry.groups ?? [], item.groupId);
+  const position = worldPosition(item.size.length === 2 ? sketchShapeOrigin(item as SketchShape) : item.position, geometry.groups ?? [], item.groupId);
   const local = item.size.length === 2 && 'kind' in item && item.kind === 'line'
     ? [position[0] + item.size[0] * c[0], position[1] + item.size[1] * c[0], 0] as Vector3
     : position.map((p, i) => p + (item.size[i] ?? 0) * (c[i] ?? 0)) as Vector3;

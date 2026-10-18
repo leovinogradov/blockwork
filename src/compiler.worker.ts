@@ -45,11 +45,11 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       rejectOwnershipFields(spec);
       const result = { ...spec, id: spec.id ?? `group-${nextGroupId++}`, name: spec.name ?? `Group ${groups.length + 1}` };
       if (items !== undefined) {
-        if (!Array.isArray(items)) throw new Error('group(properties, items) expects an array of box, cylinder, sketch, rectangle, circle, line, measurement, or group results.');
+        if (!Array.isArray(items)) throw new Error('group(properties, items) expects an array of box, cylinder, sketch, rectangle, circle, line, text, measurement, or group results.');
         const seen = new Set<object>();
         const children = Array.from(items, (item: unknown) => {
-          if (!item || typeof item !== 'object' || !members.has(item)) throw new Error('Group items must be results returned by box(), cylinder(), sketch(), rectangle(), circle(), line(), measurement(), or group().');
-          if (event.data.kind !== 'sketch' && members.get(item) === 'shape') throw new Error('Model rectangles, circles and lines must be inside sketch(properties, items).');
+          if (!item || typeof item !== 'object' || !members.has(item)) throw new Error('Group items must be results returned by box(), cylinder(), sketch(), rectangle(), circle(), line(), text(), measurement(), or group().');
+          if (event.data.kind !== 'sketch' && members.get(item) === 'shape') throw new Error('Model rectangles, circles, lines and text must be inside sketch(properties, items).');
           if (seen.has(item)) throw new Error('An item cannot appear twice in a group.');
           seen.add(item);
           const child = item as Record<string, unknown>;
@@ -104,9 +104,17 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       members.set(result, 'shape');
       return result;
     };
+    const text = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('text(...) expects an object.');
+      const spec = raw as Record<string, unknown>;
+      const result = { ...rectangle({ ...spec, id: spec.id ?? `text-${nextShapeId++}`, name: spec.name ?? `Text ${rectangles.length + 1}`, size: spec.size ?? [2.5, 1] }), kind: 'text', text: spec.text, ...(spec.height !== undefined ? { textHeight: spec.height } : {}) };
+      rectangles[rectangles.length - 1] = result;
+      members.set(result, 'shape');
+      return result;
+    };
     if (event.data.kind === 'sketch') {
-      const evaluate = new Function('rectangle', 'line', 'circle', 'inch', 'group', 'measurement', `"use strict";\n${event.data.source}`);
-      evaluate(rectangle, line, circle, parseInches, group, measurement);
+      const evaluate = new Function('rectangle', 'line', 'circle', 'inch', 'group', 'measurement', 'text', `"use strict";\n${event.data.source}`);
+      evaluate(rectangle, line, circle, parseInches, group, measurement, text);
       const validGroups = validateGroups(groups, true);
       const shapes = validateSketchShapes(rectangles, validGroups);
       workerScope.postMessage({ rectangles: shapes, groups: validGroups, measurements: validateMeasurements(measurements, { rectangles: shapes, groups: validGroups }) });
@@ -118,11 +126,11 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
       if (sketches.length >= 2000) throw new Error('At most 2000 sketches are allowed.');
       const spec = raw as Record<string, unknown>;
       rejectOwnershipFields(spec);
-      if (Object.hasOwn(spec, 'shapes') || Object.hasOwn(spec, 'items')) throw new Error('Use sketch(properties, items) to define rectangles, circles and lines.');
-      if (!Array.isArray(items)) throw new Error('Sketch items must be an array of rectangle(), circle() or line() results.');
+      if (Object.hasOwn(spec, 'shapes') || Object.hasOwn(spec, 'items')) throw new Error('Use sketch(properties, items) to define rectangles, circles, lines and text.');
+      if (!Array.isArray(items)) throw new Error('Sketch items must be an array of rectangle(), circle(), line() or text() results.');
       const seen = new Set<object>();
       const shapes = Array.from(items, (item: unknown) => {
-        if (!item || typeof item !== 'object' || members.get(item) !== 'shape') throw new Error('Sketch items must be results returned by rectangle(), circle() or line().');
+        if (!item || typeof item !== 'object' || members.get(item) !== 'shape') throw new Error('Sketch items must be results returned by rectangle(), circle(), line() or text().');
         if (seen.has(item) || claimedShapes.has(item)) throw new Error('A shape cannot appear twice or belong to two sketches.');
         seen.add(item);
         return item;
@@ -201,9 +209,9 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
     // Only defer variable references; ordinary inch() calls retain legacy numeric behavior.
     const inch = (value: string | number) => typeof value === "string" && /\bvar\s*\(/.test(value) ? value : parseInches(value);
     // Code runs in a disposable worker. The main thread enforces a hard timeout.
-    const evaluate = new Function("box", "variable", "inch", "group", "sketch", "rectangle", "line", "circle", "cylinder", "measurement", "part", `"use strict";\n${event.data.source}`);
-    evaluate(box, variable, inch, group, sketch, rectangle, line, circle, cylinder, measurement, part);
-    if (rectangles.some((shape) => !claimedShapes.has(shape as object))) throw new Error("Model rectangles, circles and lines must be inside sketch(properties, items).");
+    const evaluate = new Function("box", "variable", "inch", "group", "sketch", "rectangle", "line", "circle", "cylinder", "measurement", "part", "text", `"use strict";\n${event.data.source}`);
+    evaluate(box, variable, inch, group, sketch, rectangle, line, circle, cylinder, measurement, part, text);
+    if (rectangles.some((shape) => !claimedShapes.has(shape as object))) throw new Error("Model rectangles, circles, lines and text must be inside sketch(properties, items).");
     const response: CompileResponse = resolveModel(boxes, variables, groups, sketches, measurements);
     workerScope.postMessage(response);
   } catch (error) {

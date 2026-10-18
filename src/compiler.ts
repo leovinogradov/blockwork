@@ -2,6 +2,7 @@ import { validateGroups, type GroupSpec } from './groups';
 import { resolveModel, type ModelSpec } from "./model";
 import { validateSketchShapes, type SketchShape } from './sketch';
 import type { DocumentKind } from './documents';
+import { sketchTextSize } from './sketch-text';
 
 import { validateMeasurements, type Measurement } from './measurements';
 
@@ -38,7 +39,7 @@ export function compileModel(source: string, kind: DocumentKind = 'model'): Prom
       } else if (kind === 'sketch' && Array.isArray(result?.rectangles)) {
         try {
           const groups = validateGroups(result.groups ?? [], true);
-          const rectangles = validateSketchShapes(result.rectangles, groups);
+          const rectangles = validateSketchShapes(result.rectangles, groups).map(layoutText);
           const measurements = validateMeasurements(result.measurements, { rectangles, groups });
           finish(() => resolve({ rectangles, groups, measurements }));
         }
@@ -46,6 +47,7 @@ export function compileModel(source: string, kind: DocumentKind = 'model'): Prom
       } else if (Array.isArray(result?.boxes) && Array.isArray(result?.variables)) {
         try {
           const model = resolveModel(result.boxes, result.variables, result.groups ?? [], result.sketches ?? [], result.measurements ?? []);
+          model.sketches = model.sketches?.map((sketch) => ({ ...sketch, shapes: sketch.shapes.map(layoutText) }));
           finish(() => resolve(model));
         } catch (error) {
           finish(() => reject(error instanceof Error ? error : new Error(String(error))));
@@ -58,4 +60,8 @@ export function compileModel(source: string, kind: DocumentKind = 'model'): Prom
     worker.onmessageerror = () => finish(() => reject(new Error("Could not read the compiler result.")));
     worker.postMessage({ source, kind });
   });
+}
+
+function layoutText(shape: SketchShape): SketchShape {
+  return shape.kind === 'text' && shape.textHeight !== undefined ? { ...shape, size: sketchTextSize(shape.text!, shape.textHeight) } : shape;
 }

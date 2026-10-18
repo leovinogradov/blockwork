@@ -1,6 +1,6 @@
 import './style.css';
 import Picker from 'vanilla-picker';
-import { Box, Circle, Cylinder, createIcons, Eye, EyeOff, FolderOpen, Group, MousePointer2, RectangleHorizontal, Ruler, Slash, Square } from 'lucide';
+import { Box, Circle, Cylinder, createIcons, Eye, EyeOff, FolderOpen, Group, MousePointer2, RectangleHorizontal, Ruler, Slash, Square, Type } from 'lucide';
 import { groupDescendants, groupOffset, reparentPosition, validateGroups, worldPosition, type GroupSpec, type Vector3 } from './groups';
 import { normalizeTreeOrder, planTreeMove, treeChildren, type TreeDrop } from './component-tree';
 import { duplicateGroupBranch, effectiveHiddenIds } from './group-actions';
@@ -10,9 +10,10 @@ import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, createCylinderFromFace, cylinderAxes, cylinderAxisOrder, cylinderSize, reorientCylinder, formatInches, generateSource, getFaceFrame, parseInches, removeVariable, reparentBox, resolveModel, validateBoxes, type BoxSpec, type CylinderAxis, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
 import { createViewport, type SketchTool } from './viewport';
+import { sketchTextLetterHeight, sketchTextSize, sketchTextTopLeft } from './sketch-text';
 import { updateSketchSelection, type SelectionAction } from './sketch-selection';
 import { createBlankDocument, createDocument, resolveSnapshot, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
-import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, validateSketchShapes, type SketchShape } from './sketch';
+import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, trimSketchText, validateSketchShapes, type SketchShape } from './sketch';
 import { sketchReference, sketchReferenceOrigin, type ModelSketch, type SketchAxis } from './model-sketch';
 import { findSketchEditor, linkSketchEditor, openSketchEditor, resolveLinkedSketches, synchronizeSketchReferences } from './sketch-editor';
 import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementAxis, type MeasurementAxisChoice } from './measurements';
@@ -70,6 +71,7 @@ root.innerHTML = `
             <button id="rectangle-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw rectangle (R)"><i data-lucide="rectangle-horizontal" aria-hidden="true"></i><span>Rectangle</span><kbd>R</kbd></button>
             <button id="line-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw line (L)"><i data-lucide="slash" aria-hidden="true"></i><span>Line</span><kbd>L</kbd></button>
             <button id="circle-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Draw circle (C)"><i data-lucide="circle" aria-hidden="true"></i><span>Circle</span><kbd>C</kbd></button>
+            <button id="text-sketch-tool" class="sketch-tool-button" type="button" aria-pressed="false" title="Add text (T)"><i data-lucide="type" aria-hidden="true"></i><span>Text</span><kbd>T</kbd></button>
             <button data-measure-tool class="sketch-tool-button" type="button" aria-pressed="false" title="Measure between corners, edges or centers (M)"><i data-lucide="ruler" aria-hidden="true"></i><span>Measurement</span><kbd>M</kbd></button>
           </div>
         </section>
@@ -79,9 +81,11 @@ root.innerHTML = `
             <button id="add-group" class="add-variable" title="Create group" aria-label="Create group"><i data-lucide="group" aria-hidden="true"></i></button>
             <button id="add-variable" class="add-variable" title="Add variable" aria-label="Add variable">ƒ</button>
             <button id="add-model-sketch" class="add-variable" title="Add sketch" aria-label="Add sketch"><i data-lucide="square" aria-hidden="true"></i></button>
-            <button id="add-cylinder" class="add-variable" title="Add cylinder" aria-label="Add cylinder"><i data-lucide="cylinder" aria-hidden="true"></i></button>
             <button data-measure-tool class="add-variable" type="button" aria-pressed="false" title="Measure between corners, edges or centers (M)" aria-label="Measurement"><i data-lucide="ruler" aria-hidden="true"></i></button>
-            <button id="add-box" class="add-button" title="Add box" aria-label="Add box">＋</button>
+          </div>
+          <div class="solid-tool-actions" role="group" aria-label="Add solid components">
+            <button id="add-box" class="solid-tool-button" type="button" title="Add box" aria-label="Add box"><svg viewBox="0 0 26 25" width="26" height="25" fill="none" aria-hidden="true" focusable="false"><g transform="translate(5.5 5) scale(.6666667)" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></g><g><rect x="1" y="1" width="10" height="10" rx="1" fill="var(--panel)"/><path d="M5.5 2.5h1v3H9.5v1H6.5v3h-1v-3H2.5v-1h3Z" fill="currentColor" shape-rendering="crispEdges"/></g></svg></button>
+            <button id="add-cylinder" class="solid-tool-button" type="button" title="Add cylinder" aria-label="Add cylinder"><svg viewBox="0 0 26 25" width="26" height="25" fill="none" aria-hidden="true" focusable="false"><g transform="translate(5.5 5) scale(.6666667)" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/></g><g><rect x="1" y="1" width="10" height="10" rx="1" fill="var(--panel)"/><path d="M5.5 2.5h1v3H9.5v1H6.5v3h-1v-3H2.5v-1h3Z" fill="currentColor" shape-rendering="crispEdges"/></g></svg></button>
           </div>
         </section>
         <section id="measurement-axis-tool" class="measurement-axis-tool hidden"><label class="field-label" for="new-measurement-axis">LABEL FACING AXIS</label><select id="new-measurement-axis" class="text-field" aria-label="New measurement facing axis"><option value="auto">Auto · from view</option><option value="x">X</option><option value="y">Y</option><option value="z">Z · Up</option></select></section>
@@ -137,7 +141,7 @@ root.innerHTML = `
         <section class="document-create-group" aria-label="File type">
           <div class="document-kind-options">
             <button type="submit" value="model" class="document-kind-option"><strong><i data-lucide="box" aria-hidden="true"></i><span id="document-model-label">New 3D model</span></strong><span>Build with boxes and cylinders in three dimensions.</span></button>
-            <button type="submit" value="sketch" class="document-kind-option"><strong><i data-lucide="square" aria-hidden="true"></i><span id="document-sketch-label">New 2D sketch</span></strong><span>Draw lines, rectangles and circles on a flat plane.</span></button>
+            <button type="submit" value="sketch" class="document-kind-option"><strong><i data-lucide="square" aria-hidden="true"></i><span id="document-sketch-label">New 2D sketch</span></strong><span>Draw lines, rectangles, circles and text on a flat plane.</span></button>
           </div>
         </section>
         <div class="dialog-actions"><button type="submit" value="cancel" class="button button-quiet">Cancel</button></div>
@@ -177,7 +181,7 @@ root.innerHTML = `
     <div id="group-member-menu" class="face-menu" role="menu" aria-label="Group member actions" hidden><div class="face-menu-caption" id="group-member-menu-caption"></div><div class="face-menu-actions"><button id="remove-group-member" class="face-menu-action" role="menuitem" type="button">Remove from group</button></div><div class="face-menu-reason">Removes this item from all groups and keeps it in place.</div></div>
   </main>`;
 
-const lucideIcons = { Box, Circle, Cylinder, FolderOpen, Group, Square, Eye, EyeOff, MousePointer2, RectangleHorizontal, Ruler, Slash };
+const lucideIcons = { Box, Circle, Cylinder, FolderOpen, Group, Square, Eye, EyeOff, MousePointer2, RectangleHorizontal, Ruler, Slash, Type };
 function renderIcons(scope: HTMLElement) { createIcons({ icons: lucideIcons, root: scope }); }
 renderIcons(root);
 
@@ -246,6 +250,16 @@ const viewport = createViewport(
   (first, opposite, tool) => {
     if (documentKind !== 'sketch' || draftDirty) return;
     try {
+      if (tool === 'text') {
+        const shape: SketchShape = { kind: 'text', text: 'Text', textHeight: 1, id: crypto.randomUUID(), name: `Text ${rectangles.length + 1}`, position: first, size: sketchTextSize('Text', 1), color: SKETCH_DEFAULT_COLOR };
+        const targetGroup = selectedGroup();
+        if (targetGroup) { shape.position = reparentPosition(shape.position, groups, undefined, targetGroup.id).slice(0, 2) as [number, number]; shape.groupId = targetGroup.id; }
+        commitRectangles([...rectangles, shape], 'Type in the drawing · click outside or Ctrl/Cmd+Enter to finish · Escape to cancel', { preserveView: true });
+        activateSketchTool('select');
+        selectSketchShapes([shape.id], 'replace');
+        viewport.editSketchText(shape.id, true);
+        return;
+      }
       const name = `${tool === 'circle' ? 'Circle' : tool === 'line' ? 'Line' : 'Rectangle'} ${rectangles.length + 1}`;
       const id = crypto.randomUUID();
       const rectangle = tool === 'circle'
@@ -259,7 +273,7 @@ const viewport = createViewport(
   },
   (stage) => {
     if (documentKind !== 'sketch' || draftDirty) return;
-    if (stage === 'first') setStatus(sketchTool === 'circle' ? 'Circle tool · click the center' : sketchTool === 'line' ? 'Line tool · click the start point' : 'Rectangle tool · click the first corner');
+    if (stage === 'first') setStatus(sketchTool === 'text' ? 'Text tool · click to place and type in the drawing' : sketchTool === 'circle' ? 'Circle tool · click the center' : sketchTool === 'line' ? 'Line tool · click the start point' : 'Rectangle tool · click the first corner');
     else if (stage === 'opposite') setStatus(sketchTool === 'circle' ? 'Move to set radius · click to draw, or Tab for an exact radius · Enter to draw' : sketchTool === 'line' ? 'Click end point · Tab: length, angle, ΔX, ΔY · Enter to draw' : 'Click the opposite corner, or press Tab for width, then height');
     else { sketchTool = 'select'; renderSketchToolUI(); setStatus('Select shapes · Shift-click to add · drag to select'); }
   },
@@ -282,6 +296,22 @@ const viewport = createViewport(
   },
   (axisMode) => { measurementAxisMode = axisMode; renderSketchToolUI(); },
   (ids, action) => selectModelItems(ids, action),
+  (id, text) => {
+    if (documentKind !== 'sketch' || draftDirty) return;
+    const shape = rectangles.find((shape) => shape.id === id);
+    if (!shape) return;
+    const content = trimSketchText(text);
+    if (!content.trim()) { commitRectangles(rectangles.filter((shape) => shape.id !== id), 'Empty text removed', { preserveView: true }); return; }
+    updateSketchText(shape, content);
+  },
+  (id, position) => {
+    if (documentKind !== 'sketch' || draftDirty) return;
+    const shape = rectangles.find((shape) => shape.id === id && shape.kind !== 'line');
+    if (!shape) return;
+    const local = reparentPosition(position, groups, undefined, shape.groupId).slice(0, 2) as [number, number];
+    const label = shape.kind === 'text' ? 'Text' : shape.kind === 'circle' ? 'Circle' : 'Rectangle';
+    commitRectangles(rectangles.map((shape) => shape.id === id ? { ...shape, position: local } : shape), `${label} moved`, { preserveView: true });
+  },
 );
 
 function closeFaceColorPicker() { faceColorPicker?.hide(); }
@@ -322,6 +352,7 @@ function notify(message: string, isError = false) {
 function updateLineNumbers() { $('#line-numbers').textContent = Array.from({ length: Math.max(1, editor.value.split('\n').length) }, (_, i) => String(i + 1)).join('\n'); }
 function setEditor(source: string, dirty = false) { editor.value = source; draftDirty = dirty; updateLineNumbers(); syncDraftUI(); }
 function syncDraftUI() {
+  viewport.setTextEditingEnabled(!draftDirty);
   renderDocumentTabs();
   syncExportUI();
   $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : `Edit the code, then run it to update the ${documentKind === 'sketch' ? 'sketch' : 'model'}.`;
@@ -330,7 +361,7 @@ function syncDraftUI() {
   $('#add-group').toggleAttribute('disabled', draftDirty);
   $('#add-sketch-group').toggleAttribute('disabled', draftDirty);
   $('#add-model-sketch').toggleAttribute('disabled', draftDirty);
-  $('#rectangle-sketch-tool').toggleAttribute('disabled', draftDirty); $('#line-sketch-tool').toggleAttribute('disabled', draftDirty); $('#circle-sketch-tool').toggleAttribute('disabled', draftDirty); $('#add-cylinder').toggleAttribute('disabled', draftDirty);
+  $('#rectangle-sketch-tool').toggleAttribute('disabled', draftDirty); $('#line-sketch-tool').toggleAttribute('disabled', draftDirty); $('#circle-sketch-tool').toggleAttribute('disabled', draftDirty); $('#text-sketch-tool').toggleAttribute('disabled', draftDirty); $('#add-cylinder').toggleAttribute('disabled', draftDirty);
   $('#add-variable').toggleAttribute('disabled', draftDirty || documentKind === 'sketch');
   root.querySelectorAll('[data-measure-tool]').forEach((button) => button.toggleAttribute('disabled', draftDirty));
   $('#delete-box').toggleAttribute('disabled', draftDirty || !(selectedComponentIds.size || selectedBox() || selectedModelSketch() || selectedRectangle() || selectedMeasurement() || selectedVariable || selectedGroup()));
@@ -369,7 +400,7 @@ function selectComponents(ids: string[], action: SelectionAction) {
   renderAll();
 }
 function renderSketchToolUI() {
-  for (const tool of ['select', 'rectangle', 'line', 'circle'] as const) {
+  for (const tool of ['select', 'rectangle', 'line', 'circle', 'text'] as const) {
     const button = $(`#${tool}-sketch-tool`);
     button.classList.toggle('active', !measuring && sketchTool === tool);
     button.setAttribute('aria-pressed', String(!measuring && sketchTool === tool));
@@ -381,7 +412,7 @@ function renderSketchToolUI() {
   });
   const navigationHint = `${documentKind === 'model' ? '<span>MIDDLE DRAG / TWO-FINGER SLIDE</span> orbit <i>·</i> ' : '<span>TWO-FINGER SLIDE</span> pan <i>·</i> '}<span>RIGHT DRAG / TWO-FINGER CLICK + DRAG</span> pan <i>·</i> <span>WHEEL / PINCH</span> zoom`;
   const toolHint = measuring ? `<span>MEASUREMENT</span> <i>·</i> <span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>CLICK</span> label offset <i>·</i> <span>ESC</span> finish <i>·</i> <span>TAP SHIFT</span> toggle <span class="measurement-mode-status${measurementAxisMode ? ' active' : ''}" role="status" aria-live="polite">AXIS DISTANCE: ${measurementAxisMode ? 'ON' : 'OFF'}</span>` : documentKind === 'sketch'
-    ? sketchTool !== 'select' ? sketchTool === 'circle' ? '<span>CLICK</span> center <i>·</i> <span>MOVE</span> radius <i>·</i> <span>CLICK</span> draw <i>·</i> <span>TAB</span> exact radius <i>·</i> <span>ESC</span> select' : sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>DRAG</span> select'
+    ? sketchTool !== 'select' ? sketchTool === 'text' ? '<span>CLICK</span> place text <i>·</i> <span>ESC</span> select' : sketchTool === 'circle' ? '<span>CLICK</span> center <i>·</i> <span>MOVE</span> radius <i>·</i> <span>CLICK</span> draw <i>·</i> <span>TAB</span> exact radius <i>·</i> <span>ESC</span> select' : sketchTool === 'line' ? '<span>CLICK</span> start <i>·</i> <span>CLICK</span> end <i>·</i> <span>ESC</span> select' : '<span>CLICK</span> first corner <i>·</i> <span>CLICK</span> opposite corner <i>·</i> <span>ESC</span> select' : '<span>DRAG</span> select'
     : '<span>LEFT DRAG</span> multi-select';
   $('.navigation-help').innerHTML = `${toolHint} <i>·</i> ${navigationHint}`;
 }
@@ -692,7 +723,7 @@ function renderList() {
   const itemRow = (item: BoxSpec | SketchShape | ModelSketch, depth: number) => {
     const hidden = hiddenIds.has(item.id), sketch = documentKind === 'sketch', mounted = 'shapes' in item;
     const partMember = groups.find((g) => g.id === item.groupId)?.kind === 'part';
-    const symbol = 'kind' in item && item.kind === 'circle' ? 'row-circle' : 'kind' in item && item.kind === 'cylinder' ? 'row-cylinder' : sketch ? (item as SketchShape).kind === 'line' ? 'row-line' : 'row-square' : mounted ? 'row-sketch' : 'row-cube';
+    const symbol = 'kind' in item && item.kind === 'text' ? 'row-text' : 'kind' in item && item.kind === 'circle' ? 'row-circle' : 'kind' in item && item.kind === 'cylinder' ? 'row-cylinder' : sketch ? (item as SketchShape).kind === 'line' ? 'row-line' : 'row-square' : mounted ? 'row-sketch' : 'row-cube';
     const size = 'kind' in item && item.kind === 'circle' ? `R ${formatInches(item.size[0] / 2)} in` : 'kind' in item && item.kind === 'cylinder' ? `R ${formatInches(item.size[cylinderAxes(item).radialAxes[0]] / 2)} × ${formatInches(item.size[cylinderAxes(item).lengthAxis])}` : sketch && (item as SketchShape).kind === 'line' ? `${formatInches(Math.hypot(...item.size))} in` : item.size.map(formatInches).join(' × ') + (mounted ? ` · ${item.axis.toUpperCase()}` : '');
     return `<div class="component-row box-row ${groups.find((g) => g.id === item.groupId)?.kind === 'part' ? 'part-subcomponent-row' : ''} ${selectedComponentIds.has(item.id) ? 'selected' : ''} ${hidden ? 'hidden-object' : ''}" style="--tree-depth:${depth}" ${dragAttributes(item.id)}><button type="button" class="component-select" data-id="${escapeAttr(item.id)}" aria-label="Select ${escapeAttr(shortItemName(item))}">${partMember ? `<i class="subcomponent-icon" data-lucide="${'kind' in item && item.kind === 'cylinder' ? 'cylinder' : mounted ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${symbol}" style="--cube:${escapeAttr(item.color)}"></span>`}<span class="row-name" title="${escapeAttr(shortItemName(item))}">${escapeHTML(shortItemName(item))}</span><span class="row-size">${size}</span></button>${partMember ? '' : visibilityButton(item.id, shortItemName(item), item.groupId)}</div>`;
   };
@@ -1008,7 +1039,7 @@ function renderSelectionInspector(host: HTMLElement, shapes: (SketchShape | BoxS
   const partIds = new Set(shapes.map((shape) => groups.find((g) => g.id === shape.groupId && g.kind === 'part')?.id).filter((id): id is string => !!id));
   const allPartSubcomponents = documentKind === 'model' && shapes.every((shape) => partIds.has(shape.groupId ?? ''));
   host.innerHTML = `<div class="object-heading"><div><div class="object-name">${shapes.length} components selected</div><div class="object-id">${documentKind === 'sketch' ? '2D SKETCH' : '3D MODEL'} SELECTION</div></div></div>
-    <div class="section-label"><span>SELECTED COMPONENTS</span></div><ul class="sketch-selected-components">${shapes.map((shape) => `<li>${partIds.has(shape.groupId ?? '') ? `<i class="subcomponent-icon" data-lucide="${'kind' in shape && shape.kind === 'cylinder' ? 'cylinder' : 'shapes' in shape ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${'kind' in shape && shape.kind === 'circle' ? 'row-circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'row-cylinder' : 'kind' in shape && shape.kind === 'line' ? 'row-line' : shape.size.length === 3 ? 'row-cube' : 'row-square'}" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true"></span>`}<span class="selection-component-name">${escapeHTML(itemName(shape))}</span><small>${'kind' in shape && shape.kind === 'circle' ? 'Circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'Cylinder' : 'kind' in shape && shape.kind === 'line' ? 'Line' : shape.size.length === 3 ? 'Box' : documentKind === 'sketch' ? 'Rectangle' : 'Sketch'}</small></li>`).join('')}</ul>
+    <div class="section-label"><span>SELECTED COMPONENTS</span></div><ul class="sketch-selected-components">${shapes.map((shape) => `<li>${partIds.has(shape.groupId ?? '') ? `<i class="subcomponent-icon" data-lucide="${'kind' in shape && shape.kind === 'cylinder' ? 'cylinder' : 'shapes' in shape ? 'square' : 'box'}" aria-hidden="true"></i>` : `<span class="${'kind' in shape && shape.kind === 'text' ? 'row-text' : 'kind' in shape && shape.kind === 'circle' ? 'row-circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'row-cylinder' : 'kind' in shape && shape.kind === 'line' ? 'row-line' : shape.size.length === 3 ? 'row-cube' : 'row-square'}" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true"></span>`}<span class="selection-component-name">${escapeHTML(itemName(shape))}</span><small>${'kind' in shape && shape.kind === 'text' ? 'Text' : 'kind' in shape && shape.kind === 'circle' ? 'Circle' : 'kind' in shape && shape.kind === 'cylinder' ? 'Cylinder' : 'kind' in shape && shape.kind === 'line' ? 'Line' : shape.size.length === 3 ? 'Box' : documentKind === 'sketch' ? 'Rectangle' : 'Sketch'}</small></li>`).join('')}</ul>
     <div class="section-label color-label"><span>${documentKind === 'sketch' ? 'STROKE' : 'FACE'} COLOR</span><span>${commonColor ? 'ALL SELECTED' : 'MIXED COLORS'}</span></div>
     <div class="color-row"><div class="swatch-grid">${SKETCH_COLOR_OPTIONS.map((color) => `<button class="swatch ${color === commonColor ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" aria-pressed="${color === commonColor}" ${disabled}></button>`).join('')}</div><input id="selection-color" type="color" aria-label="Color for all selected components" value="${escapeAttr(commonColor && /^#[0-9a-f]{6}$/i.test(commonColor) ? commonColor : SKETCH_DEFAULT_COLOR)}" ${disabled}/></div>
     <div class="inspector-tip">Color changes apply to all ${shapes.length} selected components. Shift-click a component to add or remove it.</div>${documentKind === 'model' ? `<button id="selection-make-part" class="button part-add-box" ${disabled}>Combine into a Part</button><div class="inspector-tip">Describe one manufactured piece with these subcomponents.</div>` : ''}`;
@@ -1096,6 +1127,7 @@ function renderSketchInspector() {
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !shapes.length);
   if (shapes.length > 1) { renderSelectionInspector(host, shapes); return; }
   if (!rectangle) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">▭</div><div>Select a sketch shape</div><small>Choose a shape from the tree or sketch to edit it.</small></div><div class="source-warning">GUI edits regenerate the sketch source. Undo can restore earlier source.</div>'; return; }
+  if (rectangle.kind === 'text') { renderTextInspector(host, rectangle); return; }
   if (rectangle.kind === 'line') { renderLineInspector(host, rectangle); return; }
   if (rectangle.kind === 'circle') { renderCircleInspector(host, rectangle); return; }
   host.innerHTML = `<div class="object-heading"><span class="object-swatch" style="--cube:${escapeAttr(rectangle.color)}"></span><div><div class="object-name">${escapeHTML(rectangle.name)}</div><div class="object-id">${rectangle.kind === 'line' ? 'LINE' : 'RECTANGLE'} · ${escapeHTML(rectangle.id.slice(0, 8).toUpperCase())}</div></div></div>
@@ -1111,6 +1143,39 @@ function renderSketchInspector() {
   });
   host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => updateRectangle(rectangle.id, { color: button.dataset.color! })));
   host.querySelector<HTMLInputElement>('#rectangle-color')?.addEventListener('input', (event) => updateRectangle(rectangle.id, { color: (event.currentTarget as HTMLInputElement).value }));
+}
+function renderTextInspector(host: HTMLElement, shape: SketchShape) {
+  const disabled = draftDirty ? 'disabled' : '';
+  const letterHeight = sketchTextLetterHeight(shape), topLeft = sketchTextTopLeft(shape);
+  const field = (label: string, key: string, value: number) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input aria-label="Text ${label}" data-text-field="${key}" value="${formatInches(value)}" inputmode="decimal" ${disabled}/><small>in</small></span></label>`;
+  host.innerHTML = `<div class="object-heading"><span class="row-text" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true">T</span><div><div class="object-name">${escapeHTML(shape.name)}</div><div class="object-id">TEXT · ${escapeHTML(shape.id.slice(0, 8).toUpperCase())}</div></div></div>
+    <label class="field-label" for="sketch-text-name">NAME</label><input id="sketch-text-name" class="text-field" value="${escapeAttr(shape.name)}" ${disabled}/>
+    <label class="field-label" for="sketch-text-content">TEXT</label><textarea id="sketch-text-content" class="text-field sketch-text-content" rows="4" maxlength="4000" ${disabled}>${escapeHTML(shape.text!)}</textarea>
+    <button id="edit-text-in-view" class="button" ${disabled}>Edit in drawing</button>
+    <div class="section-label"><span>LETTER SIZE</span><span>INCHES</span></div><div class="sketch-fields">${field('Height', 'height', letterHeight)}</div>
+    <div class="section-label position-label"><span>POSITION <em>TOP LEFT${shape.groupId ? ' IN GROUP' : ''}</em></span><span>INCHES</span></div><div class="sketch-fields">${field('X', 'x', topLeft[0])}${field('Y', 'y', topLeft[1])}</div>
+    <div class="section-label color-label"><span>TEXT COLOR</span></div><div class="color-row"><div class="swatch-grid">${SKETCH_COLOR_OPTIONS.map((color) => `<button class="swatch ${color === shape.color ? 'chosen' : ''}" data-color="${color}" style="--cube:${color}" aria-label="Color ${color}" ${disabled}></button>`).join('')}</div><input id="sketch-text-color" type="color" aria-label="Text color" value="${escapeAttr(/^#[0-9a-f]{6}$/i.test(shape.color) ? shape.color : SKETCH_DEFAULT_COLOR)}" ${disabled}/></div>
+    <div class="inspector-tip">Height measures a capital H. Letters keep their size as you type; bounds grow from the top left. Double-click text to edit; drag its top-left circle to move. Trailing empty lines are ignored.</div>`;
+  host.querySelector<HTMLButtonElement>('#edit-text-in-view')!.addEventListener('click', () => viewport.editSketchText(shape.id));
+  host.querySelector<HTMLInputElement>('#sketch-text-name')!.addEventListener('change', (event) => updateRectangle(shape.id, { name: (event.currentTarget as HTMLInputElement).value.trim() || shape.name }));
+  const content = host.querySelector<HTMLTextAreaElement>('#sketch-text-content')!;
+  content.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); event.stopPropagation(); content.blur(); } });
+  content.addEventListener('change', () => {
+    try { updateSketchText(shape, content.value); }
+    catch (error) { content.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid text', true); }
+  });
+  host.querySelectorAll<HTMLInputElement>('[data-text-field]').forEach((input) => {
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } });
+    input.addEventListener('change', () => {
+      try {
+        const value = parseInches(input.value);
+        if (input.dataset.textField === 'height') updateSketchText(shape, shape.text!, value);
+        else { const position: [number, number] = [...topLeft]; position[input.dataset.textField === 'x' ? 0 : 1] = value; updateRectangle(shape.id, { position, textHeight: parseInches(letterHeight), size: sketchTextSize(shape.text!, parseInches(letterHeight)) }); }
+      } catch (error) { input.classList.add('invalid'); notify(error instanceof Error ? error.message : 'Invalid text dimension', true); }
+    });
+  });
+  host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => updateRectangle(shape.id, { color: button.dataset.color! })));
+  host.querySelector<HTMLInputElement>('#sketch-text-color')!.addEventListener('input', (event) => updateRectangle(shape.id, { color: (event.currentTarget as HTMLInputElement).value }));
 }
 function renderCircleInspector(host: HTMLElement, circle: SketchShape) {
   const disabled = draftDirty ? 'disabled' : '';
@@ -1267,7 +1332,7 @@ function loadDocument(document: ModelDocument) {
   $('#fit').setAttribute('title', documentKind === 'sketch' ? 'Fit sketch (F)' : 'Fit model (F)');
   renderSketchToolUI();
   $('#add-box').setAttribute('title', documentKind === 'sketch' ? 'Add rectangle' : 'Add box');
-  $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Draw a line, rectangle or circle, or run sketch code.' : 'Add a box or cylinder, or run some model code.';
+  $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Draw a line, rectangle, circle or text, or run sketch code.' : 'Add a box or cylinder, or run some model code.';
   $('.tree-footer').querySelector('span:last-child')!.textContent = 'Drag to reorder or add to a group.';
   $('#reset-code').textContent = documentKind === 'sketch' ? 'Reset sketch' : 'Reset example';
   $('#source-editor').setAttribute('aria-label', documentKind === 'sketch' ? 'JavaScript sketch source' : 'JavaScript model source');
@@ -1478,6 +1543,10 @@ function commitRectangles(next: SketchShape[], message: string, options?: { pres
   viewport.setMeasurements(measurements);
   const source = generateSketchSource(rectangles, groups, treeOrder, measurements); setEditor(source); appliedSource = source;
   recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
+}
+function updateSketchText(shape: SketchShape, text: string, height = parseInches(sketchTextLetterHeight(shape))) {
+  const content = trimSketchText(text);
+  updateRectangle(shape.id, { text: content, textHeight: height, size: sketchTextSize(content, height), position: sketchTextTopLeft(shape) });
 }
 function updateRectangle(id: string, patch: Partial<SketchShape>) {
   if (draftDirty) return notify('Run or discard the source draft before editing rectangles.', true);
@@ -1735,6 +1804,7 @@ $('#select-sketch-tool').addEventListener('click', () => activateSketchTool('sel
 $('#rectangle-sketch-tool').addEventListener('click', () => activateSketchTool('rectangle'));
 $('#line-sketch-tool').addEventListener('click', () => activateSketchTool('line'));
 $('#circle-sketch-tool').addEventListener('click', () => activateSketchTool('circle'));
+$('#text-sketch-tool').addEventListener('click', () => activateSketchTool('text'));
 $('#add-cylinder').addEventListener('click', () => openCylinderDialog());
 $('#cylinder-dialog').addEventListener('close', () => { cylinderFacePlacement = null; });
 $('#cylinder-cancel').addEventListener('click', () => ($('#cylinder-dialog') as HTMLDialogElement).close());
@@ -1951,6 +2021,7 @@ document.addEventListener('keydown', (event) => {
   else if (!editing && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'm') { event.preventDefault(); activateMeasurementTool(!measuring); }
   else if (event.key === 'Escape' && !editing) { event.preventDefault(); if (documentKind === 'sketch' && sketchTool !== 'select') activateSketchTool('select'); else if (documentKind === 'sketch') selectSketchShapes([], 'replace'); else selectModelItems([], 'replace'); }
   else if (documentKind === 'sketch' && !editing && event.key.toLowerCase() === 'c') { event.preventDefault(); activateSketchTool('circle'); }
+  else if (documentKind === 'sketch' && !editing && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 't') { event.preventDefault(); activateSketchTool('text'); }
   else if (documentKind === 'sketch' && !editing && event.key.toLowerCase() === 'l') { event.preventDefault(); activateSketchTool('line'); }
   else if (documentKind === 'sketch' && !editing && event.key.toLowerCase() === 'r') { event.preventDefault(); activateSketchTool('rectangle'); }
   else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void runSource(); }

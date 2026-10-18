@@ -4,12 +4,16 @@ import { serializeMeasurement, validateMeasurements, type Measurement } from './
 
 export type SketchShape = {
   /** Missing kind is a rectangle for compatibility with saved sketches. */
-  kind?: 'line' | 'circle';
+  kind?: 'line' | 'circle' | 'text';
+  /** Editable content for rasterized text shapes. Size is the full text block in inches. */
+  text?: string;
+  /** Letter (capital H) height in inches. Text with this field is anchored at its top left. */
+  textHeight?: number;
   id: string;
   name: string;
-  /** Rectangle width/height, circle diameter on both axes, or signed line displacement. */
+  /** Rectangle/text block width/height, circle diameter, or signed line displacement. */
   size: [number, number];
-  /** Bounding minimum corner for rectangles/circles, or line start on the X/Y plane. */
+  /** Minimum corner, line start, or top-left text anchor when textHeight is present. */
   position: [number, number];
   color: string;
   groupId?: string;
@@ -19,6 +23,22 @@ export type SketchShape = {
 export type RectangleSpec = Omit<SketchShape, 'kind'>;
 
 export type SketchSnap = { point: [number, number]; kind: 'corner' | 'endpoint' | 'center' | 'edge' | null };
+
+export function trimSketchText(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/(?:\n[^\S\n]*)+$/, '');
+}
+
+/** Geometry uses minimum corners; new text stores its top-left anchor instead. */
+export function sketchShapeOrigin(shape: SketchShape): [number, number] {
+  return [shape.position[0], shape.position[1] - (shape.kind === 'text' && shape.textHeight !== undefined ? shape.size[1] : 0)];
+}
+
+/** Drag text from its top left, and rectangles/circles from their center. */
+export function sketchMoveAnchor(shape: SketchShape): [number, number] | null {
+  if (shape.kind === 'line') return null;
+  if (shape.kind === 'text') return [shape.position[0], shape.position[1] + (shape.textHeight === undefined ? shape.size[1] : 0)];
+  return [shape.position[0] + shape.size[0] / 2, shape.position[1] + shape.size[1] / 2];
+}
 
 /** Signed angle from +X: positive clockwise, negative counterclockwise. */
 export function lineMeasurements([dx, dy]: [number, number]): { length: number; angle: number } {
@@ -65,7 +85,7 @@ export function snapToSketchEdges(cursor: [number, number], rectangles: SketchSh
     if (distance <= edgeDistance) { edgeDistance = distance; closestEdge = point; curvedEdge = curved; }
   };
   for (const rectangle of rectangles) {
-    const [x1, y1] = rectangle.position;
+    const [x1, y1] = sketchShapeOrigin(rectangle);
     const x2 = x1 + rectangle.size[0], y2 = y1 + rectangle.size[1];
     if (rectangle.kind === 'circle') {
       const radius = rectangle.size[0] / 2, cx = x1 + radius, cy = y1 + radius;
@@ -129,24 +149,32 @@ export function validateSketchShapes(input: unknown, inputGroups: unknown = []):
       return value.map((part) => {
         if (typeof part !== 'number' && typeof part !== 'string') throw new Error(`Rectangle ${raw.id} ${label} values must be inches.`);
         // An odd 1/64-inch diameter needs half-grid bounds to keep its center fixed.
+        if (raw.kind === 'text' && typeof part === 'number') { parseInches(part); return part; }
         return raw.kind === 'circle' && label === 'position' && typeof part === 'number' ? parseInches(part * 2) / 2 : parseInches(part);
       }) as [number, number];
     };
     if (raw.groupId !== undefined && (typeof raw.groupId !== 'string' || !raw.groupId.trim())) throw new Error('Shape groupId must be a group ID.');
     const size = vector(raw.size, 'size');
-    if (raw.kind !== undefined && raw.kind !== 'line' && raw.kind !== 'circle') throw new Error('Unknown sketch shape kind.');
+    if (raw.kind !== undefined && raw.kind !== 'line' && raw.kind !== 'circle' && raw.kind !== 'text') throw new Error('Unknown sketch shape kind.');
+    if (raw.kind === 'text' && (typeof raw.text !== 'string' || !raw.text.trim() || raw.text.length > 4000)) throw new Error('Text must contain between 1 and 4000 characters.');
+    let textHeight: number | undefined;
+    if (raw.kind === 'text' && raw.textHeight !== undefined) {
+      if (typeof raw.textHeight !== 'number' && typeof raw.textHeight !== 'string') throw new Error('Text letter height must be inches.');
+      textHeight = parseInches(raw.textHeight);
+      if (textHeight <= 0) throw new Error('Text letter height must be positive.');
+    }
     if (raw.kind === 'circle' && size[0] !== size[1]) throw new Error('Circle dimensions must have the same diameter.');
     if (raw.kind === 'line') {
       if (Math.hypot(...size) < 1 / 64) throw new Error('Choose two different points to draw a line.');
     } else if (size.some((part) => part <= 0)) throw new Error(`Rectangle ${raw.id} sizes must be positive.`);
-    return { id: raw.id, name: raw.name, size, position: vector(raw.position ?? [0, 0], 'position'), color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(raw.kind === 'line' || raw.kind === 'circle' ? { kind: raw.kind } : {}) };
+    return { id: raw.id, name: raw.name, size, position: vector(raw.position ?? [0, 0], 'position'), color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(raw.kind ? { kind: raw.kind as SketchShape['kind'] } : {}), ...(raw.kind === 'text' ? { text: trimSketchText(raw.text as string), ...(textHeight !== undefined ? { textHeight } : {}) } : {}) };
   });
   validateGroupMembers(shapes, groups);
   return shapes;
 }
 
 export function generateSketchSource(rectangles: SketchShape[], groups: GroupSpec[] = [], order: string[] = [], measurements: Measurement[] = []): string {
-  const lines = ['// Draw rectangles, circles and lines on the X/Y plane. Dimensions are in inches.'];
+  const lines = ['// Draw rectangles, circles, lines and text on the X/Y plane. Dimensions are in inches.'];
   const validGroups = validateGroups(groups, true);
   lines.push(...generateGroupedSource<SketchShape | Measurement>(validGroups, [...validateSketchShapes(rectangles, validGroups), ...validateMeasurements(measurements, { rectangles, groups: validGroups })], (item) => 'start' in item ? serializeMeasurement(item) : serializeSketchShape(item), order));
   return `${lines.join('\n')}\n`;
@@ -157,7 +185,7 @@ export function serializeSketchShape(rectangle: SketchShape): string {
     const geometry = rectangle.kind === 'line'
       ? `start: ${vector(rectangle.position)}, end: ${vector([rectangle.position[0] + rectangle.size[0], rectangle.position[1] + rectangle.size[1]])}`
       : `${rectangle.kind === 'circle' ? `radius: inch(${JSON.stringify(formatInches(rectangle.size[0] / 2))})` : `size: ${vector(rectangle.size)}`}, position: ${vector(rectangle.position)}`;
-    return `${rectangle.kind ?? 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
+    return `${rectangle.kind ?? 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${rectangle.kind === 'text' ? `text: ${JSON.stringify(rectangle.text)}, ${rectangle.textHeight !== undefined ? `height: inch(${JSON.stringify(formatInches(rectangle.textHeight))}), ` : ''}` : ''}${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
 }
 
 // Compatibility for existing rectangle-only consumers.

@@ -1,0 +1,165 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>2D text rendering checks</title>
+<link rel="stylesheet" href="/src/style.css">
+<style>body{background:#101923;color:#ddd;font:16px sans-serif;padding:20px}#viewport{width:800px;height:420px;position:relative;overflow:hidden}#samples{display:flex;gap:16px;align-items:start}#samples canvas{max-width:360px;max-height:150px;border:1px solid #456}</style>
+<h1>2D text rendering checks</h1><p id="result">Running…</p><pre id="failures"></pre>
+<div id="viewport"></div><h2>Raster samples</h2><div id="samples"></div>
+<script type="module">
+import { createSketchTextMesh, sketchTextSize, textLayout } from '/src/sketch-text.ts';
+import { trimSketchText } from '/src/sketch.ts';
+import { compileModel } from '/src/compiler.ts';
+import { createViewport } from '/src/viewport.ts';
+const errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const shape = (text, height, id = 't') => ({id, name:id, kind:'text', text, textHeight:height, size:sketchTextSize(text,height), position:[0,0], color:'#ffffff'});
+const host = document.querySelector('#viewport');
+let draws = [];
+let edits = [], blocks = [], moves = [];
+const viewport = createViewport(host, () => {}, undefined, (...args) => draws.push(args), undefined, undefined, undefined, undefined, undefined, undefined, (id,text) => {
+  edits.push({id,text});
+  const content = trimSketchText(text);
+  blocks = blocks.map((block) => block.id === id ? {...block,text:content,size:sketchTextSize(content,block.textHeight)} : block);
+  viewport.setRectangles(blocks, {preserveView:true}); viewport.select(id);
+}, (id, position) => {
+  moves.push({id,position}); blocks = blocks.map((block) => block.id === id ? {...block,position} : block);
+  viewport.setRectangles(blocks, {preserveView:true}); viewport.select(id);
+});
+try {
+  const oneLine = sketchTextSize('H', 1), twoLines = sketchTextSize('H\nH', 1);
+  check(twoLines[1] > oneLine[1] * 2, 'A second line must grow the box without shrinking the letters');
+  check(oneLine[0] === twoLines[0], 'Adding a line must not change the first line width');
+  check(JSON.stringify(sketchTextSize('H\n\n   \n', 1)) === JSON.stringify(oneLine), 'Trailing blank lines must not enlarge the final bounds');
+  const metricContext = document.createElement('canvas').getContext('2d');
+  const capLayout = textLayout('H', metricContext);
+  check(Math.abs((oneLine[1] - 4 / capLayout.referenceHeight) - 1) < 1e-10, 'A one inch H must have one inch of visible letter height');
+  const compiled = await compileModel('text({ text: "H\\nH\\n\\n", height: 1, position: [2, 4] })', 'sketch');
+  check(compiled.rectangles[0].text === 'H\nH' && JSON.stringify(compiled.rectangles[0].size) === JSON.stringify(twoLines), 'Source compilation must calculate natural bounds from letter height and trim trailing lines');
+  const small = createSketchTextMesh(shape('Panel A', 1));
+  const large = createSketchTextMesh(shape('Panel A', 3));
+  const a = small.material.map.image, b = large.material.map.image;
+  check(b.height / 3 > a.height, '3 inch text must have higher PPI than 1 inch text');
+  check(b.width > a.width * 3, 'Larger text must receive more pixels on both axes');
+  document.querySelector('#samples').append(a, b);
+  const alpha = b.getContext('2d').getImageData(0,0,b.width,b.height).data.filter((_,i) => i % 4 === 3);
+  check(alpha.some((n) => n === 255), 'Texture must contain visible glyphs');
+  check(alpha.some((n) => n === 0), 'Background must stay transparent');
+  const multiline = createSketchTextMesh(shape('Ágj — ↑\nSecond line', 3));
+  const c = multiline.material.map.image;
+  const data = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+  const inkInRows = (first,last) => { let count = 0; for(let y=first;y<last;y++) for(let x=0;x<c.width;x++) if(data[(y*c.width+x)*4+3]>0) count++; return count; };
+  check(inkInRows(0, Math.floor(c.height / 2)) > 0 && inkInRows(Math.ceil(c.height / 2), c.height) > 0, 'Multiline text must render both lines');
+  check(inkInRows(0,1) === 0 && inkInRows(c.height-1,c.height) === 0, 'Accents and descenders must fit inside the raster');
+  for (const mesh of [small,large,multiline]) { mesh.material.map.dispose(); mesh.material.dispose(); mesh.geometry.dispose(); }
+
+  viewport.setMode('sketch'); viewport.setGrid(false);
+  const block = shape('Panel A\n3 inch text', 3);
+  blocks = [block];
+  viewport.setRectangles([block]);
+  viewport.select(block.id);
+  await frame();
+  viewport.setSketchTool('text');
+  const canvas = host.querySelector('canvas');
+  canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {}; canvas.hasPointerCapture = () => false;
+  const bounds = canvas.getBoundingClientRect();
+  for (const type of ['pointerdown','pointerup']) canvas.dispatchEvent(new PointerEvent(type, {bubbles:true,pointerId:1,pointerType:'mouse',button:0,buttons:type === 'pointerdown' ? 1 : 0,clientX:bounds.left+100,clientY:bounds.top+100}));
+  check(draws.length === 1 && draws[0][2] === 'text', 'One click must place text without a second corner');
+  viewport.setSketchTool('select');
+  viewport.editSketchText(block.id, true);
+  const input = host.querySelector('[aria-label="Edit drawing text"]');
+  check(document.activeElement === input && !input.hidden, 'Text must be directly editable in the drawing');
+  const originalFontSize = input.style.fontSize, originalWidth = parseFloat(input.style.width);
+  input.value = 'Panel A with a longer line\nMore text\n\n'; input.dispatchEvent(new Event('input', {bubbles:true}));
+  check(input.style.fontSize === originalFontSize && parseFloat(input.style.width) > originalWidth, 'Typing must grow the editor without changing letter size');
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true}));
+  check(edits.length === 1 && blocks[0].text === 'Panel A with a longer line\nMore text', 'Finishing must apply content and trim empty trailing lines');
+  check(blocks[0].textHeight === 3 && blocks[0].position[0] === 0 && blocks[0].position[1] === 0, 'Finishing must preserve letter height and the top-left anchor');
+  viewport.editSketchText(block.id);
+  input.value = 'Discard this'; input.dispatchEvent(new Event('input',{bubbles:true}));
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  check(edits.length === 1 && input.hidden, 'Escape must discard the edit');
+  viewport.setTextEditingEnabled(false); viewport.editSketchText(block.id);
+  check(input.hidden, 'Pending source drafts must block direct text editing');
+  viewport.setTextEditingEnabled(true);
+  await frame();
+  const pointer = (type,x,y) => canvas.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,pointerId:1,pointerType:'mouse',button:type === 'pointermove' ? -1 : 0,buttons:type === 'pointerup' || type === 'pointercancel' ? 0 : 1,clientX:bounds.left+x,clientY:bounds.top+y}));
+  const handle = () => host.querySelector('.sketch-move-handle');
+  const corner = () => [parseFloat(handle().style.left),parseFloat(handle().style.top)];
+  check(!!handle() && !handle().classList.contains('dragging'), 'Selected text must show a subtle outline circle');
+  const startCorner = corner(), startPosition = [...blocks[0].position], originalSize = [...blocks[0].size];
+  pointer('pointerdown',startCorner[0]+2,startCorner[1]+1);
+  check(handle().classList.contains('dragging') && canvas.style.cursor === 'grabbing', 'The corner circle must become solid while held for dragging');
+  pointer('pointermove',startCorner[0]+66,startCorner[1]+33);
+  check(moves.length === 0 && Math.abs(corner()[0]-startCorner[0]-64) < 1, 'Dragging must preview movement without committing each pointer update');
+  check(host.querySelector('.sketch-selection-box').hidden, 'Dragging the text corner must not start marquee selection');
+  pointer('pointerup',startCorner[0]+66,startCorner[1]+33);
+  await frame();
+  check(moves.length === 1 && !handle().classList.contains('dragging'), 'Release must commit exactly one movement and return the circle to an outline');
+  check(blocks[0].position[0] > startPosition[0] && blocks[0].position[1] < startPosition[1], 'Dragging right and down must move the text right and down in model coordinates');
+  check(JSON.stringify(blocks[0].size) === JSON.stringify(originalSize) && blocks[0].textHeight === 3, 'Dragging must preserve letter size and text bounds');
+  check(blocks[0].position.every((n,i) => Number.isInteger((n-startPosition[i])*64)), 'Movement must snap to the inch grid');
+  let cancelCorner = corner();
+  pointer('pointerdown',...cancelCorner); pointer('pointermove',cancelCorner[0]+30,cancelCorner[1]+20);
+  canvas.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  check(moves.length === 1 && Math.abs(corner()[0]-cancelCorner[0]) < 0.01 && !handle().classList.contains('dragging'), 'Escape must restore the position without committing a movement');
+  pointer('pointerdown',...cancelCorner); pointer('pointermove',cancelCorner[0]+30,cancelCorner[1]+20); pointer('pointercancel',cancelCorner[0]+30,cancelCorner[1]+20);
+  check(moves.length === 1 && Math.abs(corner()[0]-cancelCorner[0]) < 0.01, 'Pointer cancellation must also restore the text');
+  pointer('pointerdown',...cancelCorner); pointer('pointerup',...cancelCorner);
+  check(moves.length === 1, 'Clicking the handle without dragging must not add an undo step');
+  viewport.select(null); await frame();
+  check(!handle(), 'Unselected text must not show a handle');
+  pointer('pointerdown',...cancelCorner); pointer('pointermove',cancelCorner[0]+16,cancelCorner[1]+16); pointer('pointerup',cancelCorner[0]+16,cancelCorner[1]+16);
+  check(moves.length === 2, 'The corner of unselected text must select it and allow dragging');
+  viewport.setTextEditingEnabled(false); await frame();
+  check(!handle(), 'Pending source drafts must hide move handles');
+  viewport.setTextEditingEnabled(true);
+  viewport.setVisibility(block.id,false); await frame();
+  check(!handle(), 'Hidden text must not show move handles');
+  viewport.setVisibility(block.id,true); viewport.select(block.id);
+  viewport.setSketchTool('rectangle'); await frame();
+  check(!handle(), 'Drawing tools must not show text move handles');
+  viewport.setSketchTool('select');
+  viewport.setVisibility(block.id,false); viewport.setVisibility(block.id,true);
+  viewport.setMode('model');
+  viewport.setBoxes([], {sketches:[{id:'mounted',name:'Mounted text',axis:'z',size:block.size,position:[0,0,0],color:'#ffffff',shapes:[block]}]});
+  viewport.setView('top');
+  await frame();
+  viewport.setMode('sketch'); viewport.setRectangles(blocks); viewport.select(block.id);
+  await frame();
+
+  const rectangle = {id:'rectangle',name:'Rectangle',size:[6,4],position:[-7,-2],color:'#ffffff'};
+  const circle = {id:'circle',name:'Circle',kind:'circle',size:[4+1/64,4+1/64],position:[2,-2],color:'#ffffff'};
+  blocks = [rectangle,circle];
+  viewport.setRectangles(blocks); viewport.selectMany(['rectangle','circle']);
+  await frame();
+  check(host.querySelectorAll('.sketch-move-handle').length === 2, 'Selected rectangles and circles must each show a center handle');
+  for (const id of ['rectangle','circle']) {
+    viewport.select(id); await frame();
+    const targetHandle = () => host.querySelector(`[data-shape-id="${id}"]`);
+    const start = [parseFloat(targetHandle().style.left),parseFloat(targetHandle().style.top)];
+    const original = structuredClone(blocks.find((shape) => shape.id === id));
+    const count = moves.length;
+    pointer('pointerdown',...start); pointer('pointermove',start[0]+50,start[1]-25);
+    check(targetHandle().classList.contains('dragging') && moves.length === count, `${id}: center drag must preview with a solid handle`);
+    pointer('pointerup',start[0]+50,start[1]-25); await frame();
+    const moved = blocks.find((shape) => shape.id === id);
+    check(moves.length === count+1 && moved.position[0]>original.position[0] && moved.position[1]>original.position[1], `${id}: release must commit exactly one movement`);
+    check(JSON.stringify(moved.size) === JSON.stringify(original.size) && moved.kind === original.kind, `${id}: movement must preserve dimensions and shape type`);
+    const after = [parseFloat(targetHandle().style.left),parseFloat(targetHandle().style.top)];
+    check(Math.abs(after[0]-start[0]-50)<1 && Math.abs(after[1]-start[1]+25)<1, `${id}: the center handle must follow the pointer`);
+    pointer('pointerdown',...after); pointer('pointermove',after[0]+25,after[1]+20);
+    canvas.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+    check(moves.length === count+1 && Math.abs(parseFloat(targetHandle().style.left)-after[0])<0.01, `${id}: Escape must cancel without changing stored position`);
+    viewport.select(null); await frame();
+    pointer('pointerdown',...after); pointer('pointermove',after[0]+16,after[1]+16); pointer('pointerup',after[0]+16,after[1]+16);
+    check(moves.length === count+2, `${id}: its center must also allow dragging before selection`);
+  }
+  const line = {id:'line',name:'Line',kind:'line',size:[4,4],position:[0,0],color:'#ffffff'};
+  viewport.setRectangles([line]); viewport.select('line'); await frame();
+  check(!host.querySelector('.sketch-move-handle'), 'Line selection must not acquire a center movement handle');
+  viewport.setRectangles(blocks); viewport.selectMany(['rectangle','circle']); await frame();
+} catch(error) { errors.push(String(error)); }
+document.querySelector('#result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `${checks} checks passed`;
+document.querySelector('#failures').textContent = errors.join('\n');
+</script>

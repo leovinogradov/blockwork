@@ -1,6 +1,6 @@
 import { pointOnPlane, validateGroupMembers, worldPosition, type GroupSpec, type PlaneFrame, type Vector3 } from './groups';
 import { parseInches } from './model';
-import { serializeSketchShape, validateSketchShapes, type SketchShape } from './sketch';
+import { serializeSketchShape, sketchShapeOrigin, validateSketchShapes, type SketchShape } from './sketch';
 
 export type SketchAxis = 'x' | 'y' | 'z';
 /** A finite 2D frame with its own local rectangles and lines, mounted in a model. */
@@ -59,7 +59,7 @@ export function modelSketchPoints(sketch: ModelSketch): Vector3[] {
   const [w, h] = sketch.size;
   const points: number[][] = [[0, 0], [w, 0], [w, h], [0, h]];
   for (const shape of sketch.shapes) {
-    const [x, y] = shape.position, [dx, dy] = shape.size;
+    const [x, y] = sketchShapeOrigin(shape), [dx, dy] = shape.size;
     points.push([x, y], [x + dx, y + dy]);
     if (shape.kind !== 'line') points.push([x + dx, y], [x, y + dy]);
   }
@@ -70,7 +70,7 @@ export function modelSketchPoints(sketch: ModelSketch): Vector3[] {
 export function sketchReference(shapes: SketchShape[], groups: GroupSpec[] = []): Pick<ModelSketch, 'shapes' | 'size'> {
   const world = flattenSketchShapes(shapes, groups);
   if (!world.length) return { shapes: [], size: [12, 8] };
-  const points = world.flatMap((shape) => [shape.position, [shape.position[0] + shape.size[0], shape.position[1] + shape.size[1]]]);
+  const points = world.flatMap((shape) => { const origin = sketchShapeOrigin(shape); return [origin, [origin[0] + shape.size[0], origin[1] + shape.size[1]]]; });
   const min = [0, 1].map((i) => Math.min(...points.map((p) => p[i])));
   const size = [0, 1].map((i) => Math.max(1 / 64, Math.max(...points.map((p) => p[i])) - min[i])) as [number, number];
   return { size, shapes: world.map((shape) => ({ ...shape, position: [shape.position[0] - min[0], shape.position[1] - min[1]] })) };
@@ -88,7 +88,7 @@ export function flattenSketchShapes(shapes: SketchShape[], groups: GroupSpec[] =
 export function sketchReferenceOrigin(shapes: SketchShape[], groups: GroupSpec[] = []): [number, number] {
   const world = flattenSketchShapes(shapes, groups);
   if (!world.length) return [0, 0];
-  return [0, 1].map((i) => Math.min(...world.flatMap((shape) => [shape.position[i], shape.position[i] + shape.size[i]]))) as [number, number];
+  return [0, 1].map((i) => Math.min(...world.flatMap((shape) => { const origin = sketchShapeOrigin(shape); return [origin[i], origin[i] + shape.size[i]]; }))) as [number, number];
 }
 
 export function serializeModelSketch(sketch: ModelSketch): string {

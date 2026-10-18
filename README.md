@@ -20,7 +20,7 @@ Blockwork is an early project focused on simple geometry. It currently uses inch
 ## Try your first model
 
 1. Open [Blockwork](https://leovinogradov.github.io/blockwork/) and choose **＋ → New 3D model**.
-2. Add a box with **＋** in the model tools, then select it and change its dimensions in the inspector.
+2. Add a box with the orange **Add box** button in the model tools, then select it and change its dimensions in the inspector.
 3. With a mouse, use middle drag to rotate, right drag to pan, and the wheel to zoom. With a trackpad, slide two fingers to rotate (Shift is optional), hold a two-finger click and drag to pan, and pinch to zoom. You can use both devices without changing a setting. Press **F** to fit the model in view.
 4. Choose **Measurement** or press **M**, click two points, then click a third time to place the dimension label.
 5. Choose **Export → Blockwork .js** to download your editable design.

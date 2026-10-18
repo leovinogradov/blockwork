@@ -110,6 +110,12 @@ textarea.text-field.variable-description{height:auto;min-height:72px;padding:8px
 .row-square{width:14px;height:14px;flex:none;background:var(--cube);border:1px solid #c8d6db;box-shadow:2px 2px 0 #20343e}
 .row-sketch{width:16px;height:12px;flex:none;display:inline-block;border:1px dashed var(--cube);background:color-mix(in srgb,var(--cube) 12%,transparent);transform:skewY(-12deg)}
 .row-line{width:16px;height:2px;flex:none;background:var(--cube);transform:rotate(-35deg)}
+.row-text{width:17px;height:17px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--cube);font:bold 16px sans-serif}.row-text:empty::before{content:'T'}
+.sketch-text-content{min-height:90px;resize:vertical;line-height:1.5;font-family:sans-serif}
+.sketch-inline-text{position:absolute;z-index:10;box-sizing:border-box;margin:0;border:1px solid #ffba4b;border-radius:0;outline:none;background:#101923f2;color:white;resize:none;overflow:hidden;font-family:sans-serif;font-weight:400;letter-spacing:normal;text-align:left;white-space:pre;tab-size:4;min-width:0;min-height:0}
+.sketch-inline-text[hidden]{display:none}
+.sketch-move-handles{position:absolute;inset:0;pointer-events:none;z-index:6;overflow:hidden}
+.sketch-move-handle{position:absolute;width:10px;height:10px;transform:translate(-50%,-50%)}
 .sketch-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .line-inspector-heading{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .line-inspector-symbol{color:var(--cube);font-size:26px;line-height:1;flex:none}
@@ -137,6 +143,11 @@ textarea.text-field.variable-description{height:auto;min-height:72px;padding:8px
 .model-tools-section h2{margin:0;font-weight:500}
 .model-tool-actions{gap:6px}
 .model-tool-actions .add-variable svg{width:14px;height:14px;display:block}
+.solid-tool-actions{display:flex;align-items:center;gap:4px}
+.solid-tool-button{position:relative;display:grid;place-items:center;width:28px;height:27px;flex:none;padding:0;border:1px solid #eea04b;border-radius:4px;background:transparent;color:#eea04b;cursor:pointer;transition:color .15s,border-color .15s}
+.solid-tool-button:hover{color:#f6b565;border-color:#f6b565}
+.solid-tool-button:disabled{opacity:.4;cursor:not-allowed}
+.solid-tool-button>svg{display:block;width:26px;height:25px}
 .sketch-tools-section{display:none;flex:none;padding:12px;border-bottom:1px solid var(--line)}
 .sketch-mode .sketch-tools-section{display:block}
 .inspector-content{display:flex;flex-direction:column;min-height:0}

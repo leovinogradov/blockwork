@@ -1,4 +1,4 @@
-import type { SketchShape } from './sketch';
+import { sketchShapeOrigin, type SketchShape } from './sketch';
 
 export type SelectionAction = 'replace' | 'toggle' | 'add';
 export type SelectionPoint = [number, number];
@@ -18,8 +18,9 @@ export function sketchShapesInBox(shapes: SketchShape[], first: SelectionPoint, 
   const max = [Math.max(first[0], opposite[0]), Math.max(first[1], opposite[1])];
   return shapes.filter((shape) => {
     if (hiddenIds.has(shape.id)) return false;
-    const a = project(shape.position);
-    const b = project([shape.position[0] + shape.size[0], shape.position[1] + shape.size[1]]);
+    const origin = sketchShapeOrigin(shape);
+    const a = project(origin);
+    const b = project([origin[0] + shape.size[0], origin[1] + shape.size[1]]);
     if (shape.kind === 'circle') {
       const center = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       const radius = [Math.abs(b[0] - a[0]) / 2, Math.abs(b[1] - a[1]) / 2];
