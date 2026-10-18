@@ -494,6 +494,11 @@ async function changeVariableValue(name: string, text: string, isExpression: boo
 function resolveModelFromUI(input: BoxSpec[], vars: VariableSpec[]) { return validateBoxes(input, vars, groups); }
 function selectedGroup() { return groups.find((g) => g.id === selectedId) ?? null; }
 function sceneHasId(id: string) { return groups.some((g) => g.id === id) || objectItems().some((item) => item.id === id); }
+function setGroups(nextGroups: GroupSpec[]) {
+  const existingParts = new Set(groups.filter((group) => group.kind === 'part').map((group) => group.id));
+  collapsedGroupIds = new Set(nextGroups.filter((group) => collapsedGroupIds.has(group.id) || (group.kind === 'part' && !existingParts.has(group.id))).map((group) => group.id));
+  groups = nextGroups;
+}
 function sceneHiddenIds() { return effectiveHiddenIds(groups, objectItems(), hiddenBoxIds); }
 function groupItems(id: string) {
   const ids = groupDescendants(groups, id);
@@ -517,10 +522,9 @@ function commitGroups(nextGroups: GroupSpec[], nextBoxes = boxes, nextRectangles
   const order = normalizeTreeOrder(nextTreeOrder, valid, [...(model ? [...model.boxes, ...(model.sketches ?? [])] : shapes), ...nextMeasurements]);
   const source = model ? generateSource(model.boxes, model.variables, valid, order, model.sketches ?? [], nextMeasurements) : generateSketchSource(shapes, valid, order, nextMeasurements);
   measurements = nextMeasurements;
-  groups = valid;
+  setGroups(valid);
   if (model) { boxes = cloneBoxes(model.boxes); sketches = structuredClone(model.sketches ?? []); } else rectangles = cloneRectangles(shapes);
   treeOrder = order;
-  collapsedGroupIds = new Set([...collapsedGroupIds].filter((id) => groups.some((g) => g.id === id)));
   hiddenBoxIds = new Set([...nextHiddenIds].filter(sceneHasId));
   if (selectedId && !groups.some((g) => g.id === selectedId) && !objectItems().some((item) => item.id === selectedId)) selectedId = null;
   refreshGeometry(); setEditor(source); appliedSource = source;
@@ -613,13 +617,15 @@ function membershipControl(item: BoxSpec | SketchShape | ModelSketch | Measureme
   const host = $('#inspector-content');
   const owner = groups.find((g) => g.id === item.groupId);
   if (owner?.kind === 'part') {
+    const name = 'start' in item ? measurementName(item) : item.name;
+    host.querySelector('.object-name')!.innerHTML = `<button type="button" class="inspector-part-link" data-inspect-owner-part aria-label="Select Part ${escapeAttr(owner.name)}">${escapeHTML(owner.name)}</button>${name.trim() ? ` &gt; ${escapeHTML(name)}` : ''}`;
     host.insertAdjacentHTML('beforeend', `<section class="part-membership-card" aria-label="Owning Part" data-owner-part="${escapeAttr(owner.id)}">
       <div class="section-label"><span>PART</span></div>
       <div class="part-membership-heading"><button id="inspect-owner-part" type="button" class="part-owner-name" title="Inspect Part">${escapeHTML(owner.name)}</button><button id="remove-from-part" type="button" class="small-action" aria-label="Remove from Part" title="Keep this subcomponent as a separate component" ${draftDirty ? 'disabled' : ''}>Remove</button></div>
       ${'shapes' in item || 'start' in item ? '<p>Construction reference for this Part.</p>' : ''}
       <div id="part-color-controls"></div><p class="part-material-help">Material applies to the whole Part.</p>
     </section>`);
-    host.querySelector('#inspect-owner-part')!.addEventListener('click', () => { selectedId = owner.id; selectedComponentIds.clear(); selectedFace = null; renderAll(); });
+    host.querySelectorAll('#inspect-owner-part, [data-inspect-owner-part]').forEach((button) => button.addEventListener('click', () => { selectedId = owner.id; selectedComponentIds.clear(); selectedVariable = null; selectedFace = null; renderAll(); }));
     host.querySelector('#remove-from-part')!.addEventListener('click', () => changeItemGroup(item.id));
     renderPartColorControls(host.querySelector('#part-color-controls')!, owner.color!, (color) => {
       if (draftDirty) return;
@@ -744,14 +750,16 @@ function renderList() {
   listEl.innerHTML = (documentKind === 'model' ? variables.map((variable) => `<button class="component-row variable-row ${variable.name === selectedVariable ? 'selected' : ''}" data-variable="${escapeAttr(variable.name)}"><span class="variable-symbol">ƒ</span><span class="row-name">${escapeHTML(variable.name)}</span><span class="row-size">${formatInches(variable.value)} in</span></button>`).join('') : '') + branch(undefined, 0);
   renderIcons(listEl);
   listEl.insertAdjacentHTML('beforeend', '<div class="tree-root-drop" data-tree-root>Move to top level</div>');
-  const selectAndTogglePart = (id: string) => {
-    if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id);
+  const selectPart = (id: string, toggle = false) => {
+    if (toggle) {
+      if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id);
+    }
     selectedComponentIds.clear(); selectedId = id; selectedVariable = null; selectedFace = null;
     renderAll(); scheduleSave();
   };
   listEl.querySelectorAll<HTMLButtonElement>('[data-id]').forEach((row) => row.addEventListener('click', (event) => {
     const id = row.dataset.id!;
-    if (row.closest('.part-row')) { selectAndTogglePart(id); return; }
+    if (row.closest('.part-row')) { selectPart(id, event.target instanceof Element && !!event.target.closest('.part-tag')); return; }
     const action = event.shiftKey || event.ctrlKey || event.metaKey ? 'toggle' : 'replace';
     if (documentKind === 'sketch' && rectangles.some((shape) => shape.id === id)) { selectSketchShapes([id], action); return; }
     if (documentKind === 'model' && modelItems().some((item) => item.id === id)) { selectModelItems([id], action); return; }
@@ -759,7 +767,7 @@ function renderList() {
   }));
   listEl.querySelectorAll<HTMLElement>('.part-row').forEach((row) => row.addEventListener('click', (event) => {
     if (event.target instanceof Element && event.target.closest('button')) return;
-    selectAndTogglePart(row.querySelector<HTMLButtonElement>('[data-id]')!.dataset.id!);
+    selectPart(row.querySelector<HTMLButtonElement>('[data-id]')!.dataset.id!);
   }));
   listEl.querySelectorAll<HTMLButtonElement>('[data-collapse-id]').forEach((button) => button.addEventListener('click', () => { const id = button.dataset.collapseId!; if (collapsedGroupIds.has(id)) collapsedGroupIds.delete(id); else collapsedGroupIds.add(id); renderList(); scheduleSave(); }));
   listEl.querySelectorAll<HTMLButtonElement>('[data-visibility-id]').forEach((button) => button.addEventListener('click', () => toggleBoxVisibility(button.dataset.visibilityId!)));
@@ -903,7 +911,7 @@ function renderInspector() {
     host.querySelector<HTMLInputElement>('#variable-inspector-expression')?.addEventListener('change', (event) => { const input = event.currentTarget as HTMLInputElement; void changeVariableValue(variable.name, input.value, true, input); });
     return;
   }
-  if (!box) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">⊙</div><div>Select a component or variable</div><small>Choose an item from the model tree to inspect it.</small></div><div class="source-warning">GUI edits regenerate this source. Undo can restore earlier source.</div>'; return; }
+  if (!box) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">⊙</div><div>Select a component or variable</div><small>Choose an item from the model tree to inspect it.</small></div>'; return; }
   const boxId = box.id;
   const relative = box.relative;
   const refOptions = boxes.filter((candidate) => candidate.id !== box.id && !isDescendant(candidate.id, box.id)).map((candidate) => `<option value="${escapeAttr(candidate.id)}" ${candidate.id === relative?.boxId ? 'selected' : ''}>${escapeHTML(itemName(candidate))}</option>`).join('');
@@ -929,7 +937,7 @@ function renderInspector() {
     const expression = box.expressions?.[field];
     return `<label class="measure-field"><span>${label}</span><span class="measure-input"><input aria-label="${label} in inches" data-kind="size" data-index="${i}" value="${escapeAttr(expression ?? formatInches(value))}" title="${expression ? `Resolved: ${formatInches(value)} in` : ''}" inputmode="decimal" ${draftDirty ? 'disabled' : ''}/><small>in</small></span>${computedMeasurement(expression, value)}</label>`;
   }).join('');
-  host.innerHTML = `<div class="source-warning">GUI edits regenerate the model source. Undo can restore earlier source.</div><div class="object-heading">${partOwner ? `<i class="subcomponent-icon" data-lucide="${box.kind === 'cylinder' ? 'cylinder' : 'box'}" aria-hidden="true"></i>` : `<span class="object-swatch" style="--cube:${escapeAttr(box.color)}"></span>`}<div><div class="object-name">${escapeHTML(itemName(box))}</div><div class="object-id">${box.kind === 'cylinder' ? 'CYLINDER' : 'BOX'} · ${escapeHTML(box.id.slice(0, 8).toUpperCase())}</div></div></div>
+  host.innerHTML = `<div class="object-heading">${partOwner ? `<i class="subcomponent-icon" data-lucide="${box.kind === 'cylinder' ? 'cylinder' : 'box'}" aria-hidden="true"></i>` : `<span class="object-swatch" style="--cube:${escapeAttr(box.color)}"></span>`}<div><div class="object-name">${escapeHTML(itemName(box))}</div><div class="object-id">${box.kind === 'cylinder' ? 'CYLINDER' : 'BOX'} · ${escapeHTML(box.id.slice(0, 8).toUpperCase())}</div></div></div>
     <label class="field-label" for="box-name">${groups.find((g) => g.id === box.groupId)?.kind === 'part' ? 'SUBCOMPONENT NAME · OPTIONAL' : 'NAME'}</label><input id="box-name" class="text-field" value="${escapeAttr(box.name)}" ${draftDirty ? 'disabled' : ''} />
     ${box.kind === 'cylinder' ? `<label class="field-label expression-label" for="solid-axis">LENGTH AXIS</label><select id="solid-axis" class="text-field" ${draftDirty ? 'disabled' : ''}>${(['x', 'y', 'z'] as const).map((axis) => `<option value="${axis}" ${axis === (box.axis ?? 'z') ? 'selected' : ''}>${axis.toUpperCase()}</option>`).join('')}</select>` : ''}
     <div class="section-label"><span>SIZE</span><span>INCHES</span></div><div class="${box.kind === 'cylinder' ? 'sketch-fields' : 'triple-fields'}">${sizeFields}</div>
@@ -1126,7 +1134,7 @@ function renderSketchInspector() {
   $('#delete-box').toggleAttribute('disabled', draftDirty || !shapes.length);
   $('#duplicate-box').toggleAttribute('disabled', draftDirty || !shapes.length);
   if (shapes.length > 1) { renderSelectionInspector(host, shapes); return; }
-  if (!rectangle) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">▭</div><div>Select a sketch shape</div><small>Choose a shape from the tree or sketch to edit it.</small></div><div class="source-warning">GUI edits regenerate the sketch source. Undo can restore earlier source.</div>'; return; }
+  if (!rectangle) { host.innerHTML = '<div class="inspector-empty"><div class="empty-target">▭</div><div>Select a sketch shape</div><small>Choose a shape from the tree or sketch to edit it.</small></div>'; return; }
   if (rectangle.kind === 'text') { renderTextInspector(host, rectangle); return; }
   if (rectangle.kind === 'line') { renderLineInspector(host, rectangle); return; }
   if (rectangle.kind === 'circle') { renderCircleInspector(host, rectangle); return; }
@@ -1740,7 +1748,7 @@ async function runSource() {
     const hasNewerDraft = editor.value !== source;
     let resolvedSource = source;
     if (documentKind === 'sketch') {
-      const sketch = compiled as CompiledSketch; measurements = structuredClone(sketch.measurements); groups = structuredClone(sketch.groups); rectangles = cloneRectangles(sketch.rectangles);
+      const sketch = compiled as CompiledSketch; measurements = structuredClone(sketch.measurements); setGroups(structuredClone(sketch.groups)); rectangles = cloneRectangles(sketch.rectangles);
       hiddenBoxIds = new Set([...hiddenBoxIds].filter(sceneHasId));
       viewport.setRectangles(worldRectangles(), { hiddenIds: sceneHiddenIds() });
     } else {
@@ -1750,7 +1758,7 @@ async function runSource() {
       const nextMeasurements = pruneMeasurements(structuredClone(model.measurements ?? []), { boxes: model.boxes, sketches: nextSketches });
       const nextModel = resolveModel(model.boxes, model.variables, nextGroups, nextSketches, nextMeasurements);
       if (JSON.stringify(nextSketches) !== JSON.stringify(model.sketches ?? [])) resolvedSource = generateSource(nextModel.boxes, nextModel.variables, nextGroups, treeOrder, nextModel.sketches, nextMeasurements);
-      measurements = nextMeasurements; groups = nextGroups;
+      measurements = nextMeasurements; setGroups(nextGroups);
       sketches = structuredClone(nextModel.sketches ?? []); boxes = cloneBoxes(nextModel.boxes); variables = cloneVariables(nextModel.variables);
       hiddenBoxIds = new Set([...hiddenBoxIds].filter(sceneHasId));
       viewport.setBoxes(worldBoxes(), { hiddenIds: sceneHiddenIds(), sketches: worldSketches() });
@@ -1769,8 +1777,7 @@ function undoRedo(delta: number) {
   if (draftDirty) return notify('Run or discard the source draft before undoing.', true);
   const next = historyAt + delta; if (next < 0 || next >= history.length) return;
   const snapshot = history[next], geometry = resolveSnapshot(snapshot, documentKind);
-  historyAt = next; groups = structuredClone(geometry.groups); treeOrder = [...geometry.treeOrder];
-  collapsedGroupIds = new Set([...collapsedGroupIds].filter((id) => groups.some((g) => g.id === id)));
+  historyAt = next; setGroups(structuredClone(geometry.groups)); treeOrder = [...geometry.treeOrder];
   variables = cloneVariables(geometry.variables); boxes = cloneBoxes(geometry.boxes); sketches = structuredClone(geometry.sketches); rectangles = cloneRectangles(geometry.rectangles); measurements = structuredClone(geometry.measurements);
   hiddenBoxIds = new Set((snapshot.hiddenIds ?? []).filter(sceneHasId));
   appliedSource = snapshot.source; selectedId = null; selectedComponentIds.clear(); selectedVariable = null; selectedFace = null;

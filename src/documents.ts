@@ -105,7 +105,7 @@ export function restoreDocument(value: unknown, legacyPixelMeasurements = false)
   const measurements = validateMeasurements(data.measurements, { boxes: model.boxes, sketches: model.sketches, rectangles, groups }).map((m) => legacyPixelMeasurements ? { ...m, offset: m.offset === 0 ? 0 : (Math.sign(m.offset ?? 1) || 1) * DEFAULT_MEASUREMENT_OFFSET } : m);
   document.groups = groups;
   document.treeOrder = normalizeTreeOrder(data.treeOrder, groups, [...(kind === 'sketch' ? rectangles : [...model.boxes, ...(model.sketches ?? [])]), ...measurements]);
-  document.collapsedGroupIds = Array.isArray(data.collapsedGroupIds) ? data.collapsedGroupIds.filter((id) => groups.some((g) => g.id === id)) : [];
+  document.collapsedGroupIds = Array.isArray(data.collapsedGroupIds) ? data.collapsedGroupIds.filter((id) => groups.some((g) => g.id === id)) : groups.filter((group) => group.kind === 'part').map((group) => group.id);
   document.boxes = model.boxes;
   document.sketches = model.sketches ?? [];
   document.rectangles = rectangles;

@@ -32,8 +32,8 @@ test('small and fractional input alone remains undecided; repeated smooth wheel 
   for (const deltas of [[0.4, 0.4, 0.4], [12.5, 12.5, 12.5], [4, 8, 16], [2, 2.01, 2]]) {
     const classifier = new WheelGestureClassifier();
     const decisions = deltas.map((deltaY, index) => classifier.classify(sample(index * 12, { deltaY })));
-    assert.deepEqual(decisions.map((decision) => decision.action), ['pending', 'pending', 'zoom']);
-    assert.equal(decisions[2].resolvePending, true);
+    assert.deepEqual(decisions.map((decision) => decision.action), ['pending', 'zoom', 'zoom']);
+    assert.equal(decisions[1].resolvePending, true);
   }
 });
 
@@ -54,4 +54,29 @@ test('slow inputs, reversals, and idle periods cannot borrow earlier trackpad co
   assert.equal(classifier.classify(sample(500, { deltaY: 12.5 })).action, 'pending');
   classifier.reset();
   assert.equal(classifier.classify(sample(510, { deltaY: 3 })).action, 'pending');
+});
+
+test('mouse wheel cadence resolves on the second tick and stays responsive through acceleration and reversals', () => {
+  const classifier = new WheelGestureClassifier();
+  assert.equal(classifier.classify(sample(0, { deltaY: 12.5 })).action, 'pending');
+  assert.deepEqual(classifier.classify(sample(55, { deltaY: 12.5 })), { action: 'zoom', resolvePending: true });
+  for (const [time, deltaY] of [[110, 18.1], [165, 27.3], [220, -8.7]]) {
+    assert.equal(classifier.classify(sample(time, { deltaY })).action, 'zoom');
+  }
+  assert.equal(classifier.classify(sample(500, { deltaY: 4.2 })).action, 'pending', 'idle expires the wheel burst');
+  assert.equal(classifier.classify(sample(512, { deltaY: 6.7 })).action, 'pending');
+  assert.equal(classifier.classify(sample(524, { deltaY: 9.1 })).action, 'orbit');
+});
+
+test('fallback zoom avoids repeated waits, but horizontal input and cancellation clear its confidence', () => {
+  const classifier = new WheelGestureClassifier();
+  classifier.classify(sample(0, { deltaY: 2.5 }));
+  classifier.settlePendingZoom();
+  assert.equal(classifier.classify(sample(90, { deltaY: 3.7 })).action, 'zoom');
+  assert.equal(classifier.classify(sample(100, { deltaX: 4, deltaY: 5 })).action, 'orbit');
+  for (const [index, deltaY] of [4.2, 6.7, 9.1].entries()) {
+    assert.equal(classifier.classify(sample(110 + index * 12, { deltaY })).action, index < 2 ? 'pending' : 'orbit');
+  }
+  classifier.settlePendingZoom(); classifier.reset();
+  assert.equal(classifier.classify(sample(140, { deltaY: 2.5 })).action, 'pending');
 });

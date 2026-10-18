@@ -22,8 +22,15 @@ const quantizedPair = (a: number, b: number) => nearMultiple(Math.max(a, b), Mat
  */
 export class WheelGestureClassifier {
   private vertical: { time: number; magnitude: number; direction: number }[] = [];
+  private zoomTime: number | null = null;
 
-  reset() { this.vertical = []; }
+  reset() { this.vertical = []; this.zoomTime = null; }
+
+  /** Keep a resolved wheel burst responsive until a pause or horizontal slide. */
+  settlePendingZoom() {
+    this.zoomTime = this.vertical.at(-1)?.time ?? null;
+    this.vertical = [];
+  }
 
   classify(event: WheelSample): WheelDecision {
     // Read units first: some browsers adapt delta getters after deltaMode access.
@@ -36,19 +43,28 @@ export class WheelGestureClassifier {
     // Strong wheel signals win even during an ongoing trackpad gesture.
     if ((typeof tick === 'number' && nearMultiple(tick, 120))
       || nearMultiple(Math.max(x, y), 100) || nearMultiple(Math.max(x, y), 120)) return { action: 'zoom' };
-    if (x > EPSILON) return { action: 'orbit' };
+    if (x > EPSILON) { this.reset(); return { action: 'orbit' }; }
     if (!Number.isFinite(y) || y <= EPSILON) return { action: 'zoom' };
+    if (this.zoomTime !== null && time >= this.zoomTime && time - this.zoomTime <= HISTORY_MS) {
+      this.zoomTime = time;
+      return { action: 'zoom', resolvePending: true };
+    }
+    this.zoomTime = null;
     const previous = this.vertical.at(-1);
     const direction = Math.sign(event.deltaY);
+    // Wheel ticks can be slower than trackpad samples. Two matching steps
+    // suffice; do not make every tick restart the trackpad waiting window.
+    if (previous?.direction === direction && quantizedPair(previous.magnitude, y)) {
+      this.zoomTime = time;
+      this.vertical = [];
+      return { action: 'zoom', resolvePending: true };
+    }
     const restartPending = previous !== undefined && (time - previous.time > SAMPLE_GAP_MS || previous.direction !== direction);
     if (restartPending) this.vertical = [];
     this.vertical.push({ time, magnitude: y, direction });
     this.vertical = this.vertical.slice(-3);
     if (this.vertical.length < 3) return { action: 'pending', restartPending };
     const [a, b, c] = this.vertical.map((sample) => sample.magnitude);
-    // Fixed/repeated multiples are wheel evidence, including small fractional
-    // high-resolution wheel steps. Fractional or small input alone proves nothing.
-    if (quantizedPair(a, b) && quantizedPair(b, c)) return { action: 'zoom', resolvePending: true };
     const varying = !quantizedPair(a, b) && !quantizedPair(b, c)
       && Math.abs(a - b) / Math.max(a, b) >= 0.1
       && Math.abs(b - c) / Math.max(b, c) >= 0.1;

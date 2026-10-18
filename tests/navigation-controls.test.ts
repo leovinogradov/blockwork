@@ -92,6 +92,37 @@ for (const projection of ['perspective', 'orthographic'] as const) {
     current.controls.dispose();
   });
 
+  test(`${projection}: a wheel burst zooms on every tick after recognition without losing cursor anchoring`, () => {
+    const current = setup(projection, 100, 100), reference = setup(projection, 100, 100);
+    const anchor = current.pickAt(470, 140), orientation = current.camera.quaternion.clone();
+    for (const [index, deltaY] of [-12.5, -12.5, -18.1, -27.3, 8.7].entries()) {
+      const before = current.camera.position.clone(), zoom = current.camera.zoom;
+      const fields = { clientX: 470, clientY: 140, deltaY, timeStamp: index * 55 };
+      current.surface.send('wheel', fields);
+      reference.surface.send('wheel', { ...fields, wheelDeltaY: -120 });
+      if (index === 0) continue;
+      assert.ok(!current.camera.position.equals(before) || current.camera.zoom !== zoom, 'each tick moves immediately');
+      closeTo(current.camera.position.distanceTo(reference.camera.position), 0);
+      closeTo(current.camera.zoom, reference.camera.zoom, 1e-7);
+      closeTo(current.screenPoint(anchor).x, 470); closeTo(current.screenPoint(anchor).y, 140);
+      assert.ok(current.camera.quaternion.angleTo(orientation) < 1e-7, 'wheel acceleration must not turn into orbit');
+    }
+    current.controls.dispose(); reference.controls.dispose();
+  });
+
+  test(`${projection}: fallback zoom does not buffer the next wheel tick, and idle restores detection`, async () => {
+    const current = setup(projection, 100, 100);
+    current.surface.send('wheel', { deltaY: -2.5, timeStamp: 0 });
+    await new Promise((resolve) => setTimeout(resolve, PENDING_WHEEL_MS + 20));
+    const position = current.camera.position.clone(), zoom = current.camera.zoom;
+    current.surface.send('wheel', { deltaY: -3.7, timeStamp: 95 });
+    assert.ok(!current.camera.position.equals(position) || current.camera.zoom !== zoom, 'the next tick must zoom synchronously');
+    const after = current.camera.position.clone(), afterZoom = current.camera.zoom;
+    current.surface.send('wheel', { deltaY: 4.2, timeStamp: 400 });
+    assert.ok(current.camera.position.equals(after)); assert.equal(current.camera.zoom, afterZoom);
+    current.controls.dispose();
+  });
+
   test(`${projection}: disposal or a pointer drag cancels delayed wheel input`, async () => {
     for (const cancel of ['dispose', 'pointer'] as const) {
       const current = setup(projection, 100, 100);

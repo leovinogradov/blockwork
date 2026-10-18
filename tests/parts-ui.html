@@ -33,6 +33,8 @@ try{
   $('#selection-make-part').click();check($('#part-dialog').open,'creation opens name modal');
   create('Notched panel');check(!$('#part-dialog').open,'creation closes modal');
   const partId=$('.part-row [data-id]').dataset.id;
+  check(!$('[data-id="panel"]')&&!$('[data-id="top"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false','new Parts start collapsed');
+  $('.part-collapse').click();
   check($('.part-tag').textContent==='PART'&&$('.part-row').dataset.bodyCount==='1','tree identifies Part and one body');
   check($('#inspector-content').textContent.includes('PART · SINGLE BODY')&&$('#inspector-content').textContent.includes('One manufactured piece'),'Part inspector emphasizes a single manufactured piece');
   check($('#inspector-content').textContent.includes('3/4 × 20 × 94 3/4'),'overall stock bounds shown');
@@ -41,13 +43,14 @@ try{
   check(!!$('.part-row .part-collapse'),'Part row has a small subtitle triangle');
   $('.part-row .part-collapse').click();check(!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false','Part subtitle triangle collapses subcomponents');$('.part-collapse').click();check(!!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='true','Part subtitle triangle expands subcomponents');
   select('panel');const sourceBeforeNameClick=$('#source-editor').value;
-  $('.part-name').click();check(!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false'&&$('.object-name').textContent==='Notched panel','single click on Part name selects the Part and collapses subcomponents');
-  $('.part-name').click();check(!!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='true','single click on Part name expands subcomponents');
-  check($('#source-editor').value===sourceBeforeNameClick,'Part name expansion leaves model source unchanged');
-  for(const selector of ['.part-row .row-cube','.part-row .row-size','.part-row .part-tag','.part-row .component-select','.part-row']){
-    $(selector).click();check(!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='false',`${selector} click collapses the Part once`);
-    $(selector).click();check(!!$('[data-id="panel"]')&&$('.part-collapse').getAttribute('aria-expanded')==='true',`${selector} click expands the Part once`);
+  for(const expanded of [true,false]){
+    for(const selector of ['.part-name','.part-row .row-cube','.part-row .row-size','.part-row .component-select','.part-row']){
+      if(expanded)select('panel');
+      $(selector).click();check(!!$('[data-id="panel"]')===expanded&&$('.part-collapse').getAttribute('aria-expanded')===String(expanded)&&$('.object-name').textContent==='Notched panel',`${selector} click selects the Part and preserves ${expanded?'expanded':'collapsed'} state`);
+    }
+    $('.part-tag').click();check(!!$('[data-id="panel"]')===!expanded&&$('.part-collapse').getAttribute('aria-expanded')===String(!expanded),'PART label toggles expansion once');
   }
+  check($('#source-editor').value===sourceBeforeNameClick,'Part selection and expansion leave model source unchanged');
   check($('#source-editor').value.includes('part('),'GUI emits part() source');
   $('#undo').click();check(!$('.part-row'),'undo restores separate boxes');$('#redo').click();check(!!$('.part-row'),'redo restores Part');
   select(partId);change('#group-name','MC1');
@@ -71,8 +74,10 @@ try{
   select('top');$('[data-id="panel"]').dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}));
   check(!$('#selection-color')&&!!$('[data-inspect-part]'),'multiple subcomponents direct color editing to their Part');
   select('panel');check($('.object-name').textContent==='MC1 > Panel'&&$('#box-name').value==='Panel','inspector displays full path but edits local name');
+  check($('.object-name [data-inspect-owner-part]').textContent==='MC1','inspector path links only the parent Part name');
+  $('.object-name [data-inspect-owner-part]').click();check($('.object-name').textContent==='MC1'&&$('.part-row').classList.contains('selected')&&$('.part-collapse').getAttribute('aria-expanded')==='true','inspector path selects the parent Part without toggling expansion');select('panel');
   check(!!$('#inspect-owner-part')&&$('.part-membership-card').dataset.ownerPart===partId,'membership identifies the Part and provides return action');
-  change('#box-name','');check($('.object-name').textContent==='MC1'&&$('[data-id="panel"] .row-name').textContent==='Box','unnamed subcomponent displays the Part name only in inspector');change('#box-name','Panel');
+  change('#box-name','');check($('.object-name').textContent==='MC1'&&!!$('.object-name [data-inspect-owner-part]')&&$('[data-id="panel"] .row-name').textContent==='Box','unnamed subcomponent displays the clickable Part name only in inspector');change('#box-name','Panel');
   $('#inspect-owner-part').click();check($('.object-name').textContent==='MC1','return action selects the parent Part');
   const showToggle=$('.part-row [data-visibility-id]');showToggle.click();check([...document.querySelectorAll('.part-subcomponent-row')].every(row=>row.classList.contains('hidden-object')),'Part visibility hides the whole body');
   check(!$('[data-id="panel"]').disabled,'hidden Part subcomponents remain selectable');
@@ -101,6 +106,7 @@ try{
   // Convert an ordinary group after dissolving its only nested Part.
   select(partId);$('#ungroup').click();select('cabinet');$('#make-part').click();create('MC1');
   check($('.part-row [data-id]').dataset.id==='cabinet'&&$('.object-id').textContent.includes('SINGLE BODY'),'group converts in place into a Part');
+  check($('.part-collapse').getAttribute('aria-expanded')==='false','converted Parts start collapsed');select('cabinet');
   check(!$('#group-parent').querySelector('option[value="cabinet"]'),'Part cannot parent itself');
   select('panel');$('#source-editor').value+='\n// pending material edit';$('#source-editor').dispatchEvent(new Event('input',{bubbles:true}));
   check($('#remove-from-part').disabled&&$('#part-color').disabled&&[...document.querySelectorAll('[data-part-color]')].every(button=>button.disabled)&&!$('#item-group'),'source draft disables removal and Part material controls in subcomponent card');
@@ -110,6 +116,13 @@ try{
   for(let i=0;i<250&&$('#add-box').disabled;i++) await new Promise(resolve=>setTimeout(resolve,20));
   $(`.document-select[data-document-id="${sketch.id}"]`).click();check(!$('#add-part')&&!$('#make-part')&&!$('#selection-make-part'),'2D sketches cannot create Parts');
   $(`.document-select[data-document-id="${fixture.id}"]`).click();select('cabinet');
+  for(let i=0;i<4;i++)$('#duplicate-box').click();
+  const firstPart=()=>$('.part-row'),firstToggle=()=>firstPart().querySelector('.part-collapse');
+  if(firstToggle().getAttribute('aria-expanded')==='true')firstToggle().click();
+  const treeTop=$('#component-list').getBoundingClientRect().top,partTop=firstPart().getBoundingClientRect().top;
+  firstToggle().click();
+  check($('#component-list').scrollHeight>$('#component-list').clientHeight,'expanded tree overflows its available space');
+  check(Math.abs($('#component-list').getBoundingClientRect().top-treeTop)<0.1&&Math.abs(firstPart().getBoundingClientRect().top-partTop)<0.1&&Math.abs($('.tree-caption').getBoundingClientRect().height-29)<0.1,'expanding an overflowing Part keeps the tree header and existing rows fixed');
 }catch(error){errors.push(error.stack??String(error))}
 $('#test-result').textContent=errors.length?`${errors.length} failures in ${checks} checks`:`Passed ${checks} Part UI checks`;
 $('#test-failures').textContent=errors.join('\n');

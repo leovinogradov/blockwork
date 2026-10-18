@@ -186,6 +186,7 @@ textarea.text-field.variable-description{height:auto;min-height:72px;padding:8px
 
 /* Group containers share the model and sketch object tree. */
 .component-row[style*="--tree-depth"]{padding-left:calc(10px + var(--tree-depth,0)*14px)}
+.tree-caption{flex:none}
 .group-row{background:#1b2931;min-height:36px;border-left:2px solid #68808e;gap:5px}
 .group-row.selected{border-left-color:var(--amber);background:#303129}
 .group-collapse{width:18px;height:28px;flex:none;border:0;background:transparent;padding:0;color:#9badb8;cursor:pointer;font-size:15px}
@@ -282,6 +283,9 @@ body.is-resizing-panels,body.is-resizing-panels *{cursor:col-resize!important;us
 .part-membership-card .color-label{margin-top:14px}
 .part-membership-card .part-material-help{color:#c5b08e}
 .object-name{overflow-wrap:anywhere}
+.inspector-part-link{appearance:none;border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left;text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--muted)}
+.inspector-part-link:hover{color:var(--amber)}
+.inspector-part-link:focus-visible{outline:1px solid var(--amber);outline-offset:3px;border-radius:2px}
 .model-tool-actions{gap:4px;flex-wrap:wrap}
 .model-tool-actions>button{width:28px;flex:none}
 

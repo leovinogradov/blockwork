@@ -200,9 +200,9 @@ export class NavigationControls extends OrbitControls {
       this.pendingWheel.push(event);
       if (this.wheelTimer === null) this.wheelTimer = setTimeout(() => {
         this.flushPendingWheel('zoom');
-        this.wheelClassifier.reset();
+        this.wheelClassifier.settlePendingZoom();
       }, PENDING_WHEEL_MS);
-      if (this.pendingWheel.length >= 16) { this.flushPendingWheel('zoom'); this.wheelClassifier.reset(); }
+      if (this.pendingWheel.length >= 16) { this.flushPendingWheel('zoom'); this.wheelClassifier.settlePendingZoom(); }
       return;
     }
     if (decision.resolvePending) this.flushPendingWheel(decision.action);
