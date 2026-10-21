@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createBlankDocument, createDocument, serializeWorkspace } from '../src/documents';
 import { FileLibrary, migrateWorkspace, importCollision, exportLibrary, restoreLibrary, validateLibrary, StorageConflictError, type LibraryStorage } from '../src/file-library';
 import { IndexedDBStorage } from '../src/indexeddb-storage';
-import type { LibraryChanges } from '../src/library-storage';
+import { LibraryDataError, type LibraryChanges } from '../src/library-storage';
 import { fileName, uniqueFileName } from '../src/file-names';
 import { openSketchEditor, synchronizeSketchReferences } from '../src/sketch-editor';
 
@@ -14,6 +14,30 @@ function fixture() {
   const manager = new FileLibrary(adapter);
   return { manager, adapter };
 }
+
+test('document restore errors retain the failing filename and validation cause', async () => {
+  const { manager, adapter } = fixture();
+  const blank = createBlankDocument([], 'sketch');
+  const broken = createBlankDocument([blank], 'sketch'); broken.name = 'Broken optimized cutlist';
+  broken.rectangles = [{ id: 'label', kind: 'text', name: 'Panel label', text: 'Panel 1', textHeight: -1, position: [0, 0], size: [4, 1], color: '#ffffff' }];
+  await manager.save([blank, broken], [], workspace([blank.id]));
+  const before = await adapter.read();
+  await assert.rejects(manager.load(), (error) => {
+    assert.ok(error instanceof LibraryDataError);
+    assert.match(error.message, /Broken optimized cutlist.*positive/);
+    assert.ok(error.cause instanceof Error);
+    assert.match(error.cause.message, /positive/);
+    return true;
+  });
+  assert.deepEqual(await adapter.read(), before);
+  await manager.close();
+});
+
+test('browser storage read failures are not relabeled as document validation errors', async () => {
+  const error = new DOMException('Storage access denied', 'SecurityError');
+  const library = new FileLibrary({ read: async () => { throw error; }, write: async () => {} });
+  await assert.rejects(library.load(), (cause) => cause === error);
+});
 
 test('migration preserves duplicate named files, IDs, active tab, drafts, geometry, and legacy data', async () => {
   const first = createBlankDocument([]); first.name = 'Plan.js'; first.source = 'broken draft'; first.draftDirty = true;

@@ -77,6 +77,7 @@ try {
   $('#source-editor').value = fixture.appliedSource; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true }));
   $('#run-code').click();
   await wait(() => !$('#run-code').disabled && !$('#draft-note').classList.contains('warning-note'), 'draft replaced by applied source');
+  $('[data-collapse-id="assembly"]').click();
   $(`[data-visibility-id="panel"]`).click();
   $('#export-menu-button').click();
   $('#export-glb').click();

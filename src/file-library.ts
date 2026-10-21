@@ -1,5 +1,6 @@
 import type { LibraryStorage, StoredFile, StoredFolder, FileData } from './library-storage';
 import type { Folder, WorkspaceState } from './library-storage';
+import { LibraryDataError } from './library-storage';
 export type { Folder, WorkspaceState, LibraryStorage } from './library-storage';
 import { restoreDocument, restoreWorkspace, serializeDocument, type ModelDocument } from './documents';
 import { fileName, nameKey, uniqueFileName } from './file-names';
@@ -68,8 +69,12 @@ export class FileLibrary {
     const stored = await this.storage.read();
     if (!stored) return null;
     const { files, folders, workspace } = stored;
-    const documents = files.map((file) => restoreDocument(file));
-    validateLibrary(documents, folders);
+    const documents = files.map((file) => {
+      try { return restoreDocument(file); }
+      catch (cause) { throw new LibraryDataError(`Could not open saved file “${file?.name || file?.id || 'unnamed file'}”: ${cause instanceof Error ? cause.message : String(cause)}`, cause); }
+    });
+    try { validateLibrary(documents, folders); }
+    catch (cause) { throw new LibraryDataError(`Could not restore the saved library: ${cause instanceof Error ? cause.message : String(cause)}`, cause); }
     this.files = new Map(files.map((file) => [file.id, file]));
     this.folders = new Map(folders.map((folder) => [folder.id, folder]));
     this.initialized = true;

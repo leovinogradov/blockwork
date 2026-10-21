@@ -28,6 +28,8 @@ const create=name=>{change('#part-name',name);$('#part-form').dispatchEvent(new 
 const cutlist=()=>{$('#export-menu-button').click();$('#export-cutlist').click()};
 try{
   check(!$('#add-part'),'tools omit Create Part button');
+  check($('[data-collapse-id="cabinet"]').getAttribute('aria-expanded')==='false','recovered groups start collapsed');
+  $('[data-collapse-id="cabinet"]').click();
   select('panel');$('[data-id="top"]').dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}));
   check(!!$('#selection-make-part'),'multi-selection offers Combine into a Part');
   $('#selection-make-part').click();check($('#part-dialog').open,'creation opens name modal');

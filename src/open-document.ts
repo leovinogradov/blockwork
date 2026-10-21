@@ -1,6 +1,7 @@
 import { compileModel, type CompiledSketch } from './compiler';
 import { createDocument, resolveSnapshot, type DocumentKind, type Snapshot } from './documents';
 import type { ModelSpec } from './model';
+import { optimizedCutlistFromSource } from './optimized-cutlist';
 
 /** Compile imports independently so switching tabs cannot cancel their initial run. */
 export async function openDocumentFile(
@@ -11,6 +12,7 @@ export async function openDocumentFile(
 ) {
   const document = createDocument(name, source, kind);
   try {
+    if (kind === 'sketch') document.optimizedCutlist = optimizedCutlistFromSource(source);
     const compiled = await compile(source, kind);
     const snapshot: Snapshot = {
       groups: compiled.groups ?? [], measurements: compiled.measurements ?? [],
@@ -21,7 +23,7 @@ export async function openDocumentFile(
       source, hiddenIds: [],
     };
     const geometry = resolveSnapshot(snapshot, kind);
-    Object.assign(document, geometry, { appliedSource: source, draftDirty: false });
+    Object.assign(document, geometry, { collapsedGroupIds: geometry.groups.map((group) => group.id), appliedSource: source, draftDirty: false });
     document.history = [structuredClone({ ...snapshot, ...geometry })];
     document.historyAt = 0;
   } catch (error) {

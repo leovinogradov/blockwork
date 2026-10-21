@@ -39,8 +39,8 @@ try {
   const small = createSketchTextMesh(shape('Panel A', 1));
   const large = createSketchTextMesh(shape('Panel A', 3));
   const a = small.material.map.image, b = large.material.map.image;
-  check(b.height / 3 > a.height, '3 inch text must have higher PPI than 1 inch text');
-  check(b.width > a.width * 3, 'Larger text must receive more pixels on both axes');
+  check(Math.abs(b.height - a.height) <= 1, 'Inch scale must not inflate label texture height');
+  check(Math.abs(b.width - a.width) <= 1, 'Inch scale must not inflate label texture width');
   document.querySelector('#samples').append(a, b);
   const alpha = b.getContext('2d').getImageData(0,0,b.width,b.height).data.filter((_,i) => i % 4 === 3);
   check(alpha.some((n) => n === 255), 'Texture must contain visible glyphs');
@@ -159,6 +159,22 @@ try {
   viewport.setRectangles([line]); viewport.select('line'); await frame();
   check(!host.querySelector('.sketch-move-handle'), 'Line selection must not acquire a center movement handle');
   viewport.setRectangles(blocks); viewport.selectMany(['rectangle','circle']); await frame();
+
+  const labels = Array.from({length:77}, (_,i) => ({...shape(String(i+1),3.6, 'label-'+i),position:[(i%11)*12, -Math.floor(i/11)*8]}));
+  viewport.setRectangles(labels);
+  const loading = host.querySelector('.viewport-loading'), progress = loading.querySelector('progress');
+  check(!loading.hidden && progress.value === 0 && progress.max === 77 && host.getAttribute('aria-busy') === 'true', 'Large drawings must expose label loading progress before rasterization');
+  await frame();
+  check(progress.value > 0 && progress.value < 77, 'Label rendering must yield between batches');
+  const deadline = performance.now() + 10000;
+  while (host.getAttribute('aria-busy') === 'true' && performance.now() < deadline) await frame();
+  check(progress.value === 77 && loading.hidden && host.getAttribute('aria-busy') === 'false', 'Finishing labels must dismiss the loading indicator');
+  viewport.setRectangles(labels); viewport.setRectangles([rectangle]); await frame();
+  check(loading.hidden && host.getAttribute('aria-busy') === 'false', 'Replacing a drawing must cancel pending label batches');
+  viewport.setBoxes([], {sketches:[{id:'mounted',name:'Mounted labels',axis:'z',size:[144,64],position:[0,0,0],color:'#ffffff',shapes:labels}]});
+  check(!loading.hidden && progress.max === 77, 'Mounted model sketches must use the same batched loading path');
+  viewport.setRectangles(labels); viewport.dispose(); await frame();
+  check(!host.querySelector('.viewport-loading') && !host.querySelector('canvas'), 'Disposing while loading must remove the indicator and cancel pending work');
 } catch(error) { errors.push(String(error)); }
 document.querySelector('#result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `${checks} checks passed`;
 document.querySelector('#failures').textContent = errors.join('\n');

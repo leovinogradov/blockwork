@@ -10,21 +10,25 @@ import { compileModel, type CompiledSketch } from './compiler';
 import { DEFAULT_SOURCE } from './example';
 import { createBoxFromFace, createCylinderFromFace, cylinderAxes, cylinderAxisOrder, cylinderSize, reorientCylinder, formatInches, generateSource, getFaceFrame, parseInches, removeVariable, reparentBox, resolveModel, validateBoxes, type BoxSpec, type CylinderAxis, type FaceName, type RelativePlacement, type VariableSpec, type NumericField } from './model';
 import { createViewport, type SketchTool } from './viewport';
-import { sketchTextLetterHeight, sketchTextSize, sketchTextTopLeft } from './sketch-text';
+import { sketchTextSize } from './sketch-text';
 import { updateSketchSelection, type SelectionAction } from './sketch-selection';
 import { createBlankDocument, createDocument, resolveSnapshot, type DocumentKind, type ModelDocument, type Snapshot } from './documents';
-import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, trimSketchText, validateSketchShapes, type SketchShape } from './sketch';
+import { circleFromCenter, generateSketchSource, lineDisplacement, lineFromPoints, lineMeasurements, parseLineAngle, rectangleFromCorners, trimSketchText, validateSketchShapes, type SketchTextShape, type SketchShape } from './sketch';
 import { sketchReference, sketchReferenceOrigin, type ModelSketch, type SketchAxis } from './model-sketch';
 import { findSketchEditor, linkSketchEditor, openSketchEditor, resolveLinkedSketches, synchronizeSketchReferences } from './sketch-editor';
 import { DEFAULT_MEASUREMENT_OFFSET, defaultMeasurementLineHeight, pruneMeasurements, resolveMeasurement, validateMeasurements, type Measurement, type MeasurementAxis, type MeasurementAxisChoice } from './measurements';
 import { saveDocumentFile, type SaveFilePicker } from './save-document';
 import { bindExportMenu } from './export-menu';
 import { exportModelCutlist, type CutlistExportResult } from './cutlist-export';
+import { createOptimizedCutlistDocument, applyCutlistLayout } from './optimized-cutlist-document';
+import { createOptimizedCutlistUI } from './optimized-cutlist-ui';
 import { analyzePart, componentDisplayName } from './parts';
 import { normalizeLibraryOrder, planLibraryMove } from './file-tree';
 import { openDocumentFile } from './open-document';
 import { FileLibrary, exportLibrary, restoreLibrary, migrateWorkspace, importCollision, siblingNames, validateLibrary, type Folder, type LibraryState } from './file-library';
 import { IndexedDBStorage } from './indexeddb-storage';
+import { storageErrorMessage } from './storage-errors';
+import { LibraryDataError } from './library-storage';
 import { createFileManager } from './file-manager-ui';
 import { fileName, uniqueFileName } from './file-names';
 
@@ -56,11 +60,17 @@ root.innerHTML = `
             <button class="export-menu-item" id="download" type="button" role="menuitem" title="Export Blockwork source (Ctrl/Cmd+S)">Blockwork .js</button>
             <button class="export-menu-item" id="export-glb" type="button" role="menuitem" title="Export applied visible boxes and cylinders for Blender">.glb</button>
             <button class="export-menu-item" id="export-cutlist" type="button" role="menuitem" title="Export a CSV cutlist of applied boxes">CSV cutlist</button>
+            <button class="export-menu-item" id="export-optimized-cutlist" type="button" role="menuitem" title="Open an optimized cutlist in a new 2D sketch tab">Optimized cutlist</button>
           </div>
         </div>
         <input id="backup-input" type="file" accept=".json,application/json" hidden /><input id="file-input" type="file" accept=".js,.mjs,.txt,text/javascript" multiple hidden />
       </div>
     </header>
+    <details id="storage-error" class="storage-error" hidden open>
+      <summary>Local saving failed · details</summary>
+      <p id="storage-error-message" role="alert"></p>
+      <button id="storage-error-backup" class="button" type="button">Back up library</button>
+    </details>
     <div id="empty-workspace" class="empty-workspace" hidden>No file is open. Choose <b>Files</b> to reopen a saved file, or <b>＋</b> to create one.</div>
     <div class="workspace">
       <aside id="tools-panel" class="sidebar panel">
@@ -158,7 +168,7 @@ root.innerHTML = `
     </dialog>
     <dialog id="cutlist-dialog" class="variable-dialog cutlist-dialog" aria-labelledby="cutlist-title" aria-describedby="cutlist-description">
       <form id="cutlist-form" novalidate>
-        <div class="eyebrow">CSV EXPORT</div><h2 id="cutlist-title">Export cutlist</h2>
+        <div class="eyebrow" id="cutlist-export-kind">CSV EXPORT</div><h2 id="cutlist-title">Export cutlist</h2>
         <p id="cutlist-description" class="cutlist-description">One row per box or connected Part in component tree order, including hidden geometry and collapsed groups. Parts use their overall dimensions and full group path. Length is the largest dimension, thickness the smallest, in inches.</p>
         <label class="field-label" for="cutlist-thickness">MAXIMUM THICKNESS · INCHES</label>
         <input id="cutlist-thickness" class="text-field" inputmode="decimal" autocomplete="off" value="3" aria-describedby="cutlist-thickness-help cutlist-error" required />
@@ -224,6 +234,7 @@ let folders: Folder[] = [];
 let libraryEntryOrder: string[] = [];
 let collapsedFolderIds = new Set<string>();
 let library: FileLibrary | null = null;
+let libraryLoadError: unknown;
 let storageReady = false;
 let persistenceGeneration = 0;
 let importParentId: string | null = null;
@@ -299,7 +310,7 @@ const viewport = createViewport(
   (id, text) => {
     if (documentKind !== 'sketch' || draftDirty) return;
     const shape = rectangles.find((shape) => shape.id === id);
-    if (!shape) return;
+    if (shape?.kind !== 'text') return;
     const content = trimSketchText(text);
     if (!content.trim()) { commitRectangles(rectangles.filter((shape) => shape.id !== id), 'Empty text removed', { preserveView: true }); return; }
     updateSketchText(shape, content);
@@ -349,6 +360,28 @@ function notify(message: string, isError = false) {
   const toast = $('#toast'); toast.textContent = message; toast.classList.toggle('is-error', isError); toast.classList.add('visible');
   window.clearTimeout(toastTimer); toastTimer = window.setTimeout(() => toast.classList.remove('visible'), 2800);
 }
+function reportStorageError(error: unknown, operation: string, show = true) {
+  console.error(`[Blockwork storage] ${operation} failed`, error, {
+    origin: location.origin,
+    embedded: window.self !== window.top,
+    secureContext: window.isSecureContext,
+    userAgent: navigator.userAgent,
+  });
+  if (!show) return;
+  $('#storage-error-message').textContent = storageErrorMessage(error);
+  $('#storage-error summary').textContent = error instanceof LibraryDataError ? 'Saved library could not be loaded · details' : 'Local saving failed · details';
+  $('#storage-error-backup').textContent = library ? 'Back up library' : 'Back up current workspace';
+  $('#storage-error').hidden = false;
+  $('#save-state').textContent = 'Not saved';
+}
+function requireLibrary(): FileLibrary {
+  if (!library) throw new Error(storageErrorMessage(libraryLoadError), { cause: libraryLoadError });
+  return library;
+}
+function storageSaved(label = 'Saved locally') {
+  $('#save-state').textContent = label;
+  $('#storage-error').hidden = true;
+}
 function updateLineNumbers() { $('#line-numbers').textContent = Array.from({ length: Math.max(1, editor.value.split('\n').length) }, (_, i) => String(i + 1)).join('\n'); }
 function setEditor(source: string, dirty = false) { editor.value = source; draftDirty = dirty; updateLineNumbers(); syncDraftUI(); }
 function syncDraftUI() {
@@ -377,6 +410,7 @@ function syncExportUI() {
     ? 'GLB export is available for 3D models'
     : `Export applied visible boxes and cylinders for Blender${draftDirty ? ' · Unrun draft is excluded' : ''}${sketches.length || measurements.length ? ' · Sketches and measurements are excluded' : ''}`;
   const cutlistButton = $('#export-cutlist');
+  $('#export-optimized-cutlist').toggleAttribute('disabled', !openDocumentIds.length || documentKind !== 'model' || !boxes.length && !groups.some((g) => g.kind === 'part'));
   cutlistButton.toggleAttribute('disabled', !openDocumentIds.length || documentKind !== 'model' || !boxes.length && !groups.some((g) => g.kind === 'part'));
   cutlistButton.title = documentKind === 'sketch'
     ? 'CSV cutlist export is available for 3D models'
@@ -1152,9 +1186,9 @@ function renderSketchInspector() {
   host.querySelectorAll<HTMLButtonElement>('[data-color]').forEach((button) => button.addEventListener('click', () => updateRectangle(rectangle.id, { color: button.dataset.color! })));
   host.querySelector<HTMLInputElement>('#rectangle-color')?.addEventListener('input', (event) => updateRectangle(rectangle.id, { color: (event.currentTarget as HTMLInputElement).value }));
 }
-function renderTextInspector(host: HTMLElement, shape: SketchShape) {
+function renderTextInspector(host: HTMLElement, shape: SketchTextShape) {
   const disabled = draftDirty ? 'disabled' : '';
-  const letterHeight = sketchTextLetterHeight(shape), topLeft = sketchTextTopLeft(shape);
+  const letterHeight = shape.textHeight, topLeft = shape.position;
   const field = (label: string, key: string, value: number) => `<label class="measure-field"><span>${label}</span><span class="measure-input"><input aria-label="Text ${label}" data-text-field="${key}" value="${formatInches(value)}" inputmode="decimal" ${disabled}/><small>in</small></span></label>`;
   host.innerHTML = `<div class="object-heading"><span class="row-text" style="--cube:${escapeAttr(shape.color)}" aria-hidden="true">T</span><div><div class="object-name">${escapeHTML(shape.name)}</div><div class="object-id">TEXT · ${escapeHTML(shape.id.slice(0, 8).toUpperCase())}</div></div></div>
     <label class="field-label" for="sketch-text-name">NAME</label><input id="sketch-text-name" class="text-field" value="${escapeAttr(shape.name)}" ${disabled}/>
@@ -1298,7 +1332,7 @@ function renderDocumentTabs() {
   host.innerHTML = openDocumentIds.map((id) => documents.find((document) => document.id === id)!).map((document) => {
     const active = document.id === activeDocumentId;
     const pending = active ? draftDirty : document.draftDirty;
-    return `<div class="document-tab ${active ? 'active' : ''}"><button class="document-select" data-document-id="${escapeAttr(document.id)}" ${active ? 'aria-current="page"' : ''} title="${escapeAttr(document.name)} · ${document.kind === 'sketch' ? '2D sketch' : '3D model'}${pending ? ' · pending draft' : ''}"><span class="document-kind-mark" aria-hidden="true"><i data-lucide="${document.kind === 'sketch' ? 'square' : 'box'}"></i></span><span>${escapeHTML(document.name)}</span>${pending ? '<span class="document-draft" aria-label="Pending draft">●</span>' : ''}</button><button class="document-close" data-document-id="${escapeAttr(document.id)}" aria-label="Close ${escapeAttr(document.name)}" title="Close file">×</button></div>`;
+    return `<div class="document-tab ${active ? 'active' : ''}"><button class="document-select" data-document-id="${escapeAttr(document.id)}" ${active ? 'aria-current="page"' : ''} title="${escapeAttr(document.name)} · ${document.optimizedCutlist ? 'Optimized cutlist' : document.kind === 'sketch' ? '2D sketch' : '3D model'}${pending ? ' · pending draft' : ''}"><span class="document-kind-mark" aria-hidden="true"><i data-lucide="${document.kind === 'sketch' ? 'square' : 'box'}"></i></span><span>${escapeHTML(document.name)}</span>${pending ? '<span class="document-draft" aria-label="Pending draft">●</span>' : ''}</button><button class="document-close" data-document-id="${escapeAttr(document.id)}" aria-label="Close ${escapeAttr(document.name)}" title="Close file">×</button></div>`;
   }).join('');
   renderIcons(host);
   host.querySelectorAll<HTMLButtonElement>('.document-select').forEach((button) => { button.addEventListener('click', () => switchDocument(button.dataset.documentId!)); button.addEventListener('dblclick', () => renameTab(button.dataset.documentId!)); });
@@ -1312,6 +1346,7 @@ function loadDocument(document: ModelDocument) {
   $('#run-code').toggleAttribute('disabled', false);
   closeFaceMenu(); closeFaceColorPicker();
   activeDocumentId = document.id;
+  if (!openDocumentIds.includes(document.id)) document.collapsedGroupIds = document.groups.map((group) => group.id);
   if (documents.includes(document) && !openDocumentIds.includes(document.id)) openDocumentIds.push(document.id);
   const empty = !openDocumentIds.length;
   $('#empty-workspace').hidden = !empty;
@@ -1348,6 +1383,7 @@ function loadDocument(document: ModelDocument) {
   editor.setSelectionRange(document.selectionStart, document.selectionEnd);
   editor.scrollTop = document.scrollTop; editor.scrollLeft = document.scrollLeft; $('#line-numbers').scrollTop = editor.scrollTop;
   $('#editor-error').textContent = document.error; $('#editor-error').hidden = !document.error;
+  optimizedCutlistUI.load(document);
   renderAll();
   Array.from($('#document-tabs').querySelectorAll<HTMLButtonElement>('.document-select')).find((button) => button.dataset.documentId === document.id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   setStatus(document.error ? 'Source has errors · last good work kept' : draftDirty ? `Loaded ${document.name} · press Run` : `Ready · ${shapeCount()} ${shapeLabel()}`, !!document.error);
@@ -1436,23 +1472,23 @@ function libraryState(): LibraryState {
 async function saveWorkspace(): Promise<boolean> {
   if (!storageReady) return false;
   window.clearTimeout(saveTimer);
+  if (!library) { $('#save-state').textContent = 'Not saved'; return false; }
   captureDocument();
   const generation = ++persistenceGeneration;
   $('#save-state').textContent = 'Saving…';
   try {
-    if (!library) throw new Error('Browser storage is unavailable. Export files or back up the library to keep your work.');
     const state = libraryState();
     await library.save(state.documents, state.folders, state.workspace);
-    if (generation === persistenceGeneration) $('#save-state').textContent = 'Saved locally';
+    if (generation === persistenceGeneration) storageSaved();
     return true;
   } catch (error) {
-    if (generation === persistenceGeneration) $('#save-state').textContent = 'Not saved';
-    notify(error instanceof Error ? error.message : 'Could not save to browser storage. Back up your work.', true);
+    reportStorageError(error, 'Save library', generation === persistenceGeneration);
     return false;
   }
 }
 function scheduleSave() {
   if (!storageReady) return;
+  if (!library) { $('#save-state').textContent = 'Not saved'; return; }
   persistenceGeneration++;
   $('#save-state').textContent = 'Saving…'; window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => void saveWorkspace(), 350);
@@ -1462,7 +1498,7 @@ function renameTab(id: string) {
   if (doc) fileManager.rename(id, doc.name);
 }
 async function persistLibraryChange(nextDocuments: ModelDocument[], nextFolders: Folder[], nextOpenIds = openDocumentIds, nextEntryOrder = libraryEntryOrder, nextCollapsedFolders = [...collapsedFolderIds]) {
-  if (!library) throw new Error('Browser storage is unavailable. Export or back up your work.');
+  const activeLibrary = requireLibrary();
   validateLibrary(nextDocuments, nextFolders);
   window.clearTimeout(saveTimer); captureDocument();
   const generation = ++persistenceGeneration;
@@ -1470,14 +1506,14 @@ async function persistLibraryChange(nextDocuments: ModelDocument[], nextFolders:
   const nextActive = nextOpenIds.includes(activeDocumentId) ? activeDocumentId : nextOpenIds[0] ?? '';
   const entryOrder = normalizeLibraryOrder(nextEntryOrder, nextDocuments, nextFolders);
   const collapsed = nextCollapsedFolders.filter((id) => nextFolders.some((folder) => folder.id === id));
-  try { await library.save(nextDocuments, nextFolders, { openIds: nextOpenIds, activeId: nextActive, preferences: { measurementsThroughObjects }, entryOrder, collapsedFolderIds: collapsed }); }
-  catch (error) { if (generation === persistenceGeneration) $('#save-state').textContent = 'Not saved'; throw error; }
+  try { await activeLibrary.save(nextDocuments, nextFolders, { openIds: nextOpenIds, activeId: nextActive, preferences: { measurementsThroughObjects }, entryOrder, collapsedFolderIds: collapsed }); }
+  catch (error) { reportStorageError(error, 'Update library', generation === persistenceGeneration); throw error; }
   documents = nextDocuments; folders = nextFolders; openDocumentIds = [...nextOpenIds];
   libraryEntryOrder = entryOrder;
   collapsedFolderIds = new Set(collapsed);
   if (!documents.some((doc) => doc.id === activeDocumentId && openDocumentIds.includes(doc.id))) loadDocument(documents.find((doc) => doc.id === nextActive) ?? emptyDocument);
   else { $('#source-name').textContent = activeDocument().name; renderDocumentTabs(); renderInspector(); }
-  if (generation === persistenceGeneration) $('#save-state').textContent = 'Saved locally';
+  if (generation === persistenceGeneration) storageSaved();
 }
 const fileManager = createFileManager(root, {
   state: () => { captureDocument(); return libraryState(); },
@@ -1511,6 +1547,7 @@ const fileManager = createFileManager(root, {
   restore: () => ($('#backup-input') as HTMLInputElement).click(),
 });
 $('#files').addEventListener('click', () => fileManager.open());
+$('#storage-error-backup').addEventListener('click', () => { captureDocument(); downloadData(exportLibrary(libraryState()), 'blockwork-library.json', 'application/json'); });
 $('#source-name').addEventListener('click', () => renameTab(activeDocumentId));
 function downloadData(source: string | ArrayBuffer, filename: string, type: string) {
   const url = URL.createObjectURL(new Blob([source], { type }));
@@ -1523,15 +1560,17 @@ $('#backup-input').addEventListener('change', async (event) => {
   try {
     const restored = restoreLibrary(await file.text());
     if (!window.confirm('Replace your browser library with this backup? Back up the current library first if you want to keep it.')) return;
-    if (!library) throw new Error('Browser storage is unavailable.');
+    const activeLibrary = requireLibrary();
     window.clearTimeout(saveTimer); captureDocument();
-    await library.save(restored.documents, restored.folders, restored.workspace);
+    try { await activeLibrary.save(restored.documents, restored.folders, restored.workspace); }
+    catch (error) { reportStorageError(error, 'Restore library'); throw error; }
     documents = restored.documents; folders = restored.folders; openDocumentIds = restored.workspace.openIds;
+    for (const document of documents) document.collapsedGroupIds = document.groups.map((group) => group.id);
     libraryEntryOrder = restored.workspace.entryOrder ?? [];
     collapsedFolderIds = new Set(restored.workspace.collapsedFolderIds ?? []);
     measurementsThroughObjects = restored.workspace.preferences.measurementsThroughObjects; syncMeasurementThroughPreference();
     loadDocument(documents.find((doc) => doc.id === restored.workspace.activeId) ?? emptyDocument);
-    $('#save-state').textContent = 'Saved locally'; notify('Library restored');
+    storageSaved(); notify('Library restored');
   } catch (error) { notify(error instanceof Error ? error.message : 'Could not restore backup.', true); }
 });
 function cloneVariables(value: VariableSpec[]) { return value.map((item) => ({ ...item })); }
@@ -1542,7 +1581,7 @@ function syncLinkedSketches() {
   try { synchronizeSketchReferences(documents, activeDocument()); }
   catch (error) { notify(error instanceof Error ? `Model reference unchanged: ${error.message}` : 'Could not update the linked model sketch', true); }
 }
-function commitRectangles(next: SketchShape[], message: string, options?: { preserveView?: boolean }) {
+function commitRectangles(next: unknown[], message: string, options?: { preserveView?: boolean }) {
   rectangles = cloneRectangles(validateSketchShapes(next, groups));
   measurements = pruneMeasurements(measurements, currentMeasurementGeometry());
   hiddenBoxIds = new Set([...hiddenBoxIds].filter(sceneHasId));
@@ -1552,9 +1591,9 @@ function commitRectangles(next: SketchShape[], message: string, options?: { pres
   const source = generateSketchSource(rectangles, groups, treeOrder, measurements); setEditor(source); appliedSource = source;
   recordAfterChange(); renderAll(); setStatus(message); scheduleSave();
 }
-function updateSketchText(shape: SketchShape, text: string, height = parseInches(sketchTextLetterHeight(shape))) {
+function updateSketchText(shape: SketchTextShape, text: string, height = parseInches(shape.textHeight)) {
   const content = trimSketchText(text);
-  updateRectangle(shape.id, { text: content, textHeight: height, size: sketchTextSize(content, height), position: sketchTextTopLeft(shape) });
+  updateRectangle(shape.id, { text: content, textHeight: height, size: sketchTextSize(content, height), position: shape.position });
 }
 function updateRectangle(id: string, patch: Partial<SketchShape>) {
   if (draftDirty) return notify('Run or discard the source draft before editing rectangles.', true);
@@ -1932,9 +1971,26 @@ $('#file-input').addEventListener('change', async (event) => {
   else if (opened.length > 1) notify(`Opened ${opened.length} files`);
 });
 $('#download').addEventListener('click', () => { captureDocument(); void saveDocument(activeDocument()); });
+const optimizedCutlistUI = createOptimizedCutlistUI(root, {
+  save: scheduleSave,
+  openSource: switchDocument,
+  findSource: (id) => documents.find((doc) => doc.id === id && doc.kind === 'model'),
+  hasPendingDraft: () => draftDirty,
+  apply: (layout, panels, kerf) => {
+    captureDocument();
+    const doc = activeDocument();
+    applyCutlistLayout(doc, layout);
+    doc.optimizedCutlist!.panels = panels;
+    doc.optimizedCutlist!.kerf = kerf;
+    loadDocument(doc); viewport.fit();
+    setStatus(`Optimized cutlist · ${layout.panels.length} panels · ${(100 * layout.usedArea / layout.totalArea).toFixed(1)}% utilization`);
+    scheduleSave();
+  },
+});
 const cutlistDialog = $<HTMLDialogElement>('#cutlist-dialog');
 const cutlistThickness = $<HTMLInputElement>('#cutlist-thickness');
-let cutlistSnapshot: { model: ReturnType<typeof resolveModel>; name: string; treeOrder: string[] } | null = null;
+let cutlistMode: 'csv' | 'optimized' = 'csv';
+let cutlistSnapshot: { documentId: string; model: ReturnType<typeof resolveModel>; name: string; treeOrder: string[] } | null = null;
 let cutlistResult: CutlistExportResult | null = null;
 function updateCutlistPreview() {
   if (!cutlistSnapshot) return;
@@ -1958,9 +2014,13 @@ function updateCutlistPreview() {
     $('#cutlist-summary').textContent = 'Enter a valid limit to preview the cutlist.';
   }
 }
-$('#export-cutlist').addEventListener('click', () => {
+function openCutlistDialog(mode: 'csv' | 'optimized') {
   if (!openDocumentIds.length || documentKind !== 'model' || !boxes.length && !groups.some((g) => g.kind === 'part')) return;
-  cutlistSnapshot = { model: structuredClone({ boxes, variables, groups, sketches, measurements }), name: activeDocument().name, treeOrder: [...treeOrder] };
+  cutlistMode = mode;
+  $('#cutlist-export-kind').textContent = mode === 'optimized' ? 'OPTIMIZED CUTLIST' : 'CSV EXPORT';
+  $('#cutlist-title').textContent = mode === 'optimized' ? 'Generate optimized cutlist' : 'Export cutlist';
+  $('#cutlist-download').textContent = mode === 'optimized' ? 'Open optimized cutlist' : 'Export CSV';
+  cutlistSnapshot = { documentId: activeDocumentId, model: structuredClone({ boxes, variables, groups, sketches, measurements }), name: activeDocument().name, treeOrder: [...treeOrder] };
   cutlistThickness.value = '3';
   $('#cutlist-draft-note').hidden = !draftDirty;
   updateCutlistPreview();
@@ -1968,7 +2028,9 @@ $('#export-cutlist').addEventListener('click', () => {
   cutlistDialog.showModal();
   cutlistThickness.focus();
   cutlistThickness.select();
-});
+}
+$('#export-cutlist').addEventListener('click', () => openCutlistDialog('csv'));
+$('#export-optimized-cutlist').addEventListener('click', () => openCutlistDialog('optimized'));
 cutlistThickness.addEventListener('input', updateCutlistPreview);
 $('#cutlist-cancel').addEventListener('click', () => cutlistDialog.close());
 cutlistDialog.addEventListener('close', () => {
@@ -1979,6 +2041,17 @@ $('#cutlist-form').addEventListener('submit', (event) => {
   event.preventDefault();
   updateCutlistPreview();
   if (!cutlistResult?.rows.length) { cutlistThickness.focus(); return; }
+  if (cutlistMode === 'optimized' && cutlistSnapshot) {
+    const source = documents.find((doc) => doc.id === cutlistSnapshot!.documentId);
+    if (!source) return;
+    captureDocument();
+    const doc = createOptimizedCutlistDocument(documents, source, cutlistResult, parseInches(cutlistThickness.value));
+    doc.name = uniqueFileName(doc.name, siblingNames(documents, folders, doc.parentId));
+    documents.push(doc);
+    cutlistDialog.close(); loadDocument(doc); scheduleSave();
+    setStatus('Cutlist generated · enter available panel sizes and click Optimize cutlist');
+    return;
+  }
   const { csv, filename, rows, ignored } = cutlistResult;
   downloadData(csv, filename, 'text/csv;charset=utf-8');
   const message = `Export requested · ${filename} · ${rows.length} ${rows.length === 1 ? 'piece' : 'pieces'} · ${ignored.length} ignored${!$('#cutlist-draft-note').hidden ? ' · Unrun draft was excluded.' : ''}`;
@@ -2049,16 +2122,18 @@ async function initializeWorkspace() {
     initialized = !!state;
   } catch (error) {
     library = null;
-    notify(error instanceof Error ? error.message : 'Browser storage is unavailable.', true);
+    libraryLoadError = error;
+    reportStorageError(error, 'Open library');
   }
   if (!state) {
     for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
       try { const raw = localStorage.getItem(key); if (raw) { state = migrateWorkspace(raw); break; } }
-      catch { /* Preserve the original recovery data and try the older format. */ }
+      catch (error) { console.warn('[Blockwork storage] Could not read legacy recovery', { key }, error); }
     }
   }
   if (state) {
     documents = state.documents; folders = state.folders; openDocumentIds = state.workspace.openIds;
+    for (const document of documents) document.collapsedGroupIds = document.groups.map((group) => group.id);
     libraryEntryOrder = state.workspace.entryOrder ?? [];
     collapsedFolderIds = new Set(state.workspace.collapsedFolderIds ?? []);
     measurementsThroughObjects = state.workspace.preferences.measurementsThroughObjects; syncMeasurementThroughPreference();
@@ -2071,7 +2146,7 @@ async function initializeWorkspace() {
   if (!initialized) {
     await saveWorkspace();
     if (!state) void runSource();
-  } else $('#save-state').textContent = 'Recovered';
+  } else storageSaved('Recovered');
   renderAll();
 }
 export const workspaceReady = initializeWorkspace();

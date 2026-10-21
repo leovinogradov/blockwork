@@ -1,20 +1,30 @@
 import * as THREE from 'three';
 import { parseFaceColor } from './face-color';
-import { trimSketchText, type SketchShape } from './sketch';
+import { trimSketchText, type SketchTextShape } from './sketch';
 
 const FONT = '100px sans-serif';
-const MAX_TEXTURE_PIXELS = 16 * 1024 * 1024;
+const MAX_TEXTURE_PIXELS = 1024 * 1024;
+export const TEXT_TEXTURE_PIXEL_BUDGET = 4 * 1024 * 1024;
 
-/** Larger inch heights get both more pixels and higher PPI, within GPU/memory limits. */
-export function textRasterSize(size: [number, number], maxTextureSize = 8192, letterHeight = size[1]): [number, number] {
+/** Raster detail follows letter height in pixels, independent of the drawing's inch scale. */
+export function textRasterSize(size: [number, number], letterHeight: number, maxTextureSize = 8192, maxPixels = MAX_TEXTURE_PIXELS): [number, number] {
   const [width, height] = size;
-  if (![width, height, maxTextureSize].every((n) => Number.isFinite(n) && n > 0)) throw new Error('Text dimensions must be positive and finite.');
-  const ppi = 384 * Math.sqrt(Math.max(1, letterHeight));
-  const density = Math.max(ppi, 64 / Math.min(width, height));
+  if (![width, height, maxTextureSize, letterHeight, maxPixels].every((n) => Number.isFinite(n) && n > 0)) throw new Error('Text dimensions must be positive and finite.');
+  const density = 128 / letterHeight;
   const w = Math.ceil(width * density), h = Math.ceil(height * density);
-  const limit = Math.max(1, Math.min(8192, Math.floor(maxTextureSize)));
-  const scale = Math.min(1, limit / w, limit / h, Math.sqrt(MAX_TEXTURE_PIXELS / (w * h)));
+  const limit = Math.max(1, Math.min(2048, Math.floor(maxTextureSize)));
+  const scale = Math.min(1, limit / w, limit / h, Math.sqrt(Math.min(MAX_TEXTURE_PIXELS, maxPixels) / (w * h)));
   return [Math.max(1, Math.floor(w * scale)), Math.max(1, Math.floor(h * scale))];
+}
+
+/** Share a fixed viewport budget while retaining the original density for small drawings. */
+export function textRasterBudgets(shapes: SketchTextShape[], maxTextureSize = 8192): number[] {
+  const pixels = shapes.map((shape) => {
+    const [width, height] = textRasterSize(shape.size, shape.textHeight, maxTextureSize);
+    return width * height;
+  });
+  const scale = Math.min(1, TEXT_TEXTURE_PIXEL_BUDGET / pixels.reduce((sum, count) => sum + count, 0));
+  return pixels.map((count) => Math.max(1, Math.floor(count * scale)));
 }
 
 export function textLayout(text: string, context: CanvasRenderingContext2D, trimTrailing = true) {
@@ -42,24 +52,12 @@ export function sketchTextSize(text: string, height: number): [number, number] {
   return [height * layout.width / layout.referenceHeight, height * layout.height / layout.referenceHeight];
 }
 
-export function sketchTextLetterHeight(shape: SketchShape): number {
-  if (shape.textHeight !== undefined) return shape.textHeight;
-  const context = document.createElement('canvas').getContext('2d');
-  if (!context) throw new Error('Text drawing requires canvas support.');
-  const layout = textLayout(shape.text!, context);
-  return shape.size[1] * layout.referenceHeight / layout.height;
-}
-
-export function sketchTextTopLeft(shape: SketchShape): [number, number] {
-  return [shape.position[0], shape.position[1] + (shape.textHeight === undefined ? shape.size[1] : 0)];
-}
-
-export function createSketchTextMesh(shape: SketchShape, maxTextureSize = 8192) {
+export function createSketchTextMaterial(shape: SketchTextShape, maxTextureSize = 8192, maxPixels = MAX_TEXTURE_PIXELS) {
   const canvas = document.createElement('canvas');
-  [canvas.width, canvas.height] = textRasterSize(shape.size, maxTextureSize, shape.textHeight ?? shape.size[1]);
+  [canvas.width, canvas.height] = textRasterSize(shape.size, shape.textHeight, maxTextureSize, maxPixels);
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Text drawing requires canvas support.');
-  const layout = textLayout(shape.text!, context);
+  const layout = textLayout(shape.text, context);
   context.scale(canvas.width / layout.width, canvas.height / layout.height);
   context.font = FONT;
   context.fillStyle = '#ffffff';
@@ -68,6 +66,9 @@ export function createSketchTextMesh(shape: SketchShape, maxTextureSize = 8192) 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const color = parseFaceColor(shape.color);
-  const material = new THREE.MeshBasicMaterial({ map: texture, color: color.color, opacity: color.opacity, transparent: true, side: THREE.DoubleSide, depthWrite: false });
-  return new THREE.Mesh(new THREE.PlaneGeometry(...shape.size), material);
+  return new THREE.MeshBasicMaterial({ map: texture, color: color.color, opacity: color.opacity, transparent: true, side: THREE.DoubleSide, depthWrite: false });
+}
+
+export function createSketchTextMesh(shape: SketchTextShape, maxTextureSize = 8192, maxPixels = MAX_TEXTURE_PIXELS) {
+  return new THREE.Mesh(new THREE.PlaneGeometry(...shape.size), createSketchTextMaterial(shape, maxTextureSize, maxPixels));
 }

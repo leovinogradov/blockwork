@@ -63,5 +63,5 @@ export function compileModel(source: string, kind: DocumentKind = 'model'): Prom
 }
 
 function layoutText(shape: SketchShape): SketchShape {
-  return shape.kind === 'text' && shape.textHeight !== undefined ? { ...shape, size: sketchTextSize(shape.text!, shape.textHeight) } : shape;
+  return shape.kind === 'text' ? { ...shape, size: sketchTextSize(shape.text, shape.textHeight) } : shape;
 }

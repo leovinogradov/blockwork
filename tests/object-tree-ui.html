@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Object tree opening checks</title><div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:white;padding:8px;font:12px monospace"><span id="test-result">Running object tree checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+import { createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+const database = `object-tree-ui-${crypto.randomUUID()}`, nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const model = createBlankDocument([]), sketch = createBlankDocument([], 'sketch');
+model.groups = [
+  { id: 'assembly', name: 'Assembly', position: [0, 0, 0] },
+  { id: 'nested', name: 'Nested', parentId: 'assembly', position: [0, 0, 0] },
+  { id: 'part', name: 'Part', parentId: 'nested', kind: 'part', position: [0, 0, 0] },
+];
+sketch.groups = [{ id: 'sketch-group', name: 'Sketch group', position: [0, 0, 0] }];
+// Persist explicitly expanded containers to verify opening overrides saved expansion.
+const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([model, sketch], model.id)]]);
+Object.defineProperty(window, 'localStorage', { value: {
+  getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem: key => memory.delete(key),
+} });
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const $ = selector => document.querySelector(selector), errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const click = selector => { const element = $(selector); if (!element) throw new Error(`Missing: ${selector}`); element.click(); };
+const collapsed = id => $(`[data-collapse-id="${id}"]`)?.getAttribute('aria-expanded') === 'false';
+const wait = async condition => {
+  for (let i = 0; i < 250; i++) { if (condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
+  throw new Error('Timed out waiting for file import');
+};
+try {
+  check(collapsed('assembly') && !$('[data-id="nested"]'), 'workspace recovery collapses root groups');
+  click('[data-collapse-id="assembly"]');
+  check(collapsed('nested') && !$('[data-id="part"]'), 'nested groups also start collapsed');
+  click('[data-collapse-id="nested"]');
+  check(collapsed('part'), 'nested Parts start collapsed');
+  click('[data-collapse-id="part"]');
+  click(`.document-select[data-document-id="${sketch.id}"]`);
+  check(collapsed('sketch-group'), 'inactive sketch tabs also recover collapsed');
+  click('[data-collapse-id="sketch-group"]');
+  click(`.document-select[data-document-id="${model.id}"]`);
+  check(!collapsed('assembly') && !collapsed('nested') && !collapsed('part'), 'switching open tabs preserves expansion');
+  click(`.document-close[data-document-id="${model.id}"]`);
+  check(!collapsed('sketch-group'), 'closing another tab preserves expansion');
+  click('#files'); click(`[data-open="${model.id}"]`);
+  check(collapsed('assembly'), 'reopening a closed library file collapses its groups');
+  click('[data-collapse-id="assembly"]'); click('[data-collapse-id="nested"]');
+  check(collapsed('part'), 'reopening also resets nested Parts');
+  const transfer = new DataTransfer();
+  transfer.items.add(new File(['group({ id: "imported-group", name: "Imported" }, [part({ id: "imported-part", name: "Piece" }, [box({ size: [1, 1, 1] })])]);'], 'tree-import.js', { type: 'text/javascript' }));
+  $('#file-input').files = transfer.files; $('#file-input').dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(() => $('#document-kind-dialog').open); click('#document-kind-dialog button[value=model]');
+  await wait(() => $('#source-name').textContent === 'tree-import');
+  check(collapsed('imported-group'), 'source imports start with collapsed groups');
+  click('[data-collapse-id="imported-group"]');
+  check(collapsed('imported-part'), 'source imports start with collapsed Parts');
+} catch (error) { errors.push(error.stack ?? String(error)); }
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} object tree UI checks`;
+$('#test-failures').textContent = errors.join('\n');
+</script>

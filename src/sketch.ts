@@ -2,25 +2,27 @@ import { generateGroupedSource, validateGroups, validateGroupMembers, type Group
 import { formatInches, parseInches } from './model';
 import { serializeMeasurement, validateMeasurements, type Measurement } from './measurements';
 
-export type SketchShape = {
-  /** Missing kind is a rectangle for compatibility with saved sketches. */
-  kind?: 'line' | 'circle' | 'text';
-  /** Editable content for rasterized text shapes. Size is the full text block in inches. */
-  text?: string;
-  /** Letter (capital H) height in inches. Text with this field is anchored at its top left. */
-  textHeight?: number;
+type SketchShapeBase = {
   id: string;
   name: string;
   /** Rectangle/text block width/height, circle diameter, or signed line displacement. */
   size: [number, number];
-  /** Minimum corner, line start, or top-left text anchor when textHeight is present. */
+  /** Minimum corner, line start, or top-left text anchor. */
   position: [number, number];
   color: string;
   groupId?: string;
 };
 
+export type SketchTextShape = SketchShapeBase & {
+  kind: 'text';
+  text: string;
+  /** Letter (capital H) height in inches. */
+  textHeight: number;
+};
+export type SketchShape = SketchTextShape | (SketchShapeBase & { kind?: 'line' | 'circle' });
+
 // Existing rectangle-only callers can retain their original type.
-export type RectangleSpec = Omit<SketchShape, 'kind'>;
+export type RectangleSpec = SketchShapeBase;
 
 export type SketchSnap = { point: [number, number]; kind: 'corner' | 'endpoint' | 'center' | 'edge' | null };
 
@@ -28,15 +30,15 @@ export function trimSketchText(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/(?:\n[^\S\n]*)+$/, '');
 }
 
-/** Geometry uses minimum corners; new text stores its top-left anchor instead. */
+/** Geometry uses minimum corners; text stores its top-left anchor. */
 export function sketchShapeOrigin(shape: SketchShape): [number, number] {
-  return [shape.position[0], shape.position[1] - (shape.kind === 'text' && shape.textHeight !== undefined ? shape.size[1] : 0)];
+  return [shape.position[0], shape.position[1] - (shape.kind === 'text' ? shape.size[1] : 0)];
 }
 
 /** Drag text from its top left, and rectangles/circles from their center. */
 export function sketchMoveAnchor(shape: SketchShape): [number, number] | null {
   if (shape.kind === 'line') return null;
-  if (shape.kind === 'text') return [shape.position[0], shape.position[1] + (shape.textHeight === undefined ? shape.size[1] : 0)];
+  if (shape.kind === 'text') return [...shape.position];
   return [shape.position[0] + shape.size[0] / 2, shape.position[1] + shape.size[1] / 2];
 }
 
@@ -158,16 +160,20 @@ export function validateSketchShapes(input: unknown, inputGroups: unknown = []):
     if (raw.kind !== undefined && raw.kind !== 'line' && raw.kind !== 'circle' && raw.kind !== 'text') throw new Error('Unknown sketch shape kind.');
     if (raw.kind === 'text' && (typeof raw.text !== 'string' || !raw.text.trim() || raw.text.length > 4000)) throw new Error('Text must contain between 1 and 4000 characters.');
     let textHeight: number | undefined;
-    if (raw.kind === 'text' && raw.textHeight !== undefined) {
-      if (typeof raw.textHeight !== 'number' && typeof raw.textHeight !== 'string') throw new Error('Text letter height must be inches.');
-      textHeight = parseInches(raw.textHeight);
+    if (raw.kind === 'text') {
+      const height = raw.textHeight === undefined ? 1 : raw.textHeight;
+      if (typeof height !== 'number' && typeof height !== 'string') throw new Error('Text letter height must be inches.');
+      textHeight = parseInches(height);
       if (textHeight <= 0) throw new Error('Text letter height must be positive.');
     }
     if (raw.kind === 'circle' && size[0] !== size[1]) throw new Error('Circle dimensions must have the same diameter.');
     if (raw.kind === 'line') {
       if (Math.hypot(...size) < 1 / 64) throw new Error('Choose two different points to draw a line.');
     } else if (size.some((part) => part <= 0)) throw new Error(`Rectangle ${raw.id} sizes must be positive.`);
-    return { id: raw.id, name: raw.name, size, position: vector(raw.position ?? [0, 0], 'position'), color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}), ...(raw.kind ? { kind: raw.kind as SketchShape['kind'] } : {}), ...(raw.kind === 'text' ? { text: trimSketchText(raw.text as string), ...(textHeight !== undefined ? { textHeight } : {}) } : {}) };
+    const base = { id: raw.id, name: raw.name, size, position: vector(raw.position ?? [0, 0], 'position'), color: raw.color, ...(raw.groupId ? { groupId: raw.groupId as string } : {}) };
+    return raw.kind === 'text'
+      ? { ...base, kind: 'text', text: trimSketchText(raw.text as string), textHeight: textHeight! }
+      : { ...base, ...(raw.kind ? { kind: raw.kind } : {}) };
   });
   validateGroupMembers(shapes, groups);
   return shapes;
@@ -185,7 +191,7 @@ export function serializeSketchShape(rectangle: SketchShape): string {
     const geometry = rectangle.kind === 'line'
       ? `start: ${vector(rectangle.position)}, end: ${vector([rectangle.position[0] + rectangle.size[0], rectangle.position[1] + rectangle.size[1]])}`
       : `${rectangle.kind === 'circle' ? `radius: inch(${JSON.stringify(formatInches(rectangle.size[0] / 2))})` : `size: ${vector(rectangle.size)}`}, position: ${vector(rectangle.position)}`;
-    return `${rectangle.kind ?? 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${rectangle.kind === 'text' ? `text: ${JSON.stringify(rectangle.text)}, ${rectangle.textHeight !== undefined ? `height: inch(${JSON.stringify(formatInches(rectangle.textHeight))}), ` : ''}` : ''}${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
+    return `${rectangle.kind ?? 'rectangle'}({ id: ${JSON.stringify(rectangle.id)}, name: ${JSON.stringify(rectangle.name)}, ${rectangle.kind === 'text' ? `text: ${JSON.stringify(rectangle.text)}, height: inch(${JSON.stringify(formatInches(rectangle.textHeight))}), ` : ''}${geometry}, color: ${JSON.stringify(rectangle.color)} })`;
 }
 
 // Compatibility for existing rectangle-only consumers.

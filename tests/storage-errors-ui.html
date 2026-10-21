@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Storage failure checks</title>
+<div id="app"></div>
+<pre id="test-result" style="position:fixed;bottom:0;left:0;z-index:100;background:#10232b;color:white">Running…</pre>
+<script type="module">
+import { createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+import { FileLibrary } from '/src/file-library.ts';
+import { IndexedDBStorage } from '/src/indexeddb-storage.ts';
+import { createOptimizedCutlistDocument } from '/src/optimized-cutlist-document.ts';
+const mode = new URLSearchParams(location.search).get('mode') ?? 'denied';
+const database = `storage-errors-ui-${crypto.randomUUID()}`;
+const nativeOpen = indexedDB.open.bind(indexedDB);
+const nativeTransaction = IDBDatabase.prototype.transaction;
+const logs = [];
+const nativeError = console.error;
+console.error = (...args) => { logs.push(args); nativeError(...args); };
+const denied = new DOMException('Storage access denied by browser policy', 'SecurityError');
+if (mode === 'version') {
+  await new Promise((resolve, reject) => {
+    const request = nativeOpen(database, 2);
+    request.onsuccess = () => { request.result.close(); resolve(); };
+    request.onerror = () => reject(request.error);
+  });
+}
+let oldCutlist;
+let blankCutlist;
+if (mode === 'data') {
+  const model = createBlankDocument([]);
+  const cutlist = { rows: [{ id: 'piece', name: 'Shelf', length: 48, width: 24, thickness: 0.75 }], ignored: [], csv: '', filename: 'cutlist.csv' };
+  oldCutlist = createOptimizedCutlistDocument([model], model, cutlist, 1);
+  oldCutlist.rectangles = [{ id: 'old-label', name: 'Old panel label', kind: 'text', text: 'Panel 1', textHeight: -1, size: [7, 2], position: [3, 5], color: '#ffffff' }];
+  blankCutlist = createOptimizedCutlistDocument([model, oldCutlist], model, cutlist, 1);
+  const seed = new FileLibrary(new IndexedDBStorage(database));
+  await seed.save([model, oldCutlist, blankCutlist], [], { openIds: [blankCutlist.id], activeId: blankCutlist.id, preferences: { measurementsThroughObjects: true } });
+  await seed.close();
+}
+indexedDB.open = (name, version) => {
+  if (name !== 'blockwork.files.v1') return nativeOpen(name, version);
+  if (mode === 'denied') throw denied;
+  return nativeOpen(database, version);
+};
+const doc = createBlankDocument([]); doc.source = 'unsaved recovery draft'; doc.draftDirty = true;
+Object.defineProperty(window, 'localStorage', { value: {
+  getItem: (key) => key === 'blockwork.workspace.v2' ? serializeWorkspace([doc], doc.id) : null,
+  setItem() {}, removeItem() {},
+} });
+const $ = (selector) => document.querySelector(selector);
+const check = (value, message) => { if (!value) throw new Error(message); };
+const wait = async (condition) => {
+  for (let i = 0; i < 250; i++) { if (condition()) return; await new Promise((resolve) => setTimeout(resolve, 20)); }
+  throw new Error('Timed out waiting for storage state');
+};
+try {
+  await (await import('/src/main.ts')).workspaceReady;
+  if (mode === 'data') {
+    check(!$('#storage-error').hidden, 'Persistent document error is visible');
+    check($('#storage-error-message').textContent.includes(oldCutlist.name), 'Names the file that failed to restore');
+    check(!/Shields|permissions|disk space/.test($('#storage-error-message').textContent), 'Does not misdiagnose a document error as browser permissions');
+    check($('#storage-error summary').textContent.includes('could not be loaded'), 'Summary describes a load failure');
+    check(logs.some((entry) => entry[1]?.name === 'LibraryDataError' && entry[1].cause?.message.includes('positive')), 'Logs file context and original validation error');
+    const inspector = new IndexedDBStorage(database);
+    const stored = await inspector.read();
+    check(stored.files.length === 3 && stored.files.find((file) => file.id === oldCutlist.id).rectangles[0].textHeight === -1, 'Reporting errors leaves saved records intact');
+    await inspector.close();
+    $('#test-result').textContent = 'Passed data storage UI checks';
+  } else {
+  let quota = mode === 'quota';
+  IDBDatabase.prototype.transaction = function (...args) {
+    if (this.name === database && quota && args[1] === 'readwrite') throw new DOMException('Disk full', 'QuotaExceededError');
+    return nativeTransaction.apply(this, args);
+  };
+  const edit = (source) => { $('#source-editor').value = source; $('#source-editor').dispatchEvent(new Event('input', { bubbles: true })); };
+  if (quota) { edit('quota failure draft'); await wait(() => !$('#storage-error').hidden); }
+  check(!$('#storage-error').hidden, 'Persistent storage failure is visible');
+  check($('#save-state').textContent === 'Not saved', 'Does not claim work is saved');
+  check(!$('.app-shell').hasAttribute('inert'), 'Editor stays usable');
+  const name = mode === 'quota' ? 'QuotaExceededError' : mode === 'version' ? 'VersionError' : 'SecurityError';
+  check($('#storage-error-message').textContent.includes(name), 'Preserves exception name');
+  check(logs.some((entry) => entry[1]?.name === name), 'Logs original exception');
+  if (mode === 'denied') check(logs[0][1] === denied, 'Logs original error object');
+  edit('latest unsaved draft');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  check($('#save-state').textContent === 'Not saved', 'Editing while unavailable stays unsaved');
+  const nativeCreate = URL.createObjectURL;
+  const nativeClick = HTMLAnchorElement.prototype.click;
+  let backup;
+  URL.createObjectURL = (blob) => { backup = blob; return nativeCreate(blob); };
+  HTMLAnchorElement.prototype.click = function () {};
+  try { $('#storage-error-backup').click(); }
+  finally { URL.createObjectURL = nativeCreate; HTMLAnchorElement.prototype.click = nativeClick; }
+  check(JSON.parse(await backup.text()).documents[0].source === 'latest unsaved draft', 'Backup contains latest unsaved draft');
+  if (quota) {
+    quota = false; edit('saving works again');
+    await wait(() => $('#save-state').textContent === 'Saved locally');
+    check($('#storage-error').hidden, 'Successful save clears failure');
+  }
+  $('#test-result').textContent = `Passed ${mode} storage UI checks`;
+  }
+} catch (error) { $('#test-result').textContent = `FAILED: ${error.stack ?? error}`; }
+finally { IDBDatabase.prototype.transaction = nativeTransaction; }
+</script>

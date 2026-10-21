@@ -46,3 +46,18 @@ test('a compilation failure keeps editable source and does not prevent other fil
   assert.equal(valid.draftDirty, false);
   assert.equal(valid.error, '');
 });
+
+test('imported files start with every group and Part collapsed, including nested containers', async () => {
+  for (const kind of ['model', 'sketch'] as const) {
+    const groups = [
+      { id: 'assembly', name: 'Assembly', position: [0, 0, 0] as [number, number, number] },
+      { id: 'nested', name: 'Nested', parentId: 'assembly', position: [0, 0, 0] as [number, number, number] },
+      ...(kind === 'model' ? [{ id: 'part', name: 'Part', parentId: 'nested', kind: 'part' as const, position: [0, 0, 0] as [number, number, number] }] : []),
+    ];
+    const document = await openDocumentFile('grouped.js', '', kind, async () => (
+      kind === 'model' ? { groups, boxes: [], variables: [] } : { groups, rectangles: [] }
+    ));
+    assert.equal(document.error, '');
+    assert.deepEqual(document.collapsedGroupIds, groups.map((group) => group.id));
+  }
+});

@@ -107,7 +107,11 @@ workerScope.addEventListener("message", (event: MessageEvent<CompileRequest>) =>
     const text = (raw: unknown) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('text(...) expects an object.');
       const spec = raw as Record<string, unknown>;
-      const result = { ...rectangle({ ...spec, id: spec.id ?? `text-${nextShapeId++}`, name: spec.name ?? `Text ${rectangles.length + 1}`, size: spec.size ?? [2.5, 1] }), kind: 'text', text: spec.text, ...(spec.height !== undefined ? { textHeight: spec.height } : {}) };
+      const heightValue = spec.height === undefined ? 1 : spec.height;
+      if (typeof heightValue !== 'number' && typeof heightValue !== 'string') throw new Error('Text letter height must be inches.');
+      const height = parseInches(heightValue);
+      if (height <= 0) throw new Error('Text letter height must be positive.');
+      const result = { ...rectangle({ ...spec, id: spec.id ?? `text-${nextShapeId++}`, name: spec.name ?? `Text ${rectangles.length + 1}`, size: spec.size ?? [height, height] }), kind: 'text', text: spec.text, textHeight: height };
       rectangles[rectangles.length - 1] = result;
       members.set(result, 'shape');
       return result;

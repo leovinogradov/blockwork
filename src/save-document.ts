@@ -1,5 +1,6 @@
 import type { ModelDocument } from './documents';
 import { fileName } from './file-names';
+import { optimizedCutlistSource } from './optimized-cutlist';
 
 export type SaveFileHandle = {
   name: string;
@@ -20,7 +21,7 @@ export async function saveDocumentFile(modelDocument: ModelDocument, options: {
   pickFile?: SaveFilePicker;
   download(source: string, filename: string): void;
 }): Promise<'saved' | 'downloaded' | null> {
-  const source = modelDocument.source;
+  const source = modelDocument.optimizedCutlist ? optimizedCutlistSource(modelDocument.source, modelDocument.optimizedCutlist) : modelDocument.source;
   const suggestedName = javascriptFilename(modelDocument.name);
   try {
     if (options.pickFile) {

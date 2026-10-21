@@ -1,11 +1,11 @@
-import type { SketchShape } from './sketch';
-import { sketchTextLetterHeight, sketchTextTopLeft, textLayout } from './sketch-text';
+import type { SketchTextShape } from './sketch';
+import { textLayout } from './sketch-text';
 
 /** A textarea in model space: typing changes the bounds, never the letter size. */
 export function createSketchTextEditor(
   host: HTMLElement,
   project: (point: [number, number]) => [number, number],
-  onFinish: (shape: SketchShape, text: string) => void,
+  onFinish: (shape: SketchTextShape, text: string) => void,
   onVisibility: (id: string, editing: boolean) => void,
 ) {
   const input = document.createElement('textarea');
@@ -17,14 +17,14 @@ export function createSketchTextEditor(
   input.hidden = true;
   host.append(input);
   const context = document.createElement('canvas').getContext('2d')!;
-  let active: SketchShape | null = null;
+  let active: SketchTextShape | null = null;
   let letterHeight = 1;
   let cachedText: string | undefined;
   let cachedLayout: ReturnType<typeof textLayout>;
 
   const update = () => {
     if (!active) return;
-    const anchor = sketchTextTopLeft(active);
+    const anchor = active.position;
     const [x, y] = project(anchor);
     const [, unitY] = project([anchor[0], anchor[1] + 1]);
     const pixelsPerInch = Math.abs(unitY - y);
@@ -59,10 +59,10 @@ export function createSketchTextEditor(
   });
   return {
     get activeId() { return active?.id; },
-    start(shape: SketchShape, selectAll = false) {
+    start(shape: SketchTextShape, selectAll = false) {
       finish();
       active = structuredClone(shape);
-      letterHeight = sketchTextLetterHeight(shape);
+      letterHeight = shape.textHeight;
       input.value = shape.text!;
       input.hidden = false;
       onVisibility(shape.id, true);

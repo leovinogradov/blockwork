@@ -22,6 +22,9 @@ export class IndexedDBStorage implements LibraryStorage {
 
   async read(): Promise<StoredLibrary | null> {
     const tx = (await this.connection).transaction(['files', 'folders', 'workspace'], 'readonly');
+    // A request and the transaction can both reject. Preserve the request's cause
+    // without leaving a second unhandled rejection from tx.done.
+    void tx.done.catch(() => {});
     const [files, folders, workspace] = await Promise.all([
       tx.objectStore('files').getAll(), tx.objectStore('folders').getAll(), tx.objectStore('workspace').get('current'),
     ]);

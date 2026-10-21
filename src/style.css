@@ -302,3 +302,42 @@ body.is-resizing-panels,body.is-resizing-panels *{cursor:col-resize!important;us
 .part-row .part-tag{padding-left:11px}
 .part-row .part-collapse{position:absolute;left:calc(29px + var(--tree-depth,0)*14px);top:21px;width:12px;height:12px;font:12px/12px var(--mono);color:#81939f;padding:0;text-align:left}
 .part-row .part-collapse:hover{color:var(--amber)}
+
+/* Cutlist controls live in a modal opened from the sketch sidebar. */
+.cutlist-tools-section{flex:none;padding:12px;border-bottom:1px solid var(--line)}
+.cutlist-tools-section[hidden]{display:none}
+.cutlist-tools-section h2{margin:0 0 9px;font-weight:500;text-transform:uppercase}
+.cutlist-optimize-button{width:100%;height:44px;font-size:13px}
+.variable-dialog.optimized-cutlist-dialog{width:min(900px,calc(100vw - 32px));max-height:calc(100dvh - 40px);padding:0;overflow:hidden}
+.optimized-cutlist-dialog[open]{display:flex;flex-direction:column}
+.optimized-cutlist-dialog:not([open]){display:none}
+.cutlist-controls-heading{display:flex;flex:none;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px;border-bottom:1px solid var(--line)}
+.cutlist-controls-heading h2{margin:0;font-size:20px}.cutlist-controls-heading p{margin:7px 0 0;color:#99aab5;font-size:12px;line-height:1.5}
+.cutlist-controls-heading>.icon-button{width:34px;height:34px;flex:none}
+.cutlist-optimizer-form{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0}
+.optimized-cutlist-body{display:grid;flex:1;grid-template-columns:minmax(250px,300px) minmax(200px,1fr);gap:28px;padding:24px;min-height:0;overflow:auto}
+.cutlist-settings,.cutlist-snapshot{min-width:0}.cutlist-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.optimized-cutlist-dialog h3{margin:0;font-size:14px;font-weight:600}.cutlist-unit-label{color:#8295a2;font:9px var(--mono);letter-spacing:1px}
+.optimized-cutlist-dialog .cutlist-description{color:#99aab5;font-size:11px;line-height:1.6;margin:8px 0 14px}
+.cutlist-panel-size{padding:12px;margin-top:10px;border:1px solid #354550;border-radius:7px;background:#141f28}
+.cutlist-panel-heading{display:flex;align-items:center;gap:10px;margin-bottom:10px}.cutlist-panel-heading strong{font-size:11px;font-weight:600}.cutlist-panel-heading .cutlist-remove-panel{margin-left:auto}
+.cutlist-panel-heading .cutlist-remove-panel{width:26px;height:26px;font-size:17px;background:transparent;border-color:transparent;color:#94a5b0}.cutlist-remove-panel[hidden]{display:none}.cutlist-panel-heading .cutlist-remove-panel:not(:disabled):hover{background:#3b292a;color:#efb1a5;border-color:#75433d}
+.cutlist-panel-dimensions{display:grid;grid-template-columns:minmax(0,1fr) 12px minmax(0,1fr);gap:9px;align-items:end}.cutlist-panel-dimensions label,.cutlist-kerf-field{display:block;color:#acbac4;font-size:11px}
+.cutlist-dimension-input{display:flex;align-items:center;gap:6px;min-width:0;margin-top:7px;height:40px;padding:0 10px;border:1px solid #435460;border-radius:5px;background:#101920}
+.cutlist-dimension-input:focus-within{border-color:var(--amber);box-shadow:0 0 0 2px #e7ad601a}.cutlist-dimension-input:has([aria-invalid=true]){border-color:#d98276}
+.cutlist-dimension-input input{width:100%;min-width:0;height:100%;padding:0;border:0;outline:0;background:transparent;color:#e6edf1;font:13px var(--mono)}
+.cutlist-dimension-input input[aria-invalid=true]{color:#f1a397}.cutlist-dimension-input>span{color:#7e929f;font:10px var(--mono)}
+.cutlist-dimension-times{align-self:end;height:40px;display:flex;align-items:center;justify-content:center;color:#8295a2;font-size:15px}
+.cutlist-add-panel{height:36px;width:100%;margin-top:10px;border-style:dashed;background:transparent;color:#c0cdd6;font-size:11px}
+.cutlist-kerf-settings{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.cutlist-kerf-field{max-width:160px}
+
+.cutlist-snapshot{border-left:1px solid var(--line);padding-left:28px}.cutlist-piece-count{padding:4px 8px;background:#26363e;color:#b6cccd;border-radius:4px;font-size:10px;white-space:nowrap}
+.cutlist-source-reference{margin:10px 0 8px;color:#91a3af;font-size:11px;line-height:1.7;overflow-wrap:anywhere}.cutlist-source-reference button{font-size:11px}
+.cutlist-table-scroll{overflow:auto}.cutlist-pieces{width:100%;border-collapse:collapse;font-size:11px;text-align:left}.cutlist-pieces caption{text-align:left;color:#81939f;font-size:10px;padding:5px 0 14px;line-height:1.5}.cutlist-pieces th{background:#202e37;color:#9fb0bb;font-size:10px;font-weight:500}.cutlist-pieces td,.cutlist-pieces th{padding:10px 8px;border-bottom:1px solid var(--line-soft)}.cutlist-pieces td:first-child{color:#8295a2}.cutlist-pieces td:nth-child(n+3){font-family:var(--mono);white-space:nowrap}.cutlist-pieces td:nth-child(2){overflow-wrap:anywhere}
+.cutlist-modal-footer{display:flex;flex:none;align-items:center;justify-content:space-between;gap:20px;padding:16px 24px;border-top:1px solid #354550;background:#152029}
+.cutlist-footer-status{min-width:0}.cutlist-footer-status p{margin:0;font-size:11px;line-height:1.5}.cutlist-footer-status .cutlist-summary{color:#8fa4b1}.cutlist-footer-status .dialog-error:not([hidden])+.cutlist-summary{display:none}
+.cutlist-modal-actions{display:flex;flex:none;gap:8px}.cutlist-modal-actions .button{height:38px;padding:0 16px;font-size:12px}.cutlist-modal-actions .button-run{min-width:144px}
+@media(max-width:760px){.optimized-cutlist-body{grid-template-columns:1fr;gap:24px;padding:18px}.cutlist-controls-heading{padding:18px}.cutlist-snapshot{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.cutlist-modal-footer{padding:14px 18px;flex-wrap:wrap;gap:12px}.cutlist-modal-actions{margin-left:auto}.cutlist-controls-heading h2{font-size:18px}}
+
+.viewport-loading{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:5;display:grid;gap:7px;width:min(280px,calc(100% - 24px));padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);font-size:12px;box-shadow:0 4px 18px #0005;pointer-events:none}.viewport-loading[hidden]{display:none}.viewport-loading progress{width:100%;height:6px;accent-color:var(--amber)}
+.storage-error{flex:none;max-height:180px;overflow:auto;padding:10px 18px;background:#342326;border-bottom:1px solid #8a514b;color:#f0c4bd;font-size:12px;line-height:1.5}.storage-error[hidden]{display:none}.storage-error summary{cursor:pointer;font-weight:600}.storage-error p{margin:6px 0;overflow-wrap:anywhere}.storage-error .button{margin:2px 0}

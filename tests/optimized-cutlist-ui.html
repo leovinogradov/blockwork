@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Optimized cutlist browser checks</title>
+<div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:#fff;padding:8px;font:12px monospace"><span id="test-result">Running optimized cutlist checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+import { createDocument, createBlankDocument, serializeWorkspace } from '/src/documents.ts';
+import { resolveModel, generateSource } from '/src/model.ts';
+const database = `optimized-cutlist-ui-${crypto.randomUUID()}`;
+const nativeOpen = indexedDB.open.bind(indexedDB);
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const model = resolveModel([
+  ...Array.from({ length: 5 }, (_, i) => ({ id: `shelf-${i}`, name: `Shelf ${i + 1} <&>`, size: [48, 24, 0.75], position: [0, 0, i], color: '#d9a76e' })),
+  { id: 'thick', name: 'Thick block', size: [8, 4, 6], position: [0, 0, 0], color: '#d9a76e' },
+]);
+const fixture = createDocument('Cabinet', "throw new Error('Unrun source must not execute');");
+Object.assign(fixture, model, { appliedSource: generateSource(model.boxes, model.variables), draftDirty: true, hiddenBoxIds: ['shelf-0'] });
+const blank = createBlankDocument([fixture], 'sketch');
+const memory = new Map([['blockwork.workspace.v2', serializeWorkspace([fixture, blank], fixture.id)]]);
+Object.defineProperty(window, 'localStorage', { value: { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value), removeItem: (key) => memory.delete(key) } });
+const downloads = [];
+const nativeClick = HTMLAnchorElement.prototype.click;
+HTMLAnchorElement.prototype.click = function() { downloads.push(this.download); };
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const errors = []; let checks = 0;
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
+const open = () => { $('#export-menu-button').click(); $('#export-optimized-cutlist').click(); };
+const openOptimizer = () => { if (!$('#optimized-cutlist-dialog').open) $('#open-cutlist-optimizer').click(); };
+const run = () => { openOptimizer(); $('#run-cutlist-optimizer').click(); };
+const change = (selector, value, emit = true) => { openOptimizer(); $(selector).focus(); $(selector).value = value; $(selector).dispatchEvent(new Event('input', { bubbles: true })); if (emit) $(selector).dispatchEvent(new Event('change', { bubbles: true })); };
+try {
+  check(!$('#export-optimized-cutlist').disabled, 'applied model can create optimized cutlist with a draft');
+  check($('.cutlist-tools-section').hidden, '3D models do not show Cutlist Tools');
+  const tabCount = $$('.document-select').length;
+  open();
+  check($('#cutlist-dialog').open && $('#cutlist-thickness').value === '3', 'reuses regular cutlist settings and default');
+  check($('#cutlist-summary').textContent === '5 boxes to export · 1 ignored' && !$('#cutlist-draft-note').hidden, 'preview includes hidden boxes and excludes thick pieces and draft');
+  check($('#cutlist-download').textContent === 'Open optimized cutlist', 'accept action describes new tab');
+  $('#cutlist-cancel').click(); await tick();
+  check($$('.document-select').length === tabCount && downloads.length === 0, 'cancel leaves workspace unchanged');
+  open(); $('#cutlist-download').click(); await tick();
+  const cutlistId = $('.document-select[aria-current=page]').dataset.documentId;
+  check($$('.document-select').length === tabCount + 1 && downloads.length === 0, 'accept opens a new document without a download');
+  check($('#app').classList.contains('sketch-mode') && $('#app').classList.contains('optimized-cutlist-mode'), 'optimized document opens as 2D sketch');
+  check($('.document-select[aria-current=page]').title.includes('Optimized cutlist'), 'tab identifies document type');
+  check($('#export-optimized-cutlist').disabled && $('#export-cutlist').disabled, 'sketch disables model cutlist export options');
+  check(!$('.cutlist-tools-section').hidden && $('.cutlist-tools-section').nextElementSibling.matches('.sketch-tools-section'), 'Cutlist Tools appears directly above Drawing Tools');
+  check($('.cutlist-tools-section h2').textContent === 'Cutlist Tools' && $('#open-cutlist-optimizer').textContent === 'Optimize Cutlist', 'sidebar section contains the requested button');
+  check($('#optimized-cutlist-dialog').open && !$('.code-panel').contains($('#optimized-cutlist-dialog')), 'opening a cutlist shows its settings modal automatically');
+  check(getComputedStyle($('.code-header')).display !== 'none', 'normal sketch source remains available');
+  openOptimizer();
+  check($('#optimized-cutlist-dialog').open && document.activeElement === $('[data-panel-width]'), 'sidebar button opens the modal and focuses panel dimensions');
+  check($('[data-panel-width]').selectionStart === 0 && $('[data-panel-width]').selectionEnd === $('[data-panel-width]').value.length, 'opening selects the width for easy replacement');
+  check($$('#optimized-cutlist-dialog button').filter((button) => !button.hidden && getComputedStyle(button).display !== 'none').length === 4, 'default modal has only Add size, source link, Close and Optimize buttons');
+  check($$('.cutlist-pieces tbody tr').length === 5 && $('.cutlist-pieces').textContent.includes('Shelf 1 <&>'), 'saved cutlist has numbered escaped component names');
+  check($('[data-open-cutlist-source]').textContent === 'Cabinet', 'source model reference displayed');
+  check($$('[data-panel-width]').length === 1 && $('[data-panel-width]').value === '96' && $('[data-panel-height]').value === '48', 'default stock size has no quantity input');
+  const emptyCutlistSource = $('#source-editor').value;
+  check(!emptyCutlistSource.includes('stock-'), 'drawing starts empty before optimization');
+  await tick();
+  check($('#source-editor').value === emptyCutlistSource && !$('[data-optimizer-error]').textContent, 'opening waits for panel settings without generating a layout');
+  $('[data-close-optimizer]').click(); await tick();
+  check($('#source-editor').value === emptyCutlistSource && !$('#optimized-cutlist-dialog').open, 'closing the initial modal leaves the drawing empty');
+  run();
+  check($('[data-optimizer-summary]').textContent.includes('2 panels · 5 pieces'), 'default stock packs pieces onto two panels');
+  check(!$('#optimized-cutlist-dialog').open, 'successful optimization closes the modal to reveal the drawing');
+  await tick();
+  check(document.activeElement === $('#open-cutlist-optimizer'), 'successful optimization returns focus to the sidebar button');
+  check($('#source-editor').value.includes('stock-0') && $('#source-editor').value.includes('cut-4') && $('#source-editor').value.includes('text: "1"'), 'native sketch has stock outlines, all parts and labels');
+  check($('#cutlist-saw-kerf').value === '1/8', 'new cutlists default to 1/8-inch saw kerf');
+  change('[data-panel-height]', '24'); change('#cutlist-saw-kerf', '0'); run();
+  check($('[data-optimizer-summary]').textContent.includes('3 panels'), 'zero kerf allows exact edge-to-edge tiling');
+  change('#cutlist-saw-kerf', '1/8', false); run();
+  check($('[data-optimizer-summary]').textContent.includes('5 panels') && $('#cutlist-saw-kerf').value === '1/8', 'kerf changes layout and remains in the input after rerun');
+  const kerfDrawing = $('#source-editor').value;
+  openOptimizer();
+  const panelList = $('[data-panel-sizes]'), savedPanelMarkup = panelList.innerHTML;
+  panelList.replaceChildren();
+  $('#optimized-cutlist-dialog').dispatchEvent(new Event('input', {bubbles:true}));
+  check($('#run-cutlist-optimizer').disabled, 'no panel sizes disables Optimize before it can be attempted');
+  $('#cutlist-optimizer-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  check($('[data-optimizer-error]').textContent.includes('panel sizes') && $('#source-editor').value === kerfDrawing && $('#optimized-cutlist-dialog').open, 'a forced submit with no panels fails before packing and keeps the previous drawing');
+  panelList.innerHTML = savedPanelMarkup;
+  $('#optimized-cutlist-dialog').dispatchEvent(new Event('input', {bubbles:true}));
+  check(!$('#run-cutlist-optimizer').disabled, 'restoring valid panel sizes re-enables Optimize');
+  change('[data-panel-width]', '');
+  check($('#run-cutlist-optimizer').disabled && $('#source-editor').value === kerfDrawing, 'a blank dimension disables Optimize and preserves geometry');
+  $('#cutlist-optimizer-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  check($('#source-editor').value === kerfDrawing && $('[data-panel-width]').getAttribute('aria-invalid') === 'true', 'forced invalid submissions still validate fields');
+  change('[data-panel-width]', '96');
+
+  for (const invalid of ['-1', '', 'nope']) {
+    change('#cutlist-saw-kerf', invalid); run();
+    check($('#optimized-cutlist-dialog').open && !!$('[data-optimizer-error]').textContent && $('#source-editor').value === kerfDrawing && $('#cutlist-saw-kerf').getAttribute('aria-invalid') === 'true' && document.activeElement === $('#cutlist-saw-kerf'), 'invalid kerf is identified and focused while preserving the drawing');
+  }
+  change('#cutlist-saw-kerf', '3/16'); run();
+  check($('#cutlist-saw-kerf').value === '3/16' && !$('[data-optimizer-error]').textContent, 'fractional kerf accepted');
+  change('[data-panel-height]', '48'); run();
+  const drawing = $('#source-editor').value;
+  $('#undo').click();
+  check($('#source-editor').value === kerfDrawing, 'undo restores the preceding layout');
+  $('#redo').click();
+  check($('#source-editor').value === drawing, 'redo restores layout');
+  change('[data-panel-width]', '1'); change('[data-panel-height]', '1');
+  run();
+  check($('[data-optimizer-error]').textContent.includes('cannot fit') && $('#source-editor').value === drawing, 'oversized input reports names and preserves prior drawing');
+  change('[data-panel-width]', '0'); run();
+  check($('[data-optimizer-error]').textContent.includes('positive') && $('#source-editor').value === drawing, 'invalid dimensions preserve drawing');
+  change('[data-panel-width]', '48', false); change('[data-panel-height]', '24', false); run();
+  check($('[data-optimizer-summary]').textContent.includes('5 panels') && $('[data-panel-width]').value === '48', 'rerun with changed inputs replaces drawing and retains entered sizes');
+  openOptimizer(); $('[data-add-panel]').click();
+  check($$('[data-panel-width]').length === 2, 'multiple unlimited stock sizes supported');
+  run();
+  check($('[data-optimizer-summary]').textContent.includes('2 panels'), 'optimizer prefers larger stock to reduce panel count');
+  openOptimizer(); $$('[data-remove-panel]')[1].click();
+  $('[data-remove-panel]').click();
+  check($$('[data-panel-width]').length === 1 && $('[data-remove-panel]').hidden && $('[data-remove-panel]').disabled, 'last stock size hides its remove button');
+  $('[data-close-optimizer]').click(); await tick();
+  check(!$('#optimized-cutlist-dialog').open && document.activeElement === $('#open-cutlist-optimizer'), 'Close dismisses modal and restores trigger focus');
+  openOptimizer();
+  $('[data-open-cutlist-source]').click();
+  check($('.document-select[aria-current=page]').dataset.documentId === fixture.id && $('#source-editor').value === fixture.source, 'reference opens original model with unrun draft intact');
+  $(`.document-select[data-document-id="${cutlistId}"]`).click();
+  check($('#optimized-cutlist-dialog').open && $('[data-panel-width]').value === '48' && $('[data-panel-height]').value === '24' && $('#cutlist-saw-kerf').value === '3/16', 'returning to the cutlist opens settings with saved stock and kerf');
+  const existingDrawing = $('#source-editor').value;
+  $('[data-close-optimizer]').click(); await tick();
+  $(`.document-close[data-document-id="${cutlistId}"]`).click();
+  $('#files').click(); $(`[data-open="${cutlistId}"]`).click();
+  check($('#app').classList.contains('optimized-cutlist-mode') && $('#optimized-cutlist-dialog').open && $$('.cutlist-pieces tbody tr').length === 5 && $('#source-editor').value === existingDrawing && $('#cutlist-saw-kerf').value === '3/16', 'reopening a saved cutlist opens settings and preserves its drawing without reoptimizing');
+  $('[data-close-optimizer]').click(); await tick();
+  $(`.document-select[data-document-id="${blank.id}"]`).click();
+  check(!$('#app').classList.contains('optimized-cutlist-mode') && $('.cutlist-tools-section').hidden && !$('#optimized-cutlist-dialog').open, 'ordinary sketch hides Cutlist Tools and keeps its normal source UI');
+  $(`.document-select[data-document-id="${fixture.id}"]`).click();
+  $('#export-menu-button').click(); $('#export-cutlist').click();
+  check($('#cutlist-title').textContent === 'Export cutlist' && $('#cutlist-download').textContent === 'Export CSV', 'shared dialog returns to CSV mode');
+  $('#cutlist-cancel').click(); await tick();
+  $(`.document-select[data-document-id="${cutlistId}"]`).click();
+  change('[data-panel-width]', '96'); change('[data-panel-height]', '48'); run();
+
+  // Start from the actual New 3D model flow rather than restored geometry.
+  $('#new-tab').click(); await tick();
+  $('#document-kind-dialog button[value="model"]').click();
+  await tick();
+  const freshId = $('.document-select[aria-current=page]').dataset.documentId;
+  check(freshId !== fixture.id && $('#app').classList.contains('model-mode') && $('#source-editor').value === '', 'New 3D model opens an empty applied document');
+  $('#add-box').click();
+  const freshSource = $('#source-editor').value;
+  check(!$('#export-optimized-cutlist').disabled && freshSource.includes('box('), 'a newly added 3D box can be exported immediately');
+  open();
+  check($('#cutlist-dialog').open && $('#cutlist-summary').textContent === '1 box to export · 0 ignored' && !$('#cutlist-download').disabled, 'fresh 3D geometry previews in the optimized export dialog');
+  $('#cutlist-download').click(); await tick();
+  check($('#app').classList.contains('optimized-cutlist-mode') && $('#optimized-cutlist-dialog').open && $('.document-select[aria-current=page]').dataset.documentId !== freshId && $$('.cutlist-pieces tbody tr').length === 1, 'fresh 3D model exports to a separate cutlist with settings open');
+  const unoptimizedSource = $('#source-editor').value;
+  change('[data-panel-width]', '1'); change('[data-panel-height]', '1');
+  await tick();
+  check($('#source-editor').value === unoptimizedSource && !unoptimizedSource.includes('stock-') && !$('[data-optimizer-error]').textContent, 'editing stock does not pack pieces or report fit failures before Optimize is pressed');
+  change('[data-panel-width]', '36'); change('[data-panel-height]', '24');
+  run();
+  check(!$('#optimized-cutlist-dialog').open && !$('[data-optimizer-error]').textContent && $('#source-editor').value.includes('cut-label-0') && $('#source-editor').value.includes('height: inch('), 'fresh export optimizes successfully with explicit label heights');
+  const generated = $('#source-editor').value;
+  $('#run-code').click();
+  for (let i = 0; i < 250 && $('#run-code').disabled; i++) await tick();
+  check($('#editor-error').hidden && !$('#run-code').disabled && $('#source-editor').value === generated, 'fresh cutlist source compiles again without text errors');
+  $$('.document-select').find((tab) => tab.dataset.documentId === freshId).click();
+  check($('#source-editor').value === freshSource, 'export and optimization preserve the fresh source model');
+  const freshCutlistTab = $$('.document-select').find((tab) => tab.textContent.includes('optimized cutlist') && tab.dataset.documentId !== cutlistId);
+  freshCutlistTab.click();
+  $('[data-close-optimizer]').click(); await tick();
+  const appliedDrawing = $('#source-editor').value;
+  $('#source-editor').value += '\n// pending draft';
+  $('#source-editor').dispatchEvent(new Event('input',{bubbles:true}));
+  openOptimizer();
+  check($('#run-cutlist-optimizer').disabled, 'a pending source draft disables optimization before packing');
+  $('#cutlist-optimizer-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
+  check($('[data-optimizer-error]').textContent.includes('source draft') && $('#source-editor').value === appliedDrawing + '\n// pending draft', 'forced submission preserves a pending draft and the existing layout');
+
+} catch (reason) { errors.push(reason.stack ?? String(reason)); }
+HTMLAnchorElement.prototype.click = nativeClick;
+$('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} optimized cutlist UI checks`;
+$('#test-failures').textContent = errors.join('\n');
+document.documentElement.dataset.testResult = errors.length ? 'failed' : 'passed';
+</script>

@@ -6,6 +6,7 @@ import type { ModelSketch } from './model-sketch';
 import { fileName, uniqueFileName } from './file-names';
 
 import { DEFAULT_MEASUREMENT_OFFSET, validateMeasurements, type Measurement } from './measurements';
+import { restoreOptimizedCutlist, type OptimizedCutlist } from './optimized-cutlist';
 
 export type DocumentKind = 'model' | 'sketch';
 export type WorkspacePreferences = { measurementsThroughObjects: boolean };
@@ -18,6 +19,7 @@ export type ModelDocument = {
   kind: DocumentKind;
   parentId: string | null;
   sketchTargets?: SketchTarget[];
+  optimizedCutlist?: OptimizedCutlist;
   groups: GroupSpec[];
   collapsedGroupIds: string[];
   treeOrder: string[];
@@ -77,7 +79,7 @@ export function createBlankDocument(documents: ModelDocument[], kind: DocumentKi
 
 export function serializeDocument(document: Omit<ModelDocument, 'history' | 'historyAt' | 'selectedId' | 'selectedSketchIds' | 'selectedModelIds' | 'selectedVariable' | 'selectedFace' | 'scrollTop' | 'scrollLeft' | 'selectionStart' | 'selectionEnd'>) {
   return {
-    id: document.id, name: document.name, kind: document.kind, parentId: document.parentId, sketchTargets: document.sketchTargets, source: document.source, appliedSource: document.appliedSource,
+    id: document.id, name: document.name, kind: document.kind, parentId: document.parentId, sketchTargets: document.sketchTargets, optimizedCutlist: document.optimizedCutlist, source: document.source, appliedSource: document.appliedSource,
     draftDirty: document.draftDirty, groups: document.groups, collapsedGroupIds: document.collapsedGroupIds, treeOrder: document.treeOrder, boxes: document.boxes, sketches: document.sketches, rectangles: document.rectangles, measurements: document.measurements, variables: document.variables,
     hiddenBoxIds: document.hiddenBoxIds, viewMode: document.viewMode,
     projectionMode: document.projectionMode, gridVisible: document.gridVisible, error: document.error,
@@ -99,6 +101,7 @@ export function restoreDocument(value: unknown, legacyPixelMeasurements = false)
   const document = createDocument(typeof data.name === 'string' ? data.name : 'Recovered local model', data.source, kind);
   if (typeof data.id === 'string' && data.id) document.id = data.id;
   if (typeof data.parentId === 'string') document.parentId = data.parentId;
+  if (kind === 'sketch' && data.optimizedCutlist !== undefined) document.optimizedCutlist = restoreOptimizedCutlist(data.optimizedCutlist);
   if (kind === 'sketch' && Array.isArray(data.sketchTargets)) {
     document.sketchTargets = data.sketchTargets.filter((target) => target && typeof target.documentId === 'string' && typeof target.sketchId === 'string' && Array.isArray(target.origin) && target.origin.length === 2 && target.origin.every((n) => typeof n === 'number' && Number.isFinite(n))).map((target) => structuredClone(target));
   }

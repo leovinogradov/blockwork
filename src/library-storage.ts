@@ -33,3 +33,10 @@ export class StorageConflictError extends Error {
     super('This file changed elsewhere. Export your work before reloading to see those changes.');
   }
 }
+
+export class LibraryDataError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'LibraryDataError';
+  }
+}

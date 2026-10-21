@@ -7,11 +7,11 @@ import { measurementPointVisible } from './measurement-visibility';
 import { createMeasurementAnnotation } from './measurement-annotation';
 import { cylinderAxes, parseInches, formatInches, type BoxSpec, type FaceName } from './model';
 import { parseFaceColor } from './face-color';
-import { createSketchTextMesh } from './sketch-text';
+import { createSketchTextMaterial, textRasterBudgets } from './sketch-text';
 import { createSketchTextEditor } from './sketch-text-editor';
 import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { modelObjectsInBox } from './model-selection';
-import { lineDisplacement, lineMeasurements, parseLineAngle, sketchMoveAnchor, sketchShapeOrigin, snapToSketchEdges, type SketchShape, type SketchSnap } from './sketch';
+import { lineDisplacement, lineMeasurements, parseLineAngle, sketchMoveAnchor, sketchShapeOrigin, snapToSketchEdges, type SketchShape, type SketchTextShape, type SketchSnap } from './sketch';
 import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
 import { autoMeasurementAxis, dominantMeasurementAxis, measurementLine, DEFAULT_MEASUREMENT_OFFSET, measurementOffsetAtPointer, measurementAxisLayout, measurementSegments, resolveMeasurement, resolveMeasurementAnchor, snapMeasurement, type Measurement, type MeasurementAnchor, type MeasurementGeometry, type MeasurementAxis, type MeasurementAxisChoice, type MeasurementSegment } from './measurements';
 
@@ -235,7 +235,7 @@ export function createViewport(
   const editSketchText = (id: string, selectAll = false) => {
     if (!sketchMode || !textEditingEnabled || !onSketchTextEdit || hiddenIds.has(id)) return;
     const shape = sketchRectangles.find((shape) => shape.id === id && shape.kind === 'text');
-    if (shape) textEditor.start(shape, selectAll);
+    if (shape?.kind === 'text') textEditor.start(shape, selectAll);
   };
 
   const sketchOverlay = document.createElement('div');
@@ -639,7 +639,74 @@ export function createViewport(
     boxRoot.remove(object.mesh, object.edges);
   };
 
+  // Create selectable bounds immediately; rasterize and upload labels between paints.
+  // A new geometry update cancels the previous queue before disposing its meshes.
+  const textLoading = document.createElement('div');
+  textLoading.className = 'viewport-loading';
+  textLoading.hidden = true;
+  textLoading.setAttribute('role', 'status');
+  textLoading.innerHTML = '<span></span><progress aria-label="Loading drawing labels"></progress>';
+  host.append(textLoading);
+  const textLoadingLabel = textLoading.querySelector('span')!;
+  const textProgress = textLoading.querySelector('progress')!;
+  let textJobs: { shape: SketchTextShape; mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> }[] = [];
+  let textLoadFrame = 0;
+  const cancelTextLoading = () => {
+    cancelAnimationFrame(textLoadFrame);
+    textJobs = [];
+    textLoading.hidden = true;
+    host.setAttribute('aria-busy', 'false');
+  };
+  const queueText = (shape: SketchTextShape) => {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(...shape.size), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+    if (renderer) textJobs.push({ shape, mesh });
+    return mesh;
+  };
+  const startTextLoading = () => {
+    if (!textJobs.length) return;
+    const jobs = textJobs;
+    const maxTextureSize = renderer!.capabilities.maxTextureSize;
+    const budgets = textRasterBudgets(jobs.map((job) => job.shape), maxTextureSize);
+    let completed = 0;
+    textProgress.max = jobs.length;
+    textProgress.value = 0;
+    textLoadingLabel.textContent = `Loading labels · 0 / ${jobs.length}`;
+    textLoading.hidden = false;
+    host.setAttribute('aria-busy', 'true');
+    const step = () => {
+      if (disposed || textJobs !== jobs) return;
+      const start = performance.now();
+      try {
+        // Bound both CPU raster work and GPU uploads, including on fast machines.
+        for (let batch = 0; completed < jobs.length && batch < 2; batch++) {
+          const { shape, mesh } = jobs[completed];
+          const material = createSketchTextMaterial(shape, maxTextureSize, budgets[completed]);
+          mesh.material.dispose();
+          mesh.material = material;
+          renderer!.initTexture(material.map!);
+          completed++;
+          if (performance.now() - start >= 8) break;
+        }
+      } catch (error) {
+        console.error('Could not load drawing labels', error);
+        textJobs = [];
+        host.setAttribute('aria-busy', 'false');
+        textLoadingLabel.textContent = 'Could not load all labels. Reopen the drawing to retry.';
+        textProgress.hidden = true;
+        return;
+      }
+      textProgress.value = completed;
+      textLoadingLabel.textContent = `Loading labels · ${completed} / ${jobs.length}`;
+      if (completed < jobs.length) textLoadFrame = requestAnimationFrame(step);
+      else cancelTextLoading();
+    };
+    textProgress.hidden = false;
+    // Allow the outlines and progress indicator to paint before the first batch.
+    textLoadFrame = requestAnimationFrame(() => { textLoadFrame = requestAnimationFrame(step); });
+  };
+
   const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[] } = {}) => {
+    cancelTextLoading();
     measurementGeometry = { boxes, sketches: options.sketches ?? [] };
     measurementHover = null;
     if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
@@ -713,7 +780,7 @@ export function createViewport(
       for (const shape of spec.shapes) {
         const [x, y] = sketchShapeOrigin(shape), [dx, dy] = shape.size;
         if (shape.kind === 'text') {
-          const text = createSketchTextMesh(shape, renderer?.capabilities.maxTextureSize);
+          const text = queueText(shape);
           text.position.set(x + dx / 2 - width / 2, y + dy / 2 - height / 2, 0);
           text.userData.boxId = spec.id;
           mesh.add(text);
@@ -735,11 +802,13 @@ export function createViewport(
     select(selectedId, selectedFace);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     if (!options.preserveView) fit();
+    startTextLoading();
   };
 
   const setRectangles = (rectangles: SketchShape[], options: { preserveView?: boolean; hiddenIds?: Iterable<string> } = {}) => {
     cancelShapeDrag();
     textEditor.finish(true);
+    cancelTextLoading();
     measurementGeometry = { rectangles };
     measurementHover = null;
     if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
@@ -756,7 +825,7 @@ export function createViewport(
       const faceColor = parseFaceColor(spec.color);
       // Keep the plane raycastable while rendering the outline only.
       const mesh = spec.kind === 'text'
-        ? createSketchTextMesh(spec, renderer?.capabilities.maxTextureSize)
+        ? queueText(spec)
         : new THREE.Mesh(
           spec.kind === 'circle' ? new THREE.CircleGeometry(width / 2, 96) : new THREE.PlaneGeometry(Math.abs(width) || 1 / 64, Math.abs(height) || 1 / 64),
           new THREE.MeshBasicMaterial({ color: faceColor.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
@@ -777,6 +846,7 @@ export function createViewport(
     selectMany(selectedIds);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     if (!options.preserveView) fit();
+    startTextLoading();
   };
 
   const setMode = (mode: 'model' | 'sketch') => {
@@ -1388,6 +1458,8 @@ export function createViewport(
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      cancelTextLoading();
+      textLoading.remove();
       cancelAnimationFrame(animationFrame);
       observer?.disconnect();
       cancelShapeDrag(); moveHandles.remove();
