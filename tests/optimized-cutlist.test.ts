@@ -167,6 +167,27 @@ test('generated layout uses native shapes with panel bounds, piece numbers, dime
   assert.deepEqual(doc, before);
 });
 
+test('generator emits panels first and keeps numbered pieces with their labels across packing order', () => {
+  const { doc } = fixture();
+  const rows = Array.from({ length: 12 }, (_, index) => row(30 + index, 10, `Part ${12 - index}`));
+  doc.optimizedCutlist!.rows = rows;
+  const layout = optimizeCutlist(rows, [{ width: 48, height: 10 }]);
+  const before = structuredClone(layout);
+  const expected = [
+    ...layout.panels.map((_, index) => `stock-${index}`),
+    ...rows.flatMap((_, index) => [`cut-${index}`, `cut-label-${index}`]),
+    ...layout.panels.map((_, index) => `stock-label-${index}`),
+  ];
+  assert.notDeepEqual(layout.panels.flatMap((panel) => panel.placements.map((part) => part.rowIndex)), rows.map((_, index) => index), 'packing order differs from item number');
+  assert.deepEqual(cutlistLayoutShapes(layout, rows).map((shape) => shape.id), expected);
+  assert.deepEqual(layout, before, 'emission order leaves packed placements unchanged');
+  applyCutlistLayout(doc, layout);
+  assert.deepEqual(doc.treeOrder, expected);
+  assert.deepEqual([...doc.source.matchAll(/id: "([^"]+)"/g)].map((match) => match[1]), expected, 'generated source has the same native order');
+  assert.deepEqual(resolveSnapshot(doc.history[doc.historyAt], 'sketch').treeOrder, expected, 'redo retains generator order');
+  assert.deepEqual(restoreDocument(serializeDocument(doc)).treeOrder, expected, 'reopening retains generator order');
+});
+
 test('drawing bounds center around the origin while preserving panel-local placements', () => {
   for (const sizes of [
     [{ width: 48, height: 24 }],

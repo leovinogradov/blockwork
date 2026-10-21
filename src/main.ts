@@ -1340,6 +1340,7 @@ function renderDocumentTabs() {
   if (focused) Array.from(host.querySelectorAll<HTMLButtonElement>(closing ? '.document-close' : '.document-select')).find((button) => button.dataset.documentId === focused)?.focus();
 }
 function loadDocument(document: ModelDocument) {
+  const showLoading = activeDocumentId !== document.id;
   exportMenu.close();
   // A worker from the previous tab must never apply its result to this tab.
   runEpoch++;
@@ -1364,7 +1365,7 @@ function loadDocument(document: ModelDocument) {
   root.classList.toggle('sketch-mode', documentKind === 'sketch');
   root.classList.toggle('model-mode', documentKind === 'model');
   viewport.setMode(documentKind);
-  if (documentKind === 'sketch') viewport.setRectangles(worldRectangles(), { hiddenIds: sceneHiddenIds() }); else viewport.setBoxes(worldBoxes(), { hiddenIds: sceneHiddenIds(), sketches: worldSketches() });
+  if (documentKind === 'sketch') viewport.setRectangles(worldRectangles(), { hiddenIds: sceneHiddenIds(), showLoading }); else viewport.setBoxes(worldBoxes(), { hiddenIds: sceneHiddenIds(), sketches: worldSketches(), showLoading });
   viewport.setMeasurements(measurements);
   viewport.setProjection(projectionMode); viewport.setView(viewMode); viewport.setGrid(gridVisible);
   root.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === viewMode));

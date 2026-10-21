@@ -165,9 +165,9 @@ export function createOptimizedCutlistUI(root: HTMLElement, hooks: {
             <div class="cutlist-table-scroll"><table class="cutlist-pieces"><caption>Saved snapshot · ${data.ignored.length} ignored · dimensions in inches</caption><thead><tr><th scope="col">#</th><th scope="col">Component</th><th scope="col">Length</th><th scope="col">Width</th></tr></thead><tbody>${data.rows.map((row, index) => `<tr><td>${index + 1}</td><td>${escape(row.name)}</td><td>${formatInches(row.length)}</td><td>${formatInches(row.width)}</td></tr>`).join('')}</tbody></table></div>
           </section></div><footer class="cutlist-modal-footer"><div class="cutlist-footer-status"><p id="cutlist-optimizer-error" data-optimizer-error class="dialog-error" role="alert" hidden></p><p data-optimizer-summary class="cutlist-summary" role="status" aria-live="polite">${doc.rectangles.length ? 'Optimizing again replaces the current drawing.' : 'Ready to create your panel layout.'}</p></div><div class="cutlist-modal-actions"><button type="button" class="button button-quiet" data-close-optimizer>Close</button><button id="run-cutlist-optimizer" type="submit" class="button button-run">Optimize Cutlist</button></div></footer></form>`;
       refreshControls();
-      // Opening configures the stock inputs; packing only runs on form submission.
+      // Only prompt on file/tab open when there is no drawing yet.
       // Applying a layout reloads this same document and must not reopen the modal.
-      if (opening) open();
+      if (opening && !doc.rectangles.length) open();
     },
   };
 }

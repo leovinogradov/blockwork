@@ -20,7 +20,7 @@ export function cutlistLayoutShapes(layout: CutlistLayout, rows: CutlistExportRe
   if (!layout || !Array.isArray(layout.panels) || !layout.panels.length || !Number.isFinite(layout.usedArea) || layout.usedArea <= 0 || !Number.isFinite(layout.totalArea) || layout.totalArea <= 0) {
     throw new Error('No valid panel layout was generated. Check panel sizes and pieces before optimizing.');
   }
-  const shapes: SketchShape[] = [];
+  const panels: SketchShape[] = [], pieces: SketchShape[] = [], panelLabels: SketchShape[] = [], pieceLabels: SketchShape[] = [];
   const colors = ['#d9a76e', '#86a9a3', '#bd8c79', '#8798b5', '#b5a477', '#a68fb3'];
   const columns = Math.ceil(Math.sqrt(layout.panels.length));
   const maxWidth = Math.max(...layout.panels.map((panel) => panel.width));
@@ -37,19 +37,20 @@ export function cutlistLayoutShapes(layout: CutlistLayout, rows: CutlistExportRe
   layout.panels.forEach((panel, index) => {
     const x = index % columns * cellWidth, y = -Math.floor(index / columns) * cellHeight;
     const labelHeight = Math.max(2, Math.min(panel.width, panel.height) * 0.075);
-    shapes.push({ id: `stock-${index}`, name: `Panel ${index + 1} · ${formatInches(panel.width)} × ${formatInches(panel.height)} in`, position: [x, y], size: [panel.width, panel.height], color: '#ffffff' });
+    panels.push({ id: `stock-${index}`, name: `Panel ${index + 1} · ${formatInches(panel.width)} × ${formatInches(panel.height)} in`, position: [x, y], size: [panel.width, panel.height], color: '#ffffff' });
     const title = `Panel ${index + 1} · ${formatInches(panel.width)} × ${formatInches(panel.height)} in`;
     const stockLabel = labelSize(title, labelHeight, panel.width, labelHeight);
-    shapes.push({ id: `stock-label-${index}`, name: `Panel ${index + 1} label`, kind: 'text', text: title, position: [x, y + panel.height + 1 + stockLabel.size[1]], ...stockLabel, color: '#ffffff' });
+    panelLabels.push({ id: `stock-label-${index}`, name: `Panel ${index + 1} label`, kind: 'text', text: title, position: [x, y + panel.height + 1 + stockLabel.size[1]], ...stockLabel, color: '#ffffff' });
     for (const part of panel.placements) {
       const row = rows[part.rowIndex], number = part.rowIndex + 1;
-      shapes.push({ id: `cut-${part.rowIndex}`, name: `${number}. ${row.name} · ${formatInches(row.length)} × ${formatInches(row.width)} in${part.rotated ? ' · rotated' : ''}`, position: [x + part.x, y + part.y], size: [part.width, part.height], color: colors[part.rowIndex % colors.length] });
+      pieces[part.rowIndex] = { id: `cut-${part.rowIndex}`, name: `${number}. ${row.name} · ${formatInches(row.length)} × ${formatInches(row.width)} in${part.rotated ? ' · rotated' : ''}`, position: [x + part.x, y + part.y], size: [part.width, part.height], color: colors[part.rowIndex % colors.length] };
       const height = Math.min(labelHeight, part.height * 0.45, part.width / (String(number).length + 1));
       const label = labelSize(String(number), height, part.width * 0.9, part.height * 0.45);
-      shapes.push({ id: `cut-label-${part.rowIndex}`, name: `Piece ${number} label`, kind: 'text', text: String(number), position: [x + part.x + (part.width - label.size[0]) / 2, y + part.y + (part.height + label.size[1]) / 2], ...label, color: colors[part.rowIndex % colors.length] });
+      pieceLabels[part.rowIndex] = { id: `cut-label-${part.rowIndex}`, name: `Piece ${number} label`, kind: 'text', text: String(number), position: [x + part.x + (part.width - label.size[0]) / 2, y + part.y + (part.height + label.size[1]) / 2], ...label, color: colors[part.rowIndex % colors.length] };
     }
   });
-  const rectangles = validateSketchShapes(shapes);
+  // Emit panels first, then numbered pieces with their labels, then panel labels.
+  const rectangles = validateSketchShapes([...panels, ...pieces.flatMap((piece, index) => [piece, pieceLabels[index]]), ...panelLabels]);
   const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
   for (const shape of rectangles) {
     const origin = sketchShapeOrigin(shape);

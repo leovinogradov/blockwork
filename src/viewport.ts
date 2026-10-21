@@ -20,8 +20,8 @@ export type ProjectionMode = 'perspective' | 'orthographic';
 export type SketchTool = 'select' | 'rectangle' | 'line' | 'circle' | 'text';
 
 export interface Viewport {
-  setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[] }): void;
-  setRectangles(rectangles: SketchShape[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string> }): void;
+  setBoxes(boxes: BoxSpec[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[]; showLoading?: boolean }): void;
+  setRectangles(rectangles: SketchShape[], options?: { preserveView?: boolean; hiddenIds?: Iterable<string>; showLoading?: boolean }): void;
   setMode(mode: 'model' | 'sketch'): void;
   setSketchTool(tool: SketchTool): void;
   editSketchText(id: string, selectAll?: boolean): void;
@@ -50,6 +50,8 @@ type BoxObject = {
   sketch?: boolean;
   text?: boolean;
   bounds?: THREE.Box3;
+  /** Snapshot of the geometry used by a 2D mesh, independent of caller mutations. */
+  sketchShape?: SketchShape;
   faceHighlight?: ReturnType<typeof createFaceHighlight>;
 };
 
@@ -649,7 +651,8 @@ export function createViewport(
   host.append(textLoading);
   const textLoadingLabel = textLoading.querySelector('span')!;
   const textProgress = textLoading.querySelector('progress')!;
-  let textJobs: { shape: SketchTextShape; mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> }[] = [];
+  type TextMesh = THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  let textJobs: { shape: SketchTextShape; mesh: TextMesh; maxPixels?: number; priority: boolean }[] = [];
   let textLoadFrame = 0;
   const cancelTextLoading = () => {
     cancelAnimationFrame(textLoadFrame);
@@ -657,13 +660,15 @@ export function createViewport(
     textLoading.hidden = true;
     host.setAttribute('aria-busy', 'false');
   };
-  const queueText = (shape: SketchTextShape) => {
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(...shape.size), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
-    if (renderer) textJobs.push({ shape, mesh });
+  const queueText = (shape: SketchTextShape, options: { mesh?: TextMesh; maxPixels?: number; priority?: boolean } = {}) => {
+    const mesh = options.mesh ?? new THREE.Mesh(new THREE.PlaneGeometry(...shape.size), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+    if (renderer) textJobs.push({ shape, mesh, maxPixels: options.maxPixels, priority: options.priority ?? true });
     return mesh;
   };
-  const startTextLoading = () => {
+  const startTextLoading = (showLoading = false) => {
     if (!textJobs.length) return;
+    // Changed labels appear first; any budget adjustments can follow in the background.
+    textJobs.sort((a, b) => Number(b.priority) - Number(a.priority));
     const jobs = textJobs;
     const maxTextureSize = renderer!.capabilities.maxTextureSize;
     const budgets = textRasterBudgets(jobs.map((job) => job.shape), maxTextureSize);
@@ -671,7 +676,7 @@ export function createViewport(
     textProgress.max = jobs.length;
     textProgress.value = 0;
     textLoadingLabel.textContent = `Loading labels · 0 / ${jobs.length}`;
-    textLoading.hidden = false;
+    textLoading.hidden = !showLoading;
     host.setAttribute('aria-busy', 'true');
     const step = () => {
       if (disposed || textJobs !== jobs) return;
@@ -680,7 +685,8 @@ export function createViewport(
         // Bound both CPU raster work and GPU uploads, including on fast machines.
         for (let batch = 0; completed < jobs.length && batch < 2; batch++) {
           const { shape, mesh } = jobs[completed];
-          const material = createSketchTextMaterial(shape, maxTextureSize, budgets[completed]);
+          const material = createSketchTextMaterial(shape, maxTextureSize, jobs[completed].maxPixels ?? budgets[completed]);
+          mesh.material.map?.dispose();
           mesh.material.dispose();
           mesh.material = material;
           renderer!.initTexture(material.map!);
@@ -692,6 +698,7 @@ export function createViewport(
         textJobs = [];
         host.setAttribute('aria-busy', 'false');
         textLoadingLabel.textContent = 'Could not load all labels. Reopen the drawing to retry.';
+        textLoading.hidden = false;
         textProgress.hidden = true;
         return;
       }
@@ -701,11 +708,12 @@ export function createViewport(
       else cancelTextLoading();
     };
     textProgress.hidden = false;
-    // Allow the outlines and progress indicator to paint before the first batch.
-    textLoadFrame = requestAnimationFrame(() => { textLoadFrame = requestAnimationFrame(step); });
+    // File loads yield before raster work. Small user edits update before the next paint.
+    if (showLoading) textLoadFrame = requestAnimationFrame(() => { textLoadFrame = requestAnimationFrame(step); });
+    else step();
   };
 
-  const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[] } = {}) => {
+  const setBoxes = (boxes: BoxSpec[], options: { preserveView?: boolean; hiddenIds?: Iterable<string>; sketches?: ModelSketch[]; showLoading?: boolean } = {}) => {
     cancelTextLoading();
     measurementGeometry = { boxes, sketches: options.sketches ?? [] };
     measurementHover = null;
@@ -802,51 +810,102 @@ export function createViewport(
     select(selectedId, selectedFace);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     if (!options.preserveView) fit();
-    startTextLoading();
+    startTextLoading(options.showLoading);
   };
 
-  const setRectangles = (rectangles: SketchShape[], options: { preserveView?: boolean; hiddenIds?: Iterable<string> } = {}) => {
+  const updateSketchObject = (object: BoxObject, spec: SketchShape) => {
+    const [width, height] = spec.size, [x, y] = sketchShapeOrigin(spec);
+    object.mesh.position.set(x + width / 2, y + height / 2, 0);
+    object.edges.position.copy(object.mesh.position);
+    const color = parseFaceColor(spec.color);
+    const material = object.mesh.material as THREE.MeshBasicMaterial;
+    material.color.set(color.color);
+    // Unfinished text stays transparent until its raster job supplies a map.
+    material.opacity = object.text && material.map ? color.opacity : 0;
+    object.edgeColor = new THREE.Color(color.color).getHex();
+    object.mesh.visible = object.edges.visible = !hiddenIds.has(spec.id);
+    if (object.mesh.visible) {
+      lastBounds.expandByPoint(new THREE.Vector3(x, y, 0));
+      lastBounds.expandByPoint(new THREE.Vector3(x + width, y + height, 0));
+    }
+  };
+  const sameSketchBounds = (before: SketchShape | undefined, shape: SketchShape) => !!before && before.kind === shape.kind && before.size[0] === shape.size[0] && before.size[1] === shape.size[1];
+  const sameSketchRaster = (before: SketchShape | undefined, shape: SketchShape) => shape.kind !== 'text' || before?.kind === 'text' && before.text === shape.text && before.textHeight === shape.textHeight;
+
+  const setRectangles = (rectangles: SketchShape[], options: { preserveView?: boolean; hiddenIds?: Iterable<string>; showLoading?: boolean } = {}) => {
     cancelShapeDrag();
     textEditor.finish(true);
-    cancelTextLoading();
+    const ids = new Set(rectangles.map((shape) => shape.id));
+    const reuseGeometry = rectangles.length === objects.size && ids.size === rectangles.length && rectangles.every((shape) => {
+      const before = objects.get(shape.id)?.sketchShape;
+      return sameSketchBounds(before, shape) && sameSketchRaster(before, shape);
+    });
     measurementGeometry = { rectangles };
     measurementHover = null;
     if ([measurementFirst, measurementSecond].some((anchor) => anchor && !resolveMeasurementAnchor(anchor, measurementGeometry))) { clearMeasurementDraft(); onMeasureStage?.('first'); }
     sketchRectangles = rectangles;
     hiddenIds.clear();
     for (const id of options.hiddenIds ?? []) hiddenIds.add(id);
-    for (const object of objects.values()) {
-      disposeObject(object);
-    }
-    objects.clear(); lastBounds = new THREE.Box3();
-    for (const spec of rectangles) {
-      const [width, height] = spec.size;
-      const [x, y] = sketchShapeOrigin(spec);
-      const faceColor = parseFaceColor(spec.color);
-      // Keep the plane raycastable while rendering the outline only.
-      const mesh = spec.kind === 'text'
-        ? queueText(spec)
-        : new THREE.Mesh(
-          spec.kind === 'circle' ? new THREE.CircleGeometry(width / 2, 96) : new THREE.PlaneGeometry(Math.abs(width) || 1 / 64, Math.abs(height) || 1 / 64),
-          new THREE.MeshBasicMaterial({ color: faceColor.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
-        );
-      mesh.position.set(x + width / 2, y + height / 2, 0);
-      mesh.userData.boxId = spec.id;
-      const edgeColor = new THREE.Color(faceColor.color).getHex();
-      const edgeGeometry = spec.kind === 'line'
-        ? new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-width / 2, -height / 2, 0), new THREE.Vector3(width / 2, height / 2, 0)])
-        : new THREE.EdgesGeometry(mesh.geometry);
-      const edges = new THREE.LineSegments(edgeGeometry, withDepthBias(new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.95 }), 2));
-      edges.position.set(x + width / 2, y + height / 2, 0);
-      mesh.visible = edges.visible = !hiddenIds.has(spec.id);
-      boxRoot.add(mesh, edges);
-      objects.set(spec.id, { id: spec.id, mesh, edges, size: new THREE.Vector3(width, height, 0), edgeColor, text: spec.kind === 'text' });
-      if (mesh.visible) { lastBounds.expandByPoint(new THREE.Vector3(x, y, 0)); lastBounds.expandByPoint(new THREE.Vector3(x + width, y + height, 0)); }
+    lastBounds = new THREE.Box3();
+    if (reuseGeometry) {
+      // Moving/recoloring changes neither glyph pixels nor the shared texture budget.
+      for (const spec of rectangles) updateSketchObject(objects.get(spec.id)!, spec);
+      const current = new Map(rectangles.map((shape) => [shape.id, shape]));
+      for (const job of textJobs) {
+        const shape = current.get(job.shape.id);
+        if (shape?.kind === 'text') job.shape = shape;
+      }
+      if (!options.showLoading) textLoading.hidden = true;
+    } else {
+      cancelTextLoading();
+      for (const [id, object] of objects) {
+        if (!ids.has(id)) { disposeObject(object); objects.delete(id); }
+      }
+      const texts = rectangles.filter((shape) => shape.kind === 'text');
+      const budgets = textRasterBudgets(texts, renderer?.capabilities.maxTextureSize);
+      const pixelBudgets = new Map(texts.map((shape, index) => [shape.id, budgets[index]]));
+      for (const spec of rectangles) {
+        const [width, height] = spec.size;
+        let object = objects.get(spec.id);
+        const before = object?.sketchShape;
+        if (object && !sameSketchBounds(before, spec)) {
+          disposeObject(object); objects.delete(spec.id); object = undefined;
+        }
+        if (!object) {
+          const faceColor = parseFaceColor(spec.color);
+          // Keep the plane raycastable while rendering the outline only.
+          const mesh = spec.kind === 'text'
+            ? queueText(spec, { maxPixels: pixelBudgets.get(spec.id) })
+            : new THREE.Mesh(
+              spec.kind === 'circle' ? new THREE.CircleGeometry(width / 2, 96) : new THREE.PlaneGeometry(Math.abs(width) || 1 / 64, Math.abs(height) || 1 / 64),
+              new THREE.MeshBasicMaterial({ color: faceColor.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
+            );
+          mesh.userData.boxId = spec.id;
+          const edgeColor = new THREE.Color(faceColor.color).getHex();
+          const edgeGeometry = spec.kind === 'line'
+            ? new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-width / 2, -height / 2, 0), new THREE.Vector3(width / 2, height / 2, 0)])
+            : new THREE.EdgesGeometry(mesh.geometry);
+          const edges = new THREE.LineSegments(edgeGeometry, withDepthBias(new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.95 }), 2));
+          boxRoot.add(mesh, edges);
+          object = { id: spec.id, mesh, edges, size: new THREE.Vector3(width, height, 0), edgeColor, text: spec.kind === 'text' };
+          objects.set(spec.id, object);
+        } else if (spec.kind === 'text') {
+          const mesh = object.mesh as TextMesh;
+          const image = mesh.material.map?.image as { width: number; height: number } | undefined;
+          const changed = !sameSketchRaster(before, spec);
+          // Keep unchanged textures; shrink only when the scene's memory budget requires it.
+          if (changed || !image || image.width * image.height > pixelBudgets.get(spec.id)!) {
+            queueText(spec, { mesh, maxPixels: pixelBudgets.get(spec.id), priority: changed || !image });
+          }
+        }
+        object.sketchShape = { ...spec, size: [...spec.size], position: [...spec.position] };
+        updateSketchObject(object, spec);
+      }
+      startTextLoading(options.showLoading);
     }
     selectMany(selectedIds);
     measurementEdges = measurementSegments(measurementGeometry, hiddenIds);
     if (!options.preserveView) fit();
-    startTextLoading();
   };
 
   const setMode = (mode: 'model' | 'sketch') => {
