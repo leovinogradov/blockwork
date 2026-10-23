@@ -135,7 +135,7 @@ root.innerHTML = `
         <div class="code-header">
           <div class="code-title"><div class="eyebrow">SOURCE</div><div class="heading-title"><span class="code-dot">●</span> <button id="source-name" class="source-name-button" type="button" title="Rename file">model</button> <span class="code-mode">JAVASCRIPT</span></div></div>
           <div class="code-header-note" id="draft-note">Edit the code, then run it to update the model.</div>
-          <div class="code-actions"><button class="button button-quiet button-small" id="reset-code">Reset example</button><button class="button button-run" id="run-code"><span>▶</span> Run <kbd>⌘↵</kbd></button></div>
+          <div class="code-actions"><button class="button button-quiet button-small" id="reset-code" title="Discard the draft and restore the last applied source" disabled>Reset</button><button class="button button-run" id="run-code"><span>▶</span> Run <kbd>⌘↵</kbd></button></div>
         </div>
         <div class="editor-wrap"><div class="line-numbers" id="line-numbers">1</div><textarea id="source-editor" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="JavaScript model source"></textarea><div id="editor-error" class="editor-error" hidden></div></div>
       </section>
@@ -388,6 +388,7 @@ function updateLineNumbers() { $('#line-numbers').textContent = Array.from({ len
 function setEditor(source: string, dirty = false) { editor.value = source; draftDirty = dirty; updateLineNumbers(); syncDraftUI(); }
 function syncDraftUI() {
   viewport.setTextEditingEnabled(!draftDirty);
+  $('#reset-code').toggleAttribute('disabled', !draftDirty);
   renderDocumentTabs();
   syncExportUI();
   $('#draft-note').textContent = draftDirty ? 'Draft pending — Run to apply. GUI editing is paused.' : `Edit the code, then run it to update the ${documentKind === 'sketch' ? 'sketch' : 'model'}.`;
@@ -1439,7 +1440,6 @@ function loadDocument(document: ModelDocument) {
   $('#add-box').setAttribute('title', documentKind === 'sketch' ? 'Add rectangle' : 'Add box');
   $('#tree-empty').querySelector('small')!.textContent = documentKind === 'sketch' ? 'Draw a line, rectangle, circle or text, or run sketch code.' : 'Add a box or cylinder, or run some model code.';
   $('.tree-footer').querySelector('span:last-child')!.textContent = 'Ctrl/⌘-click to toggle · Shift-click for range.';
-  $('#reset-code').textContent = documentKind === 'sketch' ? 'Reset sketch' : 'Reset example';
   $('#source-editor').setAttribute('aria-label', documentKind === 'sketch' ? 'JavaScript sketch source' : 'JavaScript model source');
   setEditor(document.source, document.draftDirty);
   editor.setSelectionRange(document.selectionStart, document.selectionEnd);
@@ -1991,7 +1991,16 @@ document.addEventListener('pointerdown', (event) => {
 document.addEventListener('scroll', () => closeGroupMemberMenu(), true);
 window.addEventListener('resize', () => { closeFaceMenu(); closeGroupMemberMenu(); closeFaceColorPicker(); });
 $('#run-code').addEventListener('click', runSource);
-$('#reset-code').addEventListener('click', () => { if (draftDirty && !window.confirm('Discard this unrun source draft and reset?')) return; setEditor(documentKind === 'sketch' ? generateSketchSource([]) : DEFAULT_SOURCE, true); void runSource(); });
+$('#reset-code').addEventListener('click', () => {
+  if (!draftDirty) return;
+  // Ignore a pending compilation so the discarded draft cannot apply after reset.
+  runEpoch++;
+  $('#run-code').toggleAttribute('disabled', false);
+  $('#editor-error').textContent = ''; $('#editor-error').hidden = true;
+  setEditor(appliedSource);
+  setStatus(`Draft discarded · restored last applied ${documentKind === 'sketch' ? 'sketch' : 'model'} source`);
+  scheduleSave();
+});
 function chooseDocumentKind(title: string, allowOpenExisting = false): Promise<DocumentKind | null> {
   const dialog = $('#document-kind-dialog') as HTMLDialogElement;
   $('#document-open-group').hidden = !allowOpenExisting;
