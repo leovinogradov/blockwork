@@ -67,7 +67,7 @@ function marquee(reverse = false, shiftKey = false, empty = false) {
   if (reverse) [first, end] = [end, first];
   pointer('pointerdown', ...first, shiftKey); pointer('pointermove', ...end, shiftKey); pointer('pointerup', ...end, shiftKey);
 }
-function clickItem(id, shiftKey = false) { $(`[data-id="${id}"]`).dispatchEvent(new MouseEvent('click', { bubbles:true, shiftKey })); }
+function clickItem(id, ctrlKey = false) { $(`[data-id="${id}"]`).dispatchEvent(new MouseEvent('click', { bubbles:true, ctrlKey })); }
 function assertSelection(kind, count = 3) {
   check(selected().length === count, `${kind}: tree highlights ${count} selected items`);
   check($('#inspector-content .object-name')?.textContent === `${count} components selected`, `${kind}: inspector shows the shared selection`);

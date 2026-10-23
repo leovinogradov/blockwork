@@ -1,0 +1,113 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Object tree multi-selection checks</title><div id="app"></div>
+<aside style="position:fixed;bottom:8px;left:8px;z-index:100;background:#10232b;color:white;padding:8px;font:12px monospace"><span id="test-result">Running tree selection checks…</span><pre id="test-failures"></pre></aside>
+<script type="module">
+// Run pnpm dev and open this page. Fixtures use private storage.
+import { createDocument, serializeWorkspace } from '/src/documents.ts';
+import { generateSource } from '/src/model.ts';
+import { generateSketchSource } from '/src/sketch.ts';
+import { compileModel } from '/src/compiler.ts';
+const nativeOpen = indexedDB.open.bind(indexedDB), database = `tree-selection-${crypto.randomUUID()}`;
+indexedDB.open = (name, version) => nativeOpen(name === 'blockwork.files.v1' ? database : name, version);
+const docs = ['model', 'sketch'].map(kind => {
+  const doc = createDocument(`${kind} tree selection`, '', kind);
+  doc.groups = [{id:'g',name:'Group',position:[10,0,0]}, {id:'nested',name:'Nested',parentId:'g',position:[5,0,0]}];
+  if (kind === 'model') doc.groups.push({id:'p',name:'Part',kind:'part',position:[20,0,0],color:'#d9a76e'});
+  const objects = [
+    {id:'a',name:'First',position:[0,0],size:[2,2]},
+    {id:'b',name:'Child',groupId:'g',position:[0,0],size:[2,2]},
+    {id:'c',name:'Nested child',groupId:'nested',position:[0,0],size:[2,2]},
+    {id:'hidden',name:'Hidden',position:[30,0],size:[2,2]},
+  ].map(item => ({...item,color:'#d9a76e'}));
+  if (kind === 'model') {
+    doc.boxes = objects.map(item => ({...item,position:[...item.position,0],size:[...item.size,2]}));
+    doc.boxes.push({id:'d',name:'Part child',groupId:'p',position:[0,0,0],size:[2,2,2],color:'#d9a76e'});
+    doc.sketches = [{id:'m',name:'Mounted',axis:'z',position:[25,0,0],size:[2,2],color:'#86a9a3',shapes:[]}];
+  } else doc.rectangles = objects;
+  doc.measurements = [{id:'measure',name:'Dimension',start:{objectId:'a',coordinates:[0,0,...(kind === 'model' ? [0] : [])]},end:{objectId:'a',coordinates:[1,0,...(kind === 'model' ? [0] : [])]}}];
+  doc.treeOrder = ['a','g','b','nested','c','p','d','m','hidden','measure'];
+  doc.hiddenBoxIds = ['hidden'];
+  doc.source = kind === 'model' ? generateSource(doc.boxes, [], doc.groups, doc.treeOrder, doc.sketches, doc.measurements) : generateSketchSource(doc.rectangles, doc.groups, doc.treeOrder, doc.measurements);
+  doc.appliedSource = doc.source; doc.draftDirty = false;
+  return doc;
+});
+const memory = new Map([['blockwork.workspace.v2',serializeWorkspace(docs,docs[0].id)]]);
+Object.defineProperty(window,'localStorage',{value:{getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value),removeItem:key=>memory.delete(key)}});
+const app = await import('/src/main.ts'); await app.workspaceReady;
+const $ = selector => document.querySelector(selector), errors=[]; let checks=0;
+const check = (condition,message) => {checks++;if(!condition)errors.push(message);};
+const visible = () => [...document.querySelectorAll('#component-list [data-tree-id]')].map(row=>row.dataset.treeId);
+const selected = () => [...document.querySelectorAll('#component-list .selected[data-tree-id]')].map(row=>row.dataset.treeId);
+const click = (id,modifiers={}) => $(`#component-list [data-id="${id}"]`).dispatchEvent(new MouseEvent('click',{bubbles:true,...modifiers}));
+const key = (value,modifiers={}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true,...modifiers}));
+const collapse = id => $(`[data-collapse-id="${id}"]`).click();
+const result = kind => compileModel($('#source-editor').value,kind);
+const items = doc => doc.kind === 'sketch' ? doc.rectangles : [...doc.boxes,...doc.sketches];
+function selection(expected,message) {
+  check(selected().join(',')===expected.join(','),`${message}: expected ${expected}, got ${selected()}`);
+  check([...document.querySelectorAll('#component-list [data-id]')].every(button=>(button.getAttribute('aria-pressed')==='true')===selected().includes(button.dataset.id)),`${message}: buttons expose selection`);
+  if(expected.length>1)check($('#selection-status').textContent===`SELECTED · ${expected.length} COMPONENTS`,`${message}: selection count`);
+}
+try {
+  for(const doc of docs) {
+    $(`[data-document-id="${doc.id}"]`).click();
+    const kind=doc.kind, initial=visible();
+    click('a');click('hidden',{shiftKey:true});selection(initial.slice(0,-1),`${kind} Shift visible range includes hidden objects and collapsed containers`);
+    click('g',{ctrlKey:true});selection(initial.slice(0,-1).filter(id=>id!=='g'),`${kind} Ctrl toggle`);
+    click('g',{metaKey:true});check(selected().includes('g'),`${kind} Cmd adds group`);
+    click('hidden');click('a',{shiftKey:true});selection(initial.slice(0,-1),`${kind} reverse range`);
+    click('g',{shiftKey:true});selection(initial.slice(1,-1),`${kind} repeated Shift shrinks from original anchor`);
+    click('measure');click('a',{ctrlKey:true});click('g',{ctrlKey:true,shiftKey:true});selection(['a','g','measure'],`${kind} Ctrl+Shift adds range`);
+    collapse('g');click('a');click('b',{shiftKey:true});selection(['a','g','b'],`${kind} expanded tree order`);
+    collapse('nested');click('c');collapse('nested');click('hidden',{shiftKey:true});selection(['hidden'],`${kind} collapsed anchor fallback`);
+    click('a');key('ArrowDown',{shiftKey:true});selection(['a','g'],`${kind} Shift+Arrow`);
+    key('ArrowDown',{ctrlKey:true});selection(['a','g'],`${kind} Ctrl+Arrow preserves selection`);
+    check(document.activeElement.dataset.id==='b',`${kind} Ctrl+Arrow moves focus`);
+    key('End',{shiftKey:true});selection(visible(),`${kind} Shift+End`);
+    key('a',{metaKey:true});selection(visible(),`${kind} Cmd+A selects visible rows`);
+    key('Escape');selection([],`${kind} Escape clears selection`);
+    check(document.activeElement.dataset.id==='measure',`${kind} selection rendering retains keyboard focus`);
+    click('g');click('b',{ctrlKey:true});
+    $('#visibility-selected').click();
+    check($('[data-id="b"]').closest('.component-row').classList.contains('hidden-object'),`${kind} hiding ancestor/child selection hides branch`);
+    check(!$('#visibility-selected').disabled,`${kind} selected parent can be shown with its child selected`);
+    $('#visibility-selected').click();
+    click('measure',{ctrlKey:true});
+    $('#duplicate-box').click();
+    let compiled=await result(kind);
+    check(compiled.groups.length===doc.groups.length+2,`${kind} duplicate copies selected branch once`);
+    check(items({...compiled,kind}).length===items(doc).length+2,`${kind} duplicate includes collapsed nested members exactly once`);
+    check(compiled.measurements.length===2,`${kind} duplicate includes selected measurement`);
+    check(selected().length===2,`${kind} duplicate selects copied roots`);
+    $('#undo').click();
+    click('g');click('a',{ctrlKey:true});
+    $(kind==='model'?'#add-group':'#add-sketch-group').click();
+    compiled=await result(kind);
+    const wrapper=compiled.groups.find(group=>!doc.groups.some(original=>original.id===group.id));
+    check(compiled.groups.find(group=>group.id==='g').parentId===wrapper?.id && items({...compiled,kind}).find(item=>item.id==='a').groupId===wrapper?.id,`${kind} grouping includes selected containers and objects`);
+    $('#undo').click();
+    click('g');click('b',{ctrlKey:true});$('#delete-box').click();
+    compiled=await result(kind);
+    check(!compiled.groups.some(group=>group.id==='g')&&!items({...compiled,kind}).some(item=>item.id==='b'),`${kind} delete removes selected container and object`);
+    check(compiled.groups.find(group=>group.id==='nested')?.position[0]===15 && items({...compiled,kind}).some(item=>item.id==='c'),`${kind} dissolve preserves unselected nested geometry in world space`);
+    $('#undo').click();
+    if(kind==='model') {
+      click('p');click('a',{ctrlKey:true});selection(['a','p'],`${kind} Parts support multiple selection`);
+      const other=docs[1];$(`[data-document-id="${other.id}"]`).click();$(`[data-document-id="${doc.id}"]`).click();selection(['a','p'],`${kind} mixed selection survives tab switching`);
+      $('#duplicate-box').click();compiled=await result(kind);
+      const copiedPart=compiled.groups.find(group=>group.id!=='p'&&group.kind==='part');
+      check(!!copiedPart&&compiled.boxes.some(box=>box.groupId===copiedPart.id)&&compiled.boxes.length===doc.boxes.length+2,`${kind} duplicate copies Part and standalone object`);
+      $('#undo').click();click('p');click('a',{ctrlKey:true});$('#delete-box').click();compiled=await result(kind);
+      check(!compiled.groups.some(group=>group.id==='p')&&compiled.boxes.find(box=>box.id==='d')?.position[0]===20,`${kind} mixed deletion dissolves Part and preserves its unselected subcomponents`);
+      $('#undo').click();
+    }
+    click('a');click('hidden',{shiftKey:true});
+    const editor=$('#source-editor');editor.value+='\n// pending';editor.dispatchEvent(new Event('input',{bubbles:true}));
+    check($('#duplicate-box').disabled&&$('#delete-box').disabled,`${kind} draft disables bulk actions`);
+    click('measure',{metaKey:true});check(selected().includes('measure'),`${kind} tree selection still works with a source draft`);
+  }
+}catch(error){errors.push(error.stack??String(error));}
+$('#test-result').textContent=errors.length?`${errors.length} failures in ${checks} checks`:`Passed ${checks} tree selection UI checks`;
+$('#test-failures').textContent=errors.join('\n');
+</script>

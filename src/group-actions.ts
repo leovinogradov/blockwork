@@ -1,7 +1,7 @@
 import { normalizeTreeOrder, type TreeItem } from './component-tree';
-import { groupDescendants, type GroupSpec } from './groups';
+import { groupDescendants, reparentPosition, type GroupSpec } from './groups';
 import type { Measurement } from './measurements';
-import type { BoxSpec } from './model';
+import { reparentBox, type BoxSpec } from './model';
 import type { ModelSketch } from './model-sketch';
 import type { SketchShape } from './sketch';
 
@@ -37,37 +37,81 @@ type GroupGeometry = {
   measurements: Measurement[];
 };
 
-/** Copy a branch beside its source; IDs inside relations follow the copied objects. */
-export function duplicateGroupBranch(scene: GroupGeometry, groupId: string, order: string[], createId: () => string = () => crypto.randomUUID()) {
-  const root = scene.groups.find((group) => group.id === groupId);
-  if (!root) throw new Error('Unknown group.');
-  const descendants = groupDescendants(scene.groups, groupId);
-  const members = [...scene.boxes, ...scene.sketches, ...scene.rectangles, ...scene.measurements];
-  const belongs = (item: TreeItem) => !!item.groupId && descendants.has(item.groupId);
-  const ids = new Map([...scene.groups.filter((group) => descendants.has(group.id)), ...members.filter(belongs)].map((entry) => [entry.id, createId()]));
-  const copyMember = <T extends TreeItem>(item: T): T => ({ ...structuredClone(item), id: ids.get(item.id)!, groupId: ids.get(item.groupId!)! });
-  const groups = scene.groups.filter((group) => descendants.has(group.id)).map((group) => ({
-    ...structuredClone(group), id: ids.get(group.id)!,
-    ...(group.id === groupId
-      ? { name: `${group.name} copy`, position: [group.position[0] + 1, group.position[1] + 1, group.position[2]] as [number, number, number] }
-      : { parentId: ids.get(group.parentId!)! }),
+/** A selected container already includes its descendants for branch operations. */
+export function treeSelectionRoots(scene: Pick<GroupGeometry, 'groups'>, items: TreeItem[], selected: ReadonlySet<string>): string[] {
+  const parents = new Map([...scene.groups.map((group) => [group.id, group.parentId] as const), ...items.map((item) => [item.id, item.groupId] as const)]);
+  return [...selected].filter((id) => {
+    for (let parent = parents.get(id); parent; parent = parents.get(parent)) if (selected.has(parent)) return false;
+    return parents.has(id);
+  });
+}
+
+/** Copy every selected branch once, keeping shared internal references together. */
+export function duplicateTreeSelection(scene: GroupGeometry, selected: ReadonlySet<string>, order: string[], createId: () => string = () => crypto.randomUUID()) {
+  const items = [...scene.boxes, ...scene.sketches, ...scene.rectangles, ...scene.measurements];
+  const roots = new Set(treeSelectionRoots(scene, items, selected));
+  const branches = new Set(scene.groups.filter((group) => roots.has(group.id)).flatMap((group) => [...groupDescendants(scene.groups, group.id)]));
+  const included = [...scene.groups.filter((group) => branches.has(group.id)), ...items.filter((item) => roots.has(item.id) || !!item.groupId && branches.has(item.groupId))];
+  const ids = new Map(included.map((entry) => [entry.id, createId()]));
+  const copyItem = <T extends TreeItem & { name?: string }>(item: T): T => ({
+    ...structuredClone(item), id: ids.get(item.id)!, groupId: ids.get(item.groupId!) ?? item.groupId,
+    ...(roots.has(item.id) ? { name: `${item.name ?? 'Measurement'} copy` } : {}),
+  });
+  const offset = <T extends { id: string; position: number[] }>(original: T, copy: T): T => {
+    if (roots.has(original.id)) { copy.position[0] += 1; copy.position[1] += 1; }
+    return copy;
+  };
+  const groups = scene.groups.filter((group) => ids.has(group.id)).map((group) => offset(group, {
+    ...structuredClone(group), id: ids.get(group.id)!, parentId: ids.get(group.parentId!) ?? group.parentId,
+    name: roots.has(group.id) ? `${group.name} copy` : group.name,
   }));
-  const boxes = scene.boxes.filter(belongs).map((box) => {
-    const copy = copyMember(box);
+  const boxes = scene.boxes.filter((box) => ids.has(box.id)).map((box) => {
+    const copy = offset(box, copyItem(box));
     if (copy.relative) copy.relative.boxId = ids.get(copy.relative.boxId) ?? copy.relative.boxId;
     return copy;
   });
-  const measurements = scene.measurements.filter(belongs).map((measurement) => {
-    const copy = copyMember(measurement);
+  const measurements = scene.measurements.filter((item) => ids.has(item.id)).map((item) => {
+    const copy = copyItem(item);
     for (const anchor of [copy.start, copy.end]) anchor.objectId = ids.get(anchor.objectId) ?? anchor.objectId;
     return copy;
   });
-  const treeOrder = normalizeTreeOrder(order, scene.groups, members);
-  const copiedOrder = treeOrder.filter((id) => ids.has(id)).map((id) => ids.get(id)!);
-  treeOrder.splice(treeOrder.indexOf(groupId) + 1, 0, ...copiedOrder);
+  const treeOrder = normalizeTreeOrder(order, scene.groups, items).flatMap((id) => ids.has(id) ? [id, ids.get(id)!] : [id]);
   return {
-    groups, boxes, measurements, ids, treeOrder, rootId: ids.get(groupId)!,
-    sketches: scene.sketches.filter(belongs).map(copyMember),
-    rectangles: scene.rectangles.filter(belongs).map(copyMember),
+    groups, boxes, measurements, ids, treeOrder, rootIds: [...roots].map((id) => ids.get(id)!),
+    sketches: scene.sketches.filter((item) => ids.has(item.id)).map((item) => offset(item, copyItem(item))),
+    rectangles: scene.rectangles.filter((item) => ids.has(item.id)).map((item) => offset(item, copyItem(item))),
   };
+}
+
+/** Delete selected objects and dissolve selected containers, preserving other members. */
+export function removeTreeSelection(scene: GroupGeometry, selected: ReadonlySet<string>): GroupGeometry {
+  const parents = new Map(scene.groups.map((group) => [group.id, group.parentId]));
+  const retainedParent = (id?: string): string | undefined => {
+    while (id && selected.has(id)) id = parents.get(id);
+    return id;
+  };
+  return {
+    groups: scene.groups.filter((group) => !selected.has(group.id)).map((group) => selected.has(group.parentId ?? '')
+      ? { ...group, parentId: retainedParent(group.parentId), position: reparentPosition(group.position, scene.groups, group.parentId, retainedParent(group.parentId)) } : group),
+    boxes: scene.boxes.filter((box) => !selected.has(box.id)).map((box) => {
+      const next = selected.has(box.groupId ?? '') ? reparentBox(box, scene.groups, retainedParent(box.groupId)) : box;
+      if (!next.relative || !selected.has(next.relative.boxId)) return next;
+      const expressions = { ...next.expressions };
+      for (const field of ['relative.offset', 'relative.u.offset', 'relative.v.offset', 'position.0', 'position.1', 'position.2'] as const) delete expressions[field];
+      return { ...next, relative: undefined, expressions };
+    }),
+    sketches: scene.sketches.filter((item) => !selected.has(item.id)).map((item) => selected.has(item.groupId ?? '')
+      ? { ...item, groupId: retainedParent(item.groupId), position: reparentPosition(item.position, scene.groups, item.groupId, retainedParent(item.groupId)) } : item),
+    rectangles: scene.rectangles.filter((item) => !selected.has(item.id)).map((item) => selected.has(item.groupId ?? '')
+      ? { ...item, groupId: retainedParent(item.groupId), position: reparentPosition(item.position, scene.groups, item.groupId, retainedParent(item.groupId)).slice(0, 2) as [number, number] } : item),
+    measurements: scene.measurements.filter((item) => !selected.has(item.id)).map((item) => selected.has(item.groupId ?? '')
+      ? { ...item, groupId: retainedParent(item.groupId) } : item),
+  };
+}
+
+/** Copy a branch beside its source; IDs inside relations follow the copied objects. */
+export function duplicateGroupBranch(scene: GroupGeometry, groupId: string, order: string[], createId: () => string = () => crypto.randomUUID()) {
+  if (!scene.groups.some((group) => group.id === groupId)) throw new Error('Unknown group.');
+  const copy = duplicateTreeSelection(scene, new Set([groupId]), order, createId);
+  return { ...copy, rootId: copy.rootIds[0] };
 }

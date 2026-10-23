@@ -9,7 +9,7 @@ import { cylinderAxes, parseInches, formatInches, type BoxSpec, type FaceName } 
 import { parseFaceColor } from './face-color';
 import { createSketchTextMaterial, textRasterBudgets } from './sketch-text';
 import { createSketchTextEditor } from './sketch-text-editor';
-import { sketchShapesInBox, type SelectionAction } from './sketch-selection';
+import { createSketchSelectionCycle, sketchShapesAtPoint, sketchShapesInBox, type SelectionAction } from './sketch-selection';
 import { modelObjectsInBox } from './model-selection';
 import { lineDisplacement, lineMeasurements, parseLineAngle, sketchMoveAnchor, sketchShapeOrigin, snapToSketchEdges, type SketchShape, type SketchTextShape, type SketchSnap } from './sketch';
 import { modelSketchFrame, modelSketchPoints, type ModelSketch } from './model-sketch';
@@ -83,6 +83,8 @@ export function createViewport(
   let selectedId: string | null = null;
   let selectedIds = new Set<string>();
   let selectedFace: FaceName | null = null;
+  const sketchSelectionCycle = createSketchSelectionCycle();
+  let selectingSketchClick = false;
   let projection: ProjectionMode = 'perspective';
   let sketchMode = false;
   let sketchTool: SketchTool = 'select';
@@ -237,7 +239,7 @@ export function createViewport(
   const editSketchText = (id: string, selectAll = false) => {
     if (!sketchMode || !textEditingEnabled || !onSketchTextEdit || hiddenIds.has(id)) return;
     const shape = sketchRectangles.find((shape) => shape.id === id && shape.kind === 'text');
-    if (shape?.kind === 'text') textEditor.start(shape, selectAll);
+    if (shape?.kind === 'text') { sketchSelectionCycle.reset(); textEditor.start(shape, selectAll); }
   };
 
   const sketchOverlay = document.createElement('div');
@@ -330,6 +332,7 @@ export function createViewport(
     }
   };
   const setMeasurementTool = (active: boolean) => {
+    sketchSelectionCycle.reset();
     cancelShapeDrag();
     pendingMeasurementShift = false;
     if (active) setNavigationTool('select');
@@ -384,6 +387,7 @@ export function createViewport(
   };
 
   const setSketchTool = (tool: SketchTool) => {
+    sketchSelectionCycle.reset();
     cancelShapeDrag();
     if (tool !== 'select') setNavigationTool('select');
     sketchTool = sketchMode ? tool : 'select';
@@ -557,6 +561,7 @@ export function createViewport(
     const height = Math.max(host.clientHeight, 1);
     resizePending = false;
     if (width === renderedWidth && height === renderedHeight) return;
+    sketchSelectionCycle.reset();
     renderedWidth = width;
     renderedHeight = height;
     renderer.setSize(width, height, false);
@@ -588,6 +593,7 @@ export function createViewport(
   };
 
   const fit = () => {
+    sketchSelectionCycle.reset();
     controls?.cancelPendingWheel();
     const target = boundsCenter();
     const radius = boundsRadius();
@@ -613,7 +619,9 @@ export function createViewport(
   };
 
   const applySelection = (ids: Iterable<string>, face: FaceName | null = null) => {
-    selectedIds = new Set([...ids].filter((id) => (objects.has(id) || annotations.some((a) => a.measurement.id === id)) && !hiddenIds.has(id)));
+    const nextIds = new Set([...ids].filter((id) => (objects.has(id) || annotations.some((a) => a.measurement.id === id)) && !hiddenIds.has(id)));
+    if (!selectingSketchClick && (nextIds.size !== selectedIds.size || [...nextIds].some((id) => !selectedIds.has(id)))) sketchSelectionCycle.reset();
+    selectedIds = nextIds;
     selectedId = selectedIds.size === 1 ? [...selectedIds][0] : null;
     if (shapeDrag && !selectedIds.has(shapeDrag.id)) cancelShapeDrag();
     selectedFace = selectedId && objects.has(selectedId) && !objects.get(selectedId)?.sketch ? face : null;
@@ -833,6 +841,7 @@ export function createViewport(
   const sameSketchRaster = (before: SketchShape | undefined, shape: SketchShape) => shape.kind !== 'text' || before?.kind === 'text' && before.text === shape.text && before.textHeight === shape.textHeight;
 
   const setRectangles = (rectangles: SketchShape[], options: { preserveView?: boolean; hiddenIds?: Iterable<string>; showLoading?: boolean } = {}) => {
+    sketchSelectionCycle.reset();
     cancelShapeDrag();
     textEditor.finish(true);
     const ids = new Set(rectangles.map((shape) => shape.id));
@@ -928,6 +937,7 @@ export function createViewport(
   };
 
   const setVisibility = (ids: string | Iterable<string>, visible: boolean) => {
+    sketchSelectionCycle.reset();
     for (const id of typeof ids === 'string' ? [ids] : ids) {
       const object = objects.get(id);
       if (!object && !annotations.some((a) => a.measurement.id === id)) continue;
@@ -946,6 +956,7 @@ export function createViewport(
   };
 
   const setView = (view: ViewName) => {
+    sketchSelectionCycle.reset();
     if (sketchMode) view = 'top';
     currentView = view;
     const target = boundsCenter();
@@ -964,6 +975,7 @@ export function createViewport(
 
   const setProjection = (mode: ProjectionMode) => {
     if (projection === mode) return;
+    sketchSelectionCycle.reset();
     const oldPosition = camera.position.clone();
     const oldTarget = controls?.target.clone() ?? new THREE.Vector3();
     projection = mode;
@@ -1028,26 +1040,33 @@ export function createViewport(
     return normal.z >= 0 ? 'top' : 'bottom';
   };
 
+  const sketchHitsAtPointer = (event: MouseEvent) => {
+    if (!renderer) return [];
+    camera.updateMatrixWorld();
+    const rect = renderer.domElement.getBoundingClientRect();
+    return sketchShapesAtPoint(sketchRectangles, [event.clientX, event.clientY], ([x, y]) => {
+      const v = new THREE.Vector3(x, y, 0).project(camera);
+      return [(v.x + 1) * rect.width / 2 + rect.left, (1 - v.y) * rect.height / 2 + rect.top];
+    }, hiddenIds);
+  };
+  const selectSketchAtPointer = (event: MouseEvent, additive: boolean, handleId?: string) => {
+    const hits = sketchHitsAtPointer(event);
+    if (!hits.length && handleId) hits.push(handleId);
+    if (additive) sketchSelectionCycle.reset();
+    const id = additive ? hits[0] : sketchSelectionCycle.next([event.clientX, event.clientY], hits);
+    selectingSketchClick = true;
+    try {
+      if (onSketchSelect) onSketchSelect(id ? [id] : [], additive ? 'toggle' : 'replace');
+      else { select(id ?? null); onSelect(id ?? null); }
+    } finally { selectingSketchClick = false; }
+  };
   const faceAtPointer = (event: MouseEvent) => {
+    if (sketchMode) {
+      const id = sketchHitsAtPointer(event)[0];
+      return id ? { boxId: id, face: 'top' as FaceName } : null;
+    }
     pointerToNdc(event);
     raycaster.setFromCamera(pointer, camera);
-    if (sketchMode && renderer) {
-      const rect = renderer.domElement.getBoundingClientRect();
-      let closest: string | null = null, distance = 10;
-      for (const spec of sketchRectangles) {
-        if (spec.kind !== 'line' || hiddenIds.has(spec.id)) continue;
-        const project = (x: number, y: number) => {
-          const v = new THREE.Vector3(x, y, 0).project(camera);
-          return [(v.x + 1) * rect.width / 2 + rect.left, (1 - v.y) * rect.height / 2 + rect.top];
-        };
-        const a = project(...spec.position), b = project(spec.position[0] + spec.size[0], spec.position[1] + spec.size[1]);
-        const dx = b[0] - a[0], dy = b[1] - a[1];
-        const t = Math.max(0, Math.min(1, ((event.clientX - a[0]) * dx + (event.clientY - a[1]) * dy) / (dx * dx + dy * dy)));
-        const d = Math.hypot(event.clientX - a[0] - t * dx, event.clientY - a[1] - t * dy);
-        if (d <= distance) { distance = d; closest = spec.id; }
-      }
-      if (closest) return { boxId: closest, face: 'top' as FaceName };
-    }
     raycaster.params.Line.threshold = Math.max(0.05, boundsRadius() / 150);
     const hit = raycaster.intersectObjects([...objects.values()].filter((object) => !hiddenIds.has(object.id) && (!sketchMode || sketchRectangles.find((s) => s.id === object.id)?.kind !== 'line')).map((object) => object.mesh), true)[0];
     const boxId = hit?.object.userData.boxId as string | undefined;
@@ -1093,12 +1112,14 @@ export function createViewport(
     pendingMeasurementShift = false;
   };
   const onNavigationWheel = (event: WheelEvent) => {
+    sketchSelectionCycle.reset();
     if (event.shiftKey) pendingMeasurementShift = false;
   };
   const clearMeasurementHover = () => { measurementHover = null; };
-  const onWindowBlur = () => { cancelShapeDrag(); pendingMeasurementShift = false; controls?.setNavigationTool(navigationTool); clearMeasurementHover(); };
+  const onWindowBlur = () => { sketchSelectionCycle.reset(); cancelShapeDrag(); pendingMeasurementShift = false; controls?.setNavigationTool(navigationTool); clearMeasurementHover(); };
 
   const setNavigationTool = (tool: NavigationTool) => {
+    sketchSelectionCycle.reset();
     cancelShapeDrag();
     navigationTool = sketchMode && tool === 'orbit' ? 'select' : tool;
     pendingMeasurementShift = false;
@@ -1174,7 +1195,7 @@ export function createViewport(
       if (!sketchMoveAnchor(shape) || hiddenIds.has(shape.id)) continue;
       const [x, y] = moveAnchorScreen(shape);
       const d = (event.clientX - bounds.left - x) ** 2 + (event.clientY - bounds.top - y) ** 2;
-      if (d <= distance) { distance = d; closest = shape; }
+      if (d < distance || d === distance && (!closest || selectedIds.has(shape.id) && !selectedIds.has(closest.id))) { distance = d; closest = shape; }
     }
     return closest;
   }
@@ -1185,7 +1206,11 @@ export function createViewport(
   }
   function updateShapeDrag(event: PointerEvent) {
     if (!shapeDrag || !pointerDown) return;
-    if (Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) shapeDrag.moved = true;
+    if (!shapeDrag.moved && Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) {
+      shapeDrag.moved = true;
+      sketchSelectionCycle.reset();
+      select(shapeDrag.id); onSketchSelect?.([shapeDrag.id], 'replace');
+    }
     if (!shapeDrag.moved) return;
     const point = sketchPlanePoint(event), object = objects.get(shapeDrag.id);
     if (!point || !object) return;
@@ -1206,6 +1231,7 @@ export function createViewport(
   }
 
   const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) sketchSelectionCycle.reset();
     if (shapeDrag) { event.preventDefault(); event.stopImmediatePropagation(); return; }
     controls?.cancelPendingWheel();
     // Cancel native mouse actions before handling secondary-click navigation.
@@ -1218,12 +1244,11 @@ export function createViewport(
       pointerDown = { x: event.clientX, y: event.clientY, button: 0, pointerId: event.pointerId, dragged: false, additive: false };
       return;
     }
-    const moveTarget = event.button === 0 ? moveAnchorAtPointer(event) : null;
+    const moveTarget = event.button === 0 && !event.shiftKey && !event.ctrlKey && !event.metaKey ? moveAnchorAtPointer(event) : null;
     const dragStart = moveTarget ? sketchPlanePoint(event) : null;
     if (moveTarget && dragStart) {
       event.preventDefault(); event.stopImmediatePropagation();
       renderer?.domElement.focus({ preventScroll: true });
-      select(moveTarget.id); onSketchSelect?.([moveTarget.id], 'replace');
       const object = objects.get(moveTarget.id)!;
       shapeDrag = { id: moveTarget.id, pointerId: event.pointerId, start: dragStart, position: [...moveTarget.position], preview: [...moveTarget.position], mesh: object.mesh.position.clone(), edges: object.edges.position.clone(), moved: false };
       pointerDown = { x: event.clientX, y: event.clientY, button: 0, pointerId: event.pointerId, dragged: false, additive: false };
@@ -1248,6 +1273,7 @@ export function createViewport(
     };
   };
   const onPointerMove = (event: PointerEvent) => {
+    sketchSelectionCycle.move([event.clientX, event.clientY]);
     if (shapeDrag) {
       if (shapeDrag.pointerId === event.pointerId) { event.preventDefault(); event.stopImmediatePropagation(); updateShapeDrag(event); }
       return;
@@ -1285,13 +1311,19 @@ export function createViewport(
     }
   };
   const onPointerUp = (event: PointerEvent) => {
+    let clickedHandle: string | undefined;
     if (shapeDrag) {
       if (shapeDrag.pointerId !== event.pointerId || event.button !== 0) return;
       event.preventDefault(); event.stopImmediatePropagation(); updateShapeDrag(event);
       const drag = shapeDrag;
+      const down = pointerDown;
       cancelShapeDrag();
-      if (drag.moved && (drag.preview[0] !== drag.position[0] || drag.preview[1] !== drag.position[1])) onSketchMove?.(drag.id, drag.preview);
-      return;
+      if (drag.moved) {
+        if (drag.preview[0] !== drag.position[0] || drag.preview[1] !== drag.position[1]) onSketchMove?.(drag.id, drag.preview);
+        return;
+      }
+      clickedHandle = drag.id;
+      pointerDown = down;
     }
     if (navigationTool !== 'select') return;
     const down = pointerDown;
@@ -1350,6 +1382,7 @@ export function createViewport(
     if (event.button === 0 && !down.dragged && Math.hypot(event.clientX - down.x, event.clientY - down.y) <= 4) {
       const measurementId = measurementLabelAtPointer(event);
       if (measurementId) {
+        sketchSelectionCycle.reset();
         selectionBox.hidden = true;
         select(measurementId); onSelect(measurementId); return;
       }
@@ -1366,14 +1399,15 @@ export function createViewport(
       selectionBox.hidden = true;
       let ids: string[];
       if (dragged && renderer) {
+        sketchSelectionCycle.reset();
         const bounds = renderer.domElement.getBoundingClientRect();
         ids = sketchShapesInBox(sketchRectangles, [down.x, down.y], [event.clientX, event.clientY], ([x, y]) => {
           const projected = new THREE.Vector3(x, y, 0).project(camera);
           return [(projected.x + 1) * bounds.width / 2 + bounds.left, (1 - projected.y) * bounds.height / 2 + bounds.top];
         }, hiddenIds);
       } else {
-        const hit = faceAtPointer(event);
-        ids = hit ? [hit.boxId] : [];
+        selectSketchAtPointer(event, down.additive, clickedHandle);
+        return;
       }
       if (onSketchSelect) onSketchSelect(ids, down.additive ? dragged ? 'add' : 'toggle' : 'replace');
       else { select(ids[0] ?? null); onSelect(ids[0] ?? null); }
@@ -1403,13 +1437,17 @@ export function createViewport(
   const onSecondaryClick = (event: MouseEvent) => { if (event.button === 2) event.preventDefault(); };
   const onDoubleClick = (event: MouseEvent) => {
     if (!sketchMode || sketchTool !== 'select' || measurementTool || navigationTool !== 'select' || !textEditingEnabled) return;
-    const hit = faceAtPointer(event);
-    if (!hit || !sketchRectangles.some((shape) => shape.id === hit.boxId && shape.kind === 'text')) return;
+    const hits = sketchHitsAtPointer(event);
+    // Rapid clicks over overlaps belong to the selection cycle. Enter still edits text.
+    if (hits.length > 1) return;
+    const id = hits[0];
+    if (!id || !sketchRectangles.some((shape) => shape.id === id && shape.kind === 'text')) return;
     event.preventDefault();
-    onSketchSelect?.([hit.boxId], 'replace');
-    editSketchText(hit.boxId);
+    onSketchSelect?.([id], 'replace');
+    editSketchText(id);
   };
   const onSketchKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') sketchSelectionCycle.reset();
     if (event.key === 'Escape' && shapeDrag) { event.preventDefault(); event.stopPropagation(); cancelShapeDrag(); return; }
     if (navigationTool !== 'select') return;
     if (event.key === 'Enter' && sketchMode && sketchTool === 'select' && selectedId && !measurementTool && !event.ctrlKey && !event.metaKey) {
@@ -1426,8 +1464,8 @@ export function createViewport(
     event.preventDefault();
     (sketchTool === 'line' ? lengthInput : widthInput).focus();
   };
-  const onPointerLeave = () => { sketchOverlay.classList.remove('pointing'); clearMeasurementHover(); };
-  const onPointerCancel = () => { cancelShapeDrag(); pointerDown = null; selectionBox.hidden = true; clearMeasurementHover(); };
+  const onPointerLeave = () => { sketchSelectionCycle.reset(); sketchOverlay.classList.remove('pointing'); clearMeasurementHover(); };
+  const onPointerCancel = () => { sketchSelectionCycle.reset(); cancelShapeDrag(); pointerDown = null; selectionBox.hidden = true; clearMeasurementHover(); };
 
   const clipCenter = new THREE.Vector3();
   const clipDirection = new THREE.Vector3();

@@ -38,6 +38,7 @@ textarea.text-field.variable-description{height:auto;min-height:72px;padding:8px
 .box-row{padding:0 5px 0 10px;cursor:default}
 .component-select{height:100%;min-width:0;flex:1;display:flex;align-items:center;gap:8px;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}
 .component-select:disabled{cursor:not-allowed}
+#component-list :is(.component-select,.variable-row):focus-visible{outline:none}
 .visibility-toggle{width:25px;height:25px;display:flex;align-items:center;justify-content:center;flex:none;padding:3px;border:0;border-radius:4px;background:transparent;color:#78909c;cursor:pointer}
 .visibility-toggle:hover{background:#2b3b45;color:#d5e0e5}
 .visibility-toggle:disabled{opacity:.45;cursor:default}
@@ -294,12 +295,15 @@ body.is-resizing-panels,body.is-resizing-panels *{cursor:col-resize!important;us
 .part-row.selected{background:#202c36;box-shadow:inset 2px 0 var(--amber)}
 .part-row .row-name{display:block;color:#bec9d0;overflow:hidden}
 .part-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.part-tag{display:block;font:7px/1.3 var(--mono);letter-spacing:.6px;color:#81939f;margin-top:3px}
+/* Only the PART label and its chevron toggle subcomponents; other row clicks select the Part.
+   Keep the label's hit area fitted to its text and use margin for the chevron gap,
+   so blank space beside the label does not toggle expansion. */
+.part-tag{display:block;width:fit-content;max-width:100%;font:7px/1.3 var(--mono);letter-spacing:.6px;color:#81939f;margin-top:3px;cursor:pointer}
 .part-warning-label{color:var(--amber)}
 .part-row .row-size{max-width:85px;color:#728492}
 .subcomponent-icon{width:12px;height:12px;flex:none;stroke-width:1.6;color:#7f909e}
 .part-row{position:relative}
-.part-row .part-tag{padding-left:11px}
+.part-row .part-tag{margin-left:11px}
 .part-row .part-collapse{position:absolute;left:calc(29px + var(--tree-depth,0)*14px);top:21px;width:12px;height:12px;font:12px/12px var(--mono);color:#81939f;padding:0;text-align:left}
 .part-row .part-collapse:hover{color:var(--amber)}
 

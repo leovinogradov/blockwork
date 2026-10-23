@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sketch overlap selection checks</title>
+<link rel="stylesheet" href="/src/style.css">
+<style>body{background:#101923;color:#ddd;font:16px sans-serif;padding:20px}#viewport{width:800px;height:420px;position:relative;overflow:hidden}</style>
+<h1>Sketch overlap selection checks</h1><p id="result">Running…</p><pre id="failures"></pre><div id="viewport"></div>
+<script type="module">
+import { createViewport } from '/src/viewport.ts';
+import { updateSketchSelection } from '/src/sketch-selection.ts';
+const host = document.querySelector('#viewport');
+const errors = []; let checks = 0, selected = new Set(), moves = [];
+const check = (condition, message) => { checks++; if (!condition) errors.push(message); };
+const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const box = (id, position, size) => ({ id, name:id, position, size, color:'#ffffff' });
+let shapes = [
+  box('large', [0,0], [20,20]),
+  box('small', [2,2], [4,4]),
+  box('twin', [2,2], [4,4]),
+  {...box('circle', [2,2], [4,4]), kind:'circle'},
+  {...box('line', [6,6], [-4,-4]), kind:'line'},
+  {...box('text', [2,6], [4,4]), kind:'text', text:'Label', textHeight:1},
+];
+const viewport = createViewport(host, () => {}, undefined, undefined, undefined, (ids, action) => {
+  selected = updateSketchSelection(selected, ids, action);
+  viewport.selectMany(selected);
+}, undefined, undefined, undefined, undefined, () => {}, (id, position) => {
+  moves.push({id, position});
+  shapes = shapes.map((shape) => shape.id === id ? {...shape, position} : shape);
+  viewport.setRectangles(shapes, {preserveView:true});
+  viewport.select(id);
+});
+try {
+  viewport.setMode('sketch'); viewport.setRectangles(shapes);
+  viewport.selectMany(shapes.map(({id}) => id)); await frame();
+  const canvas = host.querySelector('canvas');
+  canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {}; canvas.hasPointerCapture = () => false;
+  const bounds = canvas.getBoundingClientRect();
+  const center = (id) => {
+    const handle = host.querySelector(`[data-shape-id="${id}"]`);
+    return [bounds.left + parseFloat(handle.style.left), bounds.top + parseFloat(handle.style.top)];
+  };
+  const small = center('small'), large = center('large');
+  const pointer = (type, point, modifiers = {}) => canvas.dispatchEvent(new PointerEvent(type, {
+    bubbles:true, cancelable:true, pointerId:1, pointerType:'mouse', button:0,
+    buttons:type === 'pointerup' ? 0 : 1, clientX:point[0], clientY:point[1], ...modifiers,
+  }));
+  const click = (point = small, modifiers = {}) => { pointer('pointerdown', point, modifiers); pointer('pointerup', point, modifiers); };
+  const expect = (ids, message) => check([...selected].sort().join(',') === [...ids].sort().join(','), message);
+  viewport.select(null); selected.clear();
+  for (const id of ['small','twin','circle','line','text','large','small']) {
+    click(); expect([id], `Repeated center clicks must cycle to ${id}`);
+  }
+  check(moves.length === 0, 'Cycling on center handles must not commit movement');
+  pointer('pointermove', large); pointer('pointermove', small);
+  click(); expect(['small'], 'Moving away and back must restart with the closest center');
+  click(); expect(['twin'], 'A restarted cycle must still advance');
+  click([small[0]+1, small[1]+1]); expect(['circle'], 'Small pointer jitter must preserve the original cycle order');
+  // A real browser emits dblclick after two rapid clicks; overlapping text must stay selectable.
+  click(); click(); expect(['text'], 'Text must participate in the cycle');
+  canvas.dispatchEvent(new MouseEvent('dblclick', {bubbles:true, clientX:small[0], clientY:small[1]}));
+  check(host.querySelector('[aria-label="Edit drawing text"]').hidden, 'Rapid overlap clicks must not open the text editor');
+  canvas.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, key:'Enter'}));
+  check(!host.querySelector('[aria-label="Edit drawing text"]').hidden, 'Enter must still edit selected overlapping text');
+  host.querySelector('[aria-label="Edit drawing text"]').dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, key:'Escape'}));
+  canvas.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, key:'Escape'}));
+  click(); expect(['small'], 'Escape must clear the cycle');
+  for (const key of ['shiftKey','ctrlKey','metaKey']) {
+    click(large); expect(['large'], 'Clicking another location must select its nearest center');
+    click(small, {[key]:true}); expect(['large','small'], `${key} at a center handle must add the nearest shape`);
+    click(small, {[key]:true}); expect(['large'], `${key} must toggle the nearest shape off without cycling`);
+    click(); expect(['small'], 'A plain click after modified clicks must start a fresh cycle');
+  }
+  click(); expect(['twin'], 'Cycle must advance before visibility changes');
+  viewport.setVisibility('small', false);
+  click(); expect(['twin'], 'Hidden shapes must be excluded and visibility changes must restart cycling');
+  viewport.setVisibility('small', true);
+  click(); expect(['small'], 'Showing a shape must restore it to center-distance ordering');
+  click(); expect(['twin'], 'Cycle must advance before a wheel gesture');
+  canvas.dispatchEvent(new WheelEvent('wheel', {bubbles:true, deltaY:0, clientX:small[0], clientY:small[1]}));
+  click(); expect(['small'], 'Navigation input must restart the cycle');
+  click(); expect(['twin'], 'Cycle must advance before an external tree selection');
+  viewport.select('large');
+  click(); expect(['small'], 'An external selection must restart the cycle');
+  click([bounds.right-5,bounds.top+5]); expect([], 'Empty space must clear selection');
+  click(); expect(['small'], 'An empty click must restart the cycle');
+  click(); expect(['twin'], 'Cycle must advance before geometry changes');
+  viewport.setRectangles(shapes, {preserveView:true});
+  click(); expect(['small'], 'Replacing geometry must reset the cycle');
+  // Coincident handles must move the shape selected by cycling.
+  pointer('pointerdown', small); pointer('pointermove', [small[0]+20,small[1]]); pointer('pointerup', [small[0]+20,small[1]]);
+  check(moves.length === 1 && moves[0].id === 'small', 'Dragging coincident centers must move the selected shape');
+  moves = [];
+  // Dragging a center must still move a shape and commit only on release.
+  viewport.setRectangles([shapes[0]]); selected.clear(); await frame();
+  viewport.select('large'); await frame();
+  const start = center('large'), end = [start[0]+40,start[1]+20];
+  pointer('pointerdown', start); pointer('pointermove', end);
+  check(moves.length === 0, 'Center dragging must preview without a commit');
+  pointer('pointerup', end);
+  check(moves.length === 1 && moves[0].id === 'large', 'Center dragging must commit exactly once');
+} catch (error) { errors.push(error.stack || String(error)); }
+document.querySelector('#result').textContent = errors.length ? `FAIL: ${errors.length} of ${checks} checks` : `PASS: ${checks} checks`;
+document.querySelector('#failures').textContent = errors.join('\n');
+document.body.dataset.status = errors.length ? 'failed' : 'passed';
+</script>

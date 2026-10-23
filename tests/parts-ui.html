@@ -30,7 +30,7 @@ try{
   check(!$('#add-part'),'tools omit Create Part button');
   check($('[data-collapse-id="cabinet"]').getAttribute('aria-expanded')==='false','recovered groups start collapsed');
   $('[data-collapse-id="cabinet"]').click();
-  select('panel');$('[data-id="top"]').dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}));
+  select('panel');$('[data-id="top"]').dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}));
   check(!!$('#selection-make-part'),'multi-selection offers Combine into a Part');
   $('#selection-make-part').click();check($('#part-dialog').open,'creation opens name modal');
   create('Notched panel');check(!$('#part-dialog').open,'creation closes modal');
@@ -50,6 +50,11 @@ try{
       if(expanded)select('panel');
       $(selector).click();check(!!$('[data-id="panel"]')===expanded&&$('.part-collapse').getAttribute('aria-expanded')===String(expanded)&&$('.object-name').textContent==='Notched panel',`${selector} click selects the Part and preserves ${expanded?'expanded':'collapsed'} state`);
     }
+    const labelBounds=$('.part-tag').getBoundingClientRect(),nameBounds=$('.part-row .row-name').getBoundingClientRect();
+    const besideLabel=document.elementFromPoint(nameBounds.right-1,labelBounds.top+labelBounds.height/2);
+    check(!!besideLabel?.closest('.component-select')&&!besideLabel.closest('.part-tag'),'blank space beside PART belongs to selection, not expansion');
+    besideLabel?.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+    check(!!$('[data-id="panel"]')===expanded&&$('.part-collapse').getAttribute('aria-expanded')===String(expanded),'clicking blank space beside PART preserves expansion');
     $('.part-tag').click();check(!!$('[data-id="panel"]')===!expanded&&$('.part-collapse').getAttribute('aria-expanded')===String(!expanded),'PART label toggles expansion once');
   }
   check($('#source-editor').value===sourceBeforeNameClick,'Part selection and expansion leave model source unchanged');
@@ -73,7 +78,7 @@ try{
   check(!removedPanel.groupId&&removedPanel.position[0]===12&&removedPanel.color==='#86a9a3'&&!!$('#box-color')&&!!$('#item-group')&&!$('.part-membership-card'),'remove from Part preserves world position and material and restores standalone controls');
   check($('label[for="item-group"]').textContent==='GROUP'&&[...$('#item-group').options].map(option=>option.value).join(',')===',cabinet','standalone membership selector lists only groups and no group');
   $('#undo').click();select('panel');check($('.part-membership-card').dataset.ownerPart===partId&&!$('#item-group'),'undo restores Part membership and its card');
-  select('top');$('[data-id="panel"]').dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}));
+  select('top');$('[data-id="panel"]').dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}));
   check(!$('#selection-color')&&!!$('[data-inspect-part]'),'multiple subcomponents direct color editing to their Part');
   select('panel');check($('.object-name').textContent==='MC1 > Panel'&&$('#box-name').value==='Panel','inspector displays full path but edits local name');
   check($('.object-name [data-inspect-owner-part]').textContent==='MC1','inspector path links only the parent Part name');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { duplicateGroupBranch, effectiveHiddenIds } from '../src/group-actions';
+import { duplicateGroupBranch, duplicateTreeSelection, effectiveHiddenIds, removeTreeSelection, treeSelectionRoots } from '../src/group-actions';
 import { createBlankDocument, restoreWorkspace, resolveSnapshot, serializeWorkspace } from '../src/documents';
 import { worldPosition, type GroupSpec } from '../src/groups';
 import { resolveMeasurement, type Measurement } from '../src/measurements';
@@ -34,6 +34,45 @@ let receive: (event: { data: { source: string; kind: 'model' | 'sketch' } }) => 
 let compiled: any;
 (globalThis as any).self = { addEventListener: (_: string, fn: typeof receive) => { receive = fn; }, postMessage: (value: unknown) => { compiled = value; } };
 await import('../src/compiler.worker');
+
+test('mixed selection duplicates branches once and remaps references across selected branches', () => {
+  const scene = { groups, boxes, sketches, measurements, rectangles: [] };
+  const before = structuredClone(scene);
+  const selected = new Set(['root', 'inner', 'base', 'external', 'height']);
+  assert.deepEqual(treeSelectionRoots(scene, [...boxes, ...sketches, ...measurements], selected), ['root', 'external']);
+  const copy = duplicateTreeSelection(scene, selected, [], ids());
+  assert.equal(copy.boxes.length, 4);
+  assert.equal(copy.groups.length, 2);
+  assert.equal(copy.rootIds.length, 2);
+  assert.deepEqual(copy.groups[0].position, [11, 21, 0]);
+  assert.deepEqual(copy.groups[1].position, groups[2].position);
+  assert.deepEqual(copy.boxes.find((box) => box.id === copy.ids.get('external'))!.position, [31, 41, 0]);
+  assert.equal(copy.boxes.find((box) => box.id === copy.ids.get('attached'))!.relative!.boxId, copy.ids.get('external'));
+  assert.equal(copy.measurements.find((m) => m.id === copy.ids.get('outside-distance'))!.end.objectId, copy.ids.get('external'));
+  const allGroups = [...groups, ...copy.groups];
+  const combined = resolveModel([...boxes, ...copy.boxes], variables, allGroups, [...sketches, ...copy.sketches], [...measurements, ...copy.measurements]);
+  receive({ data: { source: generateSource(combined.boxes, variables, allGroups, copy.treeOrder, combined.sketches, combined.measurements), kind: 'model' } });
+  assert.equal(compiled.error, undefined);
+  assert.equal(compiled.groups.length, 5);
+  assert.equal(compiled.boxes.length, 8);
+  assert.deepEqual(scene, before);
+});
+
+test('deleting multiple containers preserves unselected members and dissolves selected ancestors', () => {
+  const resolved = resolveModel(boxes, variables, groups, sketches, measurements);
+  const scene = { groups, boxes: resolved.boxes, sketches, measurements, rectangles: [] };
+  const next = removeTreeSelection(scene, new Set(['root', 'inner', 'base', 'height']));
+  assert.deepEqual(next.groups.map((group) => group.id), ['parent']);
+  assert.deepEqual(next.boxes.map((box) => box.id), ['top', 'external', 'attached']);
+  assert.equal(next.boxes[0].relative, undefined);
+  assert.equal(next.boxes[0].groupId, 'parent');
+  assert.deepEqual(worldPosition(next.boxes[0].position, next.groups, next.boxes[0].groupId), worldPosition(resolved.boxes[1].position, groups, 'inner'));
+  assert.equal(next.sketches[0].groupId, 'parent');
+  assert.equal(next.measurements.some((m) => m.id === 'height'), false);
+  assert.equal(next.measurements[0].groupId, 'parent');
+});
+
+
 
 test('hidden groups mask all descendants while preserving independent hidden settings', () => {
   const items = [...boxes, ...sketches, ...measurements];

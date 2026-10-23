@@ -3,6 +3,51 @@ import { sketchShapeOrigin, type SketchShape } from './sketch';
 export type SelectionAction = 'replace' | 'toggle' | 'add';
 export type SelectionPoint = [number, number];
 
+/** All visible shapes under a click, ordered by screen-space distance to center. */
+export function sketchShapesAtPoint(shapes: SketchShape[], point: SelectionPoint, project: (point: SelectionPoint) => SelectionPoint, hiddenIds: ReadonlySet<string>): string[] {
+  return shapes.flatMap((shape) => {
+    if (hiddenIds.has(shape.id)) return [];
+    const origin = sketchShapeOrigin(shape);
+    const a = project(origin);
+    const b = project([origin[0] + shape.size[0], origin[1] + shape.size[1]]);
+    const center = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const distance = Math.hypot(point[0] - center[0], point[1] - center[1]);
+    let hit: boolean;
+    if (shape.kind === 'line') {
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const lengthSquared = dx * dx + dy * dy;
+      const t = lengthSquared ? Math.max(0, Math.min(1, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / lengthSquared)) : 0;
+      hit = Math.hypot(point[0] - a[0] - t * dx, point[1] - a[1] - t * dy) <= 10;
+    } else if (shape.kind === 'circle') {
+      hit = ((point[0] - center[0]) / (Math.abs(b[0] - a[0]) / 2)) ** 2
+        + ((point[1] - center[1]) / (Math.abs(b[1] - a[1]) / 2)) ** 2 <= 1;
+    } else {
+      hit = [0, 1].every((axis) => point[axis] >= Math.min(a[axis], b[axis]) && point[axis] <= Math.max(a[axis], b[axis]));
+    }
+    return hit ? [{ id: shape.id, distance }] : [];
+  }).sort((a, b) => a.distance - b.distance).map(({ id }) => id);
+}
+
+/** Keep the original click and order so small pointer jitter cannot reorder a cycle. */
+export function createSketchSelectionCycle() {
+  let cycle: { point: SelectionPoint; ids: string[]; index: number } | null = null;
+  return {
+    reset() { cycle = null; },
+    move(point: SelectionPoint) {
+      if (cycle && Math.hypot(point[0] - cycle.point[0], point[1] - cycle.point[1]) > 4) cycle = null;
+    },
+    next(point: SelectionPoint, ids: string[]): string | null {
+      const sameCandidates = cycle && ids.length === cycle.ids.length && cycle.ids.every((id) => ids.includes(id));
+      if (cycle && sameCandidates && Math.hypot(point[0] - cycle.point[0], point[1] - cycle.point[1]) <= 4) {
+        cycle.index = (cycle.index + 1) % cycle.ids.length;
+      } else {
+        cycle = ids.length ? { point: [...point], ids: [...ids], index: 0 } : null;
+      }
+      return cycle ? cycle.ids[cycle.index] : null;
+    },
+  };
+}
+
 export function updateSketchSelection(current: Iterable<string>, incoming: Iterable<string>, action: SelectionAction): Set<string> {
   const next = new Set(action === 'replace' ? [] : current);
   for (const id of new Set(incoming)) {
