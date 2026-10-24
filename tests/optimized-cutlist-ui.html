@@ -186,6 +186,25 @@ try {
   $('#cutlist-optimizer-form').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));
   check($('[data-optimizer-error]').textContent.includes('source draft') && $('#source-editor').value === appliedDrawing + '\n// pending draft', 'forced submission preserves a pending draft and the existing layout');
 
+  $('[data-close-optimizer]').click(); await tick();
+  $(`.document-select[data-document-id="${freshId}"]`).click();
+  $('#source-editor').value = `part({id:'notch',name:'Notched panel',position:[20,-30,40]}, [
+    box({id:'base',name:'Base',size:[10,4,0.75]}),
+    box({id:'top',name:'Top',size:[4,4,0.75],position:[0,4,0]})
+  ]);`;
+  $('#source-editor').dispatchEvent(new Event('input',{bubbles:true}));
+  $('#run-code').click();
+  for (let i = 0; i < 250 && $('#run-code').disabled; i++) await tick();
+  check($('#editor-error').hidden, 'notched Part model compiles');
+  open(); $('#cutlist-download').click(); await tick();
+  change('[data-panel-width]', '8'); change('[data-panel-height]', '10'); run();
+  const outlinedDrawing = $('#source-editor').value;
+  check(!$('#optimized-cutlist-dialog').open && outlinedDrawing.includes('rotated') && outlinedDrawing.includes('cut-outline-0-'), 'rotated Part cutlist includes its silhouette inside the stock rectangle');
+  $('#run-code').click();
+  for (let i = 0; i < 250 && $('#run-code').disabled; i++) await tick();
+  check($('#editor-error').hidden && $('#source-editor').value === outlinedDrawing, 'outline lines compile as native sketch geometry');
+  $('#fit').click();
+
 } catch (reason) { errors.push(reason.stack ?? String(reason)); }
 HTMLAnchorElement.prototype.click = nativeClick;
 $('#test-result').textContent = errors.length ? `${errors.length} failures in ${checks} checks` : `Passed ${checks} optimized cutlist UI checks`;

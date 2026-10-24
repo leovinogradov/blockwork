@@ -23,7 +23,7 @@ test('a notched Part uses resolved geometry, a single cutlist row, and full grou
   assert.equal(body.bodyCount, 1);
   assert.deepEqual(body.size, [0.75, 20, 94.75]);
   assert.deepEqual(body.min, [12, 23, 34]);
-  assert.deepEqual(exportModelCutlist(model, { treeOrder: ['g', 'Loose', 'p', 'Top', 'Panel'] }).rows, [
+  assert.deepEqual(exportModelCutlist(model, { treeOrder: ['g', 'Loose', 'p', 'Top', 'Panel'] }).rows.map(({ outline: _outline, ...row }) => row), [
     { id: 'Loose', name: 'Cabinet > Loose', length: 3, width: 2, thickness: 1 },
     { id: 'p', name: 'Cabinet > MC1', length: 94.75, width: 20, thickness: 0.75 },
   ]);

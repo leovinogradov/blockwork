@@ -21,6 +21,7 @@ export function cutlistLayoutShapes(layout: CutlistLayout, rows: CutlistExportRe
     throw new Error('No valid panel layout was generated. Check panel sizes and pieces before optimizing.');
   }
   const panels: SketchShape[] = [], pieces: SketchShape[] = [], panelLabels: SketchShape[] = [], pieceLabels: SketchShape[] = [];
+  const outlines: SketchShape[][] = [];
   const colors = ['#d9a76e', '#86a9a3', '#bd8c79', '#8798b5', '#b5a477', '#a68fb3'];
   const columns = Math.ceil(Math.sqrt(layout.panels.length));
   const maxWidth = Math.max(...layout.panels.map((panel) => panel.width));
@@ -44,19 +45,28 @@ export function cutlistLayoutShapes(layout: CutlistLayout, rows: CutlistExportRe
     for (const part of panel.placements) {
       const row = rows[part.rowIndex], number = part.rowIndex + 1;
       pieces[part.rowIndex] = { id: `cut-${part.rowIndex}`, name: `${number}. ${row.name} · ${formatInches(row.length)} × ${formatInches(row.width)} in${part.rotated ? ' · rotated' : ''}`, position: [x + part.x, y + part.y], size: [part.width, part.height], color: colors[part.rowIndex % colors.length] };
+      if (row.outline) {
+        // A quarter turn, rather than swapping coordinates, preserves handedness.
+        const placed = ([u, v]: [number, number]): [number, number] => [x + part.x + (part.rotated ? row.width - v : u), y + part.y + (part.rotated ? u : v)];
+        outlines[part.rowIndex] = row.outline.map(([a, b], edge): SketchShape => {
+          const start = placed(a), end = placed(b);
+          return { id: `cut-outline-${part.rowIndex}-${edge}`, name: `${number}. ${row.name} outline ${edge + 1}`, kind: 'line', position: start, size: [end[0] - start[0], end[1] - start[1]], color: colors[part.rowIndex % colors.length] };
+        });
+        pieces[part.rowIndex].color = '#58616d';
+      }
       const height = Math.min(labelHeight, part.height * 0.45, part.width / (String(number).length + 1));
       const label = labelSize(String(number), height, part.width * 0.9, part.height * 0.45);
       pieceLabels[part.rowIndex] = { id: `cut-label-${part.rowIndex}`, name: `Piece ${number} label`, kind: 'text', text: String(number), position: [x + part.x + (part.width - label.size[0]) / 2, y + part.y + (part.height + label.size[1]) / 2], ...label, color: colors[part.rowIndex % colors.length] };
     }
   });
   // Emit panels first, then numbered pieces with their labels, then panel labels.
-  const rectangles = validateSketchShapes([...panels, ...pieces.flatMap((piece, index) => [piece, pieceLabels[index]]), ...panelLabels]);
+  const rectangles = validateSketchShapes([...panels, ...pieces.flatMap((piece, index) => [piece, ...(outlines[index] ?? []), pieceLabels[index]]), ...panelLabels]);
   const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
   for (const shape of rectangles) {
     const origin = sketchShapeOrigin(shape);
     for (const axis of [0, 1] as const) {
-      min[axis] = Math.min(min[axis], origin[axis]);
-      max[axis] = Math.max(max[axis], origin[axis] + shape.size[axis]);
+      min[axis] = Math.min(min[axis], origin[axis], origin[axis] + shape.size[axis]);
+      max[axis] = Math.max(max[axis], origin[axis], origin[axis] + shape.size[axis]);
     }
   }
   // Center the complete drawing, including text, with a shared grid-aligned shift.

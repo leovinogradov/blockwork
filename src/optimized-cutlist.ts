@@ -1,4 +1,5 @@
 import type { CutlistRow, IgnoredCutlistComponent } from './cutlist-export';
+import { validateCutlistOutline } from './cutlist-outline';
 
 export type PanelSize = { width: number; height: number };
 export type OptimizedCutlist = {
@@ -37,7 +38,7 @@ export function validateCutlistRows(value: unknown): CutlistRow[] {
       throw new Error('Every cutlist piece needs an ID and name.');
     }
     if (![row.length, row.width, row.thickness].every(dimension)) throw new Error('Cutlist dimensions must be positive inches in increments of 1/64 within the supported range.');
-    return { id: row.id, name: row.name, length: row.length, width: row.width, thickness: row.thickness };
+    return { id: row.id, name: row.name, length: row.length, width: row.width, thickness: row.thickness, ...(row.outline === undefined ? {} : { outline: validateCutlistOutline(row.outline, row.length, row.width) }) };
   });
 }
 

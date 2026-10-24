@@ -4,8 +4,9 @@ import type { GroupSpec } from './groups';
 import type { ModelSketch } from './model-sketch';
 import { treeChildren } from './component-tree';
 import { analyzePart } from './parts';
+import { partCutlistOutline, type CutlistOutline } from './cutlist-outline';
 
-export type CutlistRow = { id: string; name: string; length: number; width: number; thickness: number };
+export type CutlistRow = { id: string; name: string; length: number; width: number; thickness: number; outline?: CutlistOutline };
 export type IgnoredCutlistComponent = { id: string; name: string; reason: string };
 export type CutlistExportResult = {
   csv: string;
@@ -60,7 +61,7 @@ export function exportModelCutlist(input: ModelSpec, options: { name?: string; m
       } else {
         const [thickness, width, length] = [...body.size].sort((a, b) => a - b);
         if (thickness > maxThickness) ignored.push({ id: box.id, name, reason: `Thickness ${formatInches(thickness)} in exceeds ${formatInches(maxThickness)} in` });
-        else rows.push({ id: box.id, name, length, width, thickness });
+        else rows.push({ id: box.id, name, length, width, thickness, outline: partCutlistOutline(body.solids, body.min, body.size) });
       }
       continue;
     }
